@@ -2,7 +2,7 @@
 
 use chumsky::prelude::*;
 
-use crate::ast::{BinOp, Expr, UnaryOp};
+use crate::frontend::ast::{BinOp, Expr, ExprKind, Span, UnaryOp};
 
 use super::assign_type::type_parser;
 use super::lex::{pad, pad_non_empty};
@@ -60,28 +60,35 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(call_args.or_not())
             .try_map(
                 |((path, type_args), args_o), span| match (type_args, args_o) {
-                    (None, None) => Ok(Expr::IdentPath(path)),
+                    (None, None) => Ok(Expr::new(span, ExprKind::IdentPath(path))),
                     (Some(_), None) => {
                         Err(Simple::custom(span, "expected `(` after type arguments"))
                     }
-                    (ta, Some(args)) => Ok(Expr::Call {
-                        callee: Box::new(Expr::IdentPath(path)),
-                        type_args: ta,
-                        args,
-                    }),
+                    (ta, Some(args)) => {
+                        let span_s: Span = span.clone().into();
+                        Ok(Expr::new(
+                            span,
+                            ExprKind::Call {
+                                callee: Box::new(Expr::new(span_s, ExprKind::IdentPath(path))),
+                                type_args: ta,
+                                args,
+                            },
+                        ))
+                    }
                 },
             );
 
         let color_lit = text::keyword("color")
             .ignore_then(just('.'))
             .ignore_then(text::ident())
-            .map(Expr::Color);
+            .map_with_span(|name, span| Expr::new(span, ExprKind::Color(name)));
 
         let paren = just('(')
             .ignore_then(pad())
-            .ignore_then(expr.clone())
+            .then(expr.clone())
             .then_ignore(pad())
-            .then_ignore(just(')'));
+            .then_ignore(just(')'))
+            .map_with_span(|(_, inner), span| Expr::new(span, inner.kind));
 
         let array_lit = just('[')
             .ignore_then(pad())
@@ -92,15 +99,15 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             )
             .then_ignore(pad())
             .then_ignore(just(']'))
-            .map(|(_, elements)| Expr::Array(elements));
+            .map_with_span(|(_, elements), span| Expr::new(span, ExprKind::Array(elements)));
 
         let atom_base = choice((
             string_literal(),
             number_literal(),
             hex_color_literal(),
-            text::keyword("true").to(Expr::Bool(true)),
-            text::keyword("false").to(Expr::Bool(false)),
-            text::keyword("na").to(Expr::Na),
+            text::keyword("true").map_with_span(|_, span| Expr::new(span, ExprKind::Bool(true))),
+            text::keyword("false").map_with_span(|_, span| Expr::new(span, ExprKind::Bool(false))),
+            text::keyword("na").map_with_span(|_, span| Expr::new(span, ExprKind::Na)),
             color_lit,
             array_lit,
             paren,
@@ -146,25 +153,37 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
         let postfix = atom_base
             .then(postfix_op.repeated())
             .foldl(|e, piece| match piece {
-                PostfixPiece::Index(idx) => Expr::Index {
-                    base: Box::new(e),
-                    index: Box::new(idx),
-                },
-                PostfixPiece::Field { name, args: None } => Expr::Member {
-                    base: Box::new(e),
-                    field: name,
-                },
+                PostfixPiece::Index(idx) => Expr::new(
+                    Span::merge(e.span, idx.span),
+                    ExprKind::Index {
+                        base: Box::new(e),
+                        index: Box::new(idx),
+                    },
+                ),
+                PostfixPiece::Field { name, args: None } => Expr::new(
+                    e.span,
+                    ExprKind::Member {
+                        base: Box::new(e),
+                        field: name,
+                    },
+                ),
                 PostfixPiece::Field {
                     name,
                     args: Some(args),
-                } => Expr::Call {
-                    callee: Box::new(Expr::Member {
-                        base: Box::new(e),
-                        field: name,
-                    }),
-                    type_args: None,
-                    args,
-                },
+                } => Expr::new(
+                    e.span,
+                    ExprKind::Call {
+                        callee: Box::new(Expr::new(
+                            e.span,
+                            ExprKind::Member {
+                                base: Box::new(e),
+                                field: name,
+                            },
+                        )),
+                        type_args: None,
+                        args,
+                    },
+                ),
             });
 
         let unary_op = choice((
@@ -179,12 +198,21 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(pad().ignore_then(postfix))
             .map(|(ops, e)| {
                 ops.into_iter().rev().fold(e, |acc, op| match (op, acc) {
-                    (UnaryOp::Neg, Expr::Int(n)) => Expr::Int(-n),
-                    (UnaryOp::Neg, Expr::Float(x)) => Expr::Float(-x),
-                    (op, acc) => Expr::Unary {
-                        op,
-                        expr: Box::new(acc),
-                    },
+                    (UnaryOp::Neg, Expr {
+                        span,
+                        kind: ExprKind::Int(n),
+                    }) => Expr::new(span, ExprKind::Int(-n)),
+                    (UnaryOp::Neg, Expr {
+                        span,
+                        kind: ExprKind::Float(x),
+                    }) => Expr::new(span, ExprKind::Float(-x)),
+                    (op, acc) => Expr::new(
+                        acc.span,
+                        ExprKind::Unary {
+                            op,
+                            expr: Box::new(acc),
+                        },
+                    ),
                 })
             });
 
@@ -201,11 +229,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     .then(unary.clone())
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| Expr::Binary {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            });
+            .foldl(|lhs, (op, rhs)| Expr::new(
+                Span::merge(lhs.span, rhs.span),
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            ));
 
         let sum = product
             .clone()
@@ -216,11 +247,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     .then(product.clone())
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| Expr::Binary {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            });
+            .foldl(|lhs, (op, rhs)| Expr::new(
+                Span::merge(lhs.span, rhs.span),
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            ));
 
         let cmp = sum
             .clone()
@@ -238,11 +272,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     .then(sum.clone())
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| Expr::Binary {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            });
+            .foldl(|lhs, (op, rhs)| Expr::new(
+                Span::merge(lhs.span, rhs.span),
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            ));
 
         let and_expr = cmp
             .clone()
@@ -253,11 +290,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     .ignore_then(cmp.clone())
                     .repeated(),
             )
-            .foldl(|lhs, rhs| Expr::Binary {
-                op: BinOp::And,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            });
+            .foldl(|lhs, rhs| Expr::new(
+                Span::merge(lhs.span, rhs.span),
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            ));
 
         let or_expr = and_expr
             .clone()
@@ -268,11 +308,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     .ignore_then(and_expr.clone())
                     .repeated(),
             )
-            .foldl(|lhs, rhs| Expr::Binary {
-                op: BinOp::Or,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
-            });
+            .foldl(|lhs, rhs| Expr::new(
+                Span::merge(lhs.span, rhs.span),
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
+            ));
 
         let ternary_expr = or_expr
             .clone()
@@ -291,11 +334,14 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             )
             .map(|(cond, opt)| match opt {
                 None => cond,
-                Some((then_b, else_b)) => Expr::Ternary {
-                    cond: Box::new(cond),
-                    then_b: Box::new(then_b),
-                    else_b: Box::new(else_b),
-                },
+                Some((then_b, else_b)) => Expr::new(
+                    Span::merge(cond.span, else_b.span),
+                    ExprKind::Ternary {
+                        cond: Box::new(cond),
+                        then_b: Box::new(then_b),
+                        else_b: Box::new(else_b),
+                    },
+                ),
             });
 
         let if_expr = text::keyword("if")
@@ -306,10 +352,15 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then_ignore(text::keyword("else"))
             .then_ignore(pad())
             .then(expr.clone())
-            .map(|((cond, then_b), else_b)| Expr::IfExpr {
-                cond: Box::new(cond),
-                then_b: Box::new(then_b),
-                else_b: Box::new(else_b),
+            .map_with_span(|((cond, then_b), else_b), span| {
+                Expr::new(
+                    span,
+                    ExprKind::IfExpr {
+                        cond: Box::new(cond),
+                        then_b: Box::new(then_b),
+                        else_b: Box::new(else_b),
+                    },
+                )
             });
 
         choice((if_expr, ternary_expr)).boxed()

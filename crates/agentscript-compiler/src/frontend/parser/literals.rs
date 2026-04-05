@@ -2,7 +2,7 @@
 
 use chumsky::prelude::*;
 
-use crate::ast::Expr;
+use crate::frontend::ast::{Expr, ExprKind};
 
 pub(super) fn string_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
     just('"')
@@ -18,7 +18,7 @@ pub(super) fn string_literal() -> impl Parser<char, Expr, Error = Simple<char>> 
             .collect::<String>(),
         )
         .then_ignore(just('"'))
-        .map(Expr::String)
+        .map_with_span(|s, span| Expr::new(span, ExprKind::String(s)))
 }
 
 pub(super) fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
@@ -52,12 +52,12 @@ pub(super) fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> 
                 let n: i64 = s
                     .parse()
                     .map_err(|_| Simple::custom(span.clone(), "invalid integer"))?;
-                Ok(Expr::Int(n))
+                Ok(Expr::new(span, ExprKind::Int(n)))
             } else {
                 let v: f64 = s
                     .parse()
-                    .map_err(|_| Simple::custom(span, "invalid float literal"))?;
-                Ok(Expr::Float(v))
+                    .map_err(|_| Simple::custom(span.clone(), "invalid float literal"))?;
+                Ok(Expr::new(span, ExprKind::Float(v)))
             }
         });
     // `.5`, `.5e2` (common in Pine / math-heavy scripts)
@@ -72,8 +72,8 @@ pub(super) fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> 
             }
             let v: f64 = s
                 .parse()
-                .map_err(|_| Simple::custom(span, "invalid float literal"))?;
-            Ok(Expr::Float(v))
+                .map_err(|_| Simple::custom(span.clone(), "invalid float literal"))?;
+            Ok(Expr::new(span, ExprKind::Float(v)))
         });
     choice((with_int, leading_dot))
 }
@@ -88,7 +88,7 @@ pub(super) fn hex_color_literal() -> impl Parser<char, Expr, Error = Simple<char
             .collect::<String>()
             .try_map(|s, span| {
                 if s.len() == 6 || s.len() == 8 {
-                    Ok(Expr::HexColor(s))
+                    Ok(Expr::new(span, ExprKind::HexColor(s)))
                 } else {
                     Err(Simple::custom(
                         span,

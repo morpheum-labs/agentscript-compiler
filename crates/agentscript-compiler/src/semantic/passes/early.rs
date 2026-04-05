@@ -1,15 +1,16 @@
 //! Duplicate-definition checks (no types).
 
-use std::collections::{HashMap, HashSet};
+use indexmap::IndexMap;
+use std::collections::HashSet;
 
-use crate::ast::{EnumDef, ExportDecl, FnDecl, Item, Script, UserTypeDef};
+use crate::frontend::ast::{EnumDef, ExportDecl, FnDecl, Item, Script, UserTypeDef};
 
-use super::AnalyzeError;
+use super::super::AnalyzeError;
 
 pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
-    let mut def_counts: HashMap<String, usize> = HashMap::new();
-    let mut import_counts: HashMap<String, usize> = HashMap::new();
+    let mut def_counts: IndexMap<String, usize> = IndexMap::new();
+    let mut import_counts: IndexMap<String, usize> = IndexMap::new();
 
     for item in &script.items {
         match item {
@@ -115,7 +116,9 @@ fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{FnBody, FnParam, ScriptDeclaration, ScriptKind};
+    use crate::frontend::ast::{
+        Expr, ExprKind, FnBody, FnParam, ScriptDeclaration, ScriptKind,
+    };
     use crate::{parse_script, Item};
 
     #[test]
@@ -172,7 +175,10 @@ f dup() => 2
             items: vec![
                 Item::ScriptDecl(ScriptDeclaration {
                     kind: ScriptKind::Indicator,
-                    args: vec![(None, crate::ast::Expr::String("t".into()))],
+                    args: vec![(
+                        None,
+                        Expr::synthetic(ExprKind::String("t".into())),
+                    )],
                 }),
                 Item::FnDecl(FnDecl {
                     is_method: false,
@@ -189,7 +195,7 @@ f dup() => 2
                             default: None,
                         },
                     ],
-                    body: FnBody::Expr(crate::ast::Expr::Int(0)),
+                    body: FnBody::Expr(Expr::synthetic(ExprKind::Int(0))),
                 }),
             ],
         };

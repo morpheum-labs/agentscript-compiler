@@ -2,7 +2,7 @@
 
 use chumsky::error::Simple;
 
-use crate::version_policy::{qas_version_allowed, qas_version_unsupported_message};
+use super::version_policy::{qas_version_allowed, qas_version_unsupported_message};
 
 /// Walk leading whitespace, `//` lines, and `/* */` blocks; validate any `//@version=` (Pine 5/6) or
 /// `// @agentscript=` (≥1) in that trivia. Stops at the first non-trivia byte.

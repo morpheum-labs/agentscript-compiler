@@ -3,20 +3,29 @@
 //! Development progress: see repository root `ROADMAP.md`. Planned path: full typechecker, IR,
 //! codegen, and `wasm32` output aligned with the Aether strategy guest ABI.
 
-mod ast;
+mod compiler;
 mod error;
-mod parser;
+mod frontend;
+mod hir;
 mod semantic;
-mod version_policy;
+mod session;
+mod visitor;
 
-pub use ast::{
-    AssignOp, BinOp, ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam,
-    ForInPattern, IfStmt, ImportDecl, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind,
-    Stmt, Type, UdtField, UnaryOp, UserTypeDef, VarDecl, VarQualifier,
+pub use compiler::Compiler;
+pub use frontend::ast::{
+    AssignOp, BinOp, ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, ExprKind, FnBody, FnDecl,
+    FnParam, ForInPattern, IfStmt, ImportDecl, Item, PrimitiveType, Script, ScriptDeclaration,
+    ScriptKind, Span, Spanned, Stmt, StmtKind, Type, UdtField, UnaryOp, UserTypeDef, VarDecl,
+    VarQualifier,
 };
 pub use error::{CompileError, ParseFileError};
-pub use parser::script_parser;
-pub use semantic::{analyze_script, check_script, resolve_script, AnalyzeError};
+pub use frontend::parser::script_parser;
+pub use semantic::{
+    analyze_script, check_script, resolve_script, AnalyzeError,
+    BreakContinuePass, CompilerPass, EarlyAnalyzePass, ResolverPass, default_passes,
+};
+pub use session::CompilerSession;
+pub use visitor::AstVisitor;
 
 use chumsky::Parser;
 use std::fs;
@@ -51,7 +60,7 @@ pub fn parse_script_file(path: impl AsRef<Path>) -> Result<Script, ParseFileErro
 /// Parse a full source file into a [`Script`].
 pub fn parse_script(src_name: impl AsRef<str>, source: &str) -> Result<Script, CompileError> {
     let owned = source.to_string();
-    if let Some(e) = parser::scan_leading_bad_directives(owned.as_str()) {
+    if let Some(e) = frontend::parser::scan_leading_bad_directives(owned.as_str()) {
         return Err(error::compile_error_from_parse_errors(
             src_name,
             owned,

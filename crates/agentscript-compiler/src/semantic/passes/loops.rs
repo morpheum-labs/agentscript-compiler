@@ -1,8 +1,10 @@
 //! `break` / `continue` may appear only inside `for` or `while` bodies.
 
-use crate::ast::{ElseBody, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, Stmt};
+use crate::frontend::ast::{
+    ElseBody, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, Stmt, StmtKind,
+};
 
-use super::AnalyzeError;
+use super::super::AnalyzeError;
 
 pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
@@ -37,36 +39,36 @@ fn walk_fn(f: &FnDecl, issues: &mut Vec<String>) {
 }
 
 fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
-    match s {
-        Stmt::Break | Stmt::Continue => {
+    match &s.kind {
+        StmtKind::Break | StmtKind::Continue => {
             if loop_depth == 0 {
+                let kw = match &s.kind {
+                    StmtKind::Break => "break",
+                    StmtKind::Continue => "continue",
+                    _ => unreachable!(),
+                };
                 issues.push(format!(
-                    "`{}` is only valid inside a `for` or `while` loop",
-                    match s {
-                        Stmt::Break => "break",
-                        Stmt::Continue => "continue",
-                        _ => unreachable!(),
-                    }
+                    "`{kw}` is only valid inside a `for` or `while` loop",
                 ));
             }
         }
-        Stmt::Block(stmts) => {
+        StmtKind::Block(stmts) => {
             for x in stmts {
                 walk_stmt(x, loop_depth, issues);
             }
         }
-        Stmt::If(i) => walk_if(i, loop_depth, issues),
-        Stmt::For { body, .. } | Stmt::ForIn { body, .. } => {
+        StmtKind::If(i) => walk_if(i, loop_depth, issues),
+        StmtKind::For { body, .. } | StmtKind::ForIn { body, .. } => {
             for x in body {
                 walk_stmt(x, loop_depth.saturating_add(1), issues);
             }
         }
-        Stmt::While { body, .. } => {
+        StmtKind::While { body, .. } => {
             for x in body {
                 walk_stmt(x, loop_depth.saturating_add(1), issues);
             }
         }
-        Stmt::Switch {
+        StmtKind::Switch {
             cases,
             default,
             ..
@@ -78,10 +80,10 @@ fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
                 walk_stmt(d, loop_depth, issues);
             }
         }
-        Stmt::VarDecl(_)
-        | Stmt::Assign { .. }
-        | Stmt::TupleAssign { .. }
-        | Stmt::Expr(_) => {}
+        StmtKind::VarDecl(_)
+        | StmtKind::Assign { .. }
+        | StmtKind::TupleAssign { .. }
+        | StmtKind::Expr(_) => {}
     }
 }
 

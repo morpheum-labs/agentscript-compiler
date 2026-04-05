@@ -2,9 +2,9 @@
 
 use chumsky::prelude::*;
 
-use crate::ast::{
+use crate::frontend::ast::{
     ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern,
-    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, Type, UdtField,
+    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, StmtKind, Type, UdtField,
     UserTypeDef, VarDecl, VarQualifier,
 };
 
@@ -104,13 +104,16 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then(assign_op())
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
-        .map(|(((qual, (ty, name)), _op), value)| {
-            Stmt::VarDecl(VarDecl {
-                qualifier: Some(qual),
-                ty,
-                name,
-                value,
-            })
+        .map_with_span(|(((qual, (ty, name)), _op), value), span| {
+            Stmt::new(
+                span,
+                StmtKind::VarDecl(VarDecl {
+                    qualifier: Some(qual),
+                    ty,
+                    name,
+                    value,
+                }),
+            )
         })
         .boxed();
 
@@ -123,13 +126,16 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then(assign_op())
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
-        .map(|(((ty, name), _op), value)| {
-            Stmt::VarDecl(VarDecl {
-                qualifier: Some(VarQualifier::Input),
-                ty,
-                name,
-                value,
-            })
+        .map_with_span(|(((ty, name), _op), value), span| {
+            Stmt::new(
+                span,
+                StmtKind::VarDecl(VarDecl {
+                    qualifier: Some(VarQualifier::Input),
+                    ty,
+                    name,
+                    value,
+                }),
+            )
         })
         .boxed();
 
@@ -140,13 +146,16 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then(assign_op())
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
-        .map(|(((ty, name), _op), value)| {
-            Stmt::VarDecl(VarDecl {
-                qualifier: None,
-                ty: Some(ty),
-                name,
-                value,
-            })
+        .map_with_span(|(((ty, name), _op), value), span| {
+            Stmt::new(
+                span,
+                StmtKind::VarDecl(VarDecl {
+                    qualifier: None,
+                    ty: Some(ty),
+                    name,
+                    value,
+                }),
+            )
         })
         .boxed();
 
@@ -189,7 +198,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                     else_body,
                 })
         });
-        let if_stmt = if_stmt_ast.map(Stmt::If);
+        let if_stmt =
+            if_stmt_ast.map_with_span(|if_stmt, span| Stmt::new(span, StmtKind::If(if_stmt)));
 
         let for_classic = text::ident()
             .then_ignore(pad())
@@ -209,12 +219,17 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             )
             .then_ignore(pad())
             .then(compound_vec())
-            .map(|((((var, from), to), by), body)| Stmt::For {
-                var,
-                from,
-                to,
-                by,
-                body,
+            .map_with_span(|((((var, from), to), by), body), span| {
+                Stmt::new(
+                    span,
+                    StmtKind::For {
+                        var,
+                        from,
+                        to,
+                        by,
+                        body,
+                    },
+                )
             });
 
         let for_in_pair = just('[')
@@ -231,10 +246,15 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then(expr_for_stmt.clone())
             .then_ignore(pad())
             .then(compound_vec())
-            .map(|(((idx, val), iterable), body)| Stmt::ForIn {
-                pattern: ForInPattern::Pair(idx, val),
-                iterable,
-                body,
+            .map_with_span(|(((idx, val), iterable), body), span| {
+                Stmt::new(
+                    span,
+                    StmtKind::ForIn {
+                        pattern: ForInPattern::Pair(idx, val),
+                        iterable,
+                        body,
+                    },
+                )
             });
 
         let for_in_single = text::ident()
@@ -244,10 +264,15 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then(expr_for_stmt.clone())
             .then_ignore(pad())
             .then(compound_vec())
-            .map(|((var, iterable), body)| Stmt::ForIn {
-                pattern: ForInPattern::Name(var),
-                iterable,
-                body,
+            .map_with_span(|((var, iterable), body), span| {
+                Stmt::new(
+                    span,
+                    StmtKind::ForIn {
+                        pattern: ForInPattern::Name(var),
+                        iterable,
+                        body,
+                    },
+                )
             });
 
         let for_stmt = text::keyword("for").ignore_then(
@@ -255,10 +280,10 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         );
 
         let switch_arm = choice((
-            compound_vec().map(|mut v| match v.len() {
-                0 => Stmt::Block(vec![]),
+            compound_vec().map_with_span(|mut v, span| match v.len() {
+                0 => Stmt::new(span, StmtKind::Block(vec![])),
                 1 => v.pop().expect("one stmt"),
-                _ => Stmt::Block(v),
+                _ => Stmt::new(span, StmtKind::Block(v)),
             }),
             stmt.clone(),
         ));
@@ -323,10 +348,15 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                 pad().ignore_then(expr_for_stmt.clone().then_ignore(pad()).or_not()),
             )
             .then(switch_body)
-            .map(|(scrutinee, (cases, default))| Stmt::Switch {
-                scrutinee,
-                cases,
-                default,
+            .map_with_span(|(scrutinee, (cases, default)), span| {
+                Stmt::new(
+                    span,
+                    StmtKind::Switch {
+                        scrutinee,
+                        cases,
+                        default,
+                    },
+                )
             });
 
         let while_stmt = text::keyword("while")
@@ -334,12 +364,17 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .ignore_then(expr_for_stmt.clone())
             .then_ignore(pad())
             .then(compound_vec())
-            .map(|(cond, body)| Stmt::While { cond, body });
+            .map_with_span(|(cond, body), span| {
+                Stmt::new(span, StmtKind::While { cond, body })
+            });
 
-        let break_stmt = text::keyword("break").to(Stmt::Break);
-        let continue_stmt = text::keyword("continue").to(Stmt::Continue);
+        let break_stmt =
+            text::keyword("break").map_with_span(|_, span| Stmt::new(span, StmtKind::Break));
+        let continue_stmt = text::keyword("continue")
+            .map_with_span(|_, span| Stmt::new(span, StmtKind::Continue));
 
-        let block_stmt = compound_vec().map(Stmt::Block);
+        let block_stmt = compound_vec()
+            .map_with_span(|stmts, span| Stmt::new(span, StmtKind::Block(stmts)));
 
         let tuple_assign = just('[')
             .ignore_then(pad().ignore_then(text::ident()))
@@ -354,10 +389,13 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then(assign_op())
             .then_ignore(pad())
             .then(expr_for_stmt.clone())
-            .map(|(((first, rest), op), value)| {
+            .map_with_span(|(((first, rest), op), value), span| {
                 let mut names = vec![first];
                 names.extend(rest);
-                Stmt::TupleAssign { names, op, value }
+                Stmt::new(
+                    span,
+                    StmtKind::TupleAssign { names, op, value },
+                )
             });
 
         let stmt_assign = text::ident()
@@ -365,9 +403,13 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then(assign_op())
             .then_ignore(pad())
             .then(expr_for_stmt.clone())
-            .map(|((name, op), value)| Stmt::Assign { name, op, value });
+            .map_with_span(|((name, op), value), span| {
+                Stmt::new(span, StmtKind::Assign { name, op, value })
+            });
 
-        let expr_stmt = expr_for_stmt.clone().map(Stmt::Expr);
+        let expr_stmt = expr_for_stmt
+            .clone()
+            .map(|e| Stmt::new(e.span, StmtKind::Expr(e)));
 
         choice((
             block_stmt,
@@ -547,8 +589,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         var_decl_typed.clone(),
     ))
     .then_ignore(optional_semicolon())
-    .map(|stmt| match stmt {
-        Stmt::VarDecl(v) => ExportDecl::Var(v),
+    .map(|stmt| match &stmt.kind {
+        StmtKind::VarDecl(v) => ExportDecl::Var(v.clone()),
         _ => unreachable!("export var parsers only yield VarDecl"),
     })
     .boxed();

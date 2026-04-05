@@ -7,9 +7,14 @@ repository.workspace = true
 description = "Parser and compiler front-end for AgentScript (QAS / Pine v6–aligned syntax); `.pine` and `.qas` sources."
 
 [dependencies]
+bumpalo = "3"
 chumsky = "0.9"
-thiserror = "2"
+indexmap = "2"
 miette = { version = "7", features = ["fancy"] }
+thiserror = "2"
+
+[dev-dependencies]
+insta = "1"
 
 [[bin]]
 name = "agentscriptc"

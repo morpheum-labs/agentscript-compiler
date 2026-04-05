@@ -2,7 +2,7 @@
 
 use chumsky::prelude::*;
 
-use crate::version_policy::{qas_version_allowed, qas_version_unsupported_message};
+use super::version_policy::{qas_version_allowed, qas_version_unsupported_message};
 
 pub(super) fn version_directive_suffix() -> impl Parser<char, (), Error = Simple<char>> + Clone {
     just('@')

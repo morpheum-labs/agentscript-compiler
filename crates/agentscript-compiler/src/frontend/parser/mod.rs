@@ -6,6 +6,7 @@ mod leading_scan;
 mod lex;
 mod literals;
 mod script;
+mod version_policy;
 
 pub use script::script_parser;
 

@@ -3,27 +3,24 @@
 //! Today: duplicate definitions, dotted-path roots, and `strategy.*` script-kind rules.
 //! Later: full symbol tables, types, builtin signatures.
 
-use crate::Script;
+use crate::frontend::ast::Script;
 
 mod builtins;
-mod early;
-mod loops;
-mod resolve;
+pub mod passes;
 
-pub use early::analyze_script;
-pub use resolve::resolve_script;
+pub use passes::{
+    analyze_script, default_passes, resolve_script, BreakContinuePass, CompilerPass, EarlyAnalyzePass,
+    ResolverPass,
+};
 
-/// Semantic analysis failed (no source spans on the AST yet; messages are textual).
+/// Semantic analysis failed (spans exist on the AST; richer reporting can use them later).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct AnalyzeError {
     pub message: String,
 }
 
-/// Early checks + path / script-kind resolution.
+/// Early checks + path / script-kind resolution via the default [`crate::compiler::Compiler`] pipeline.
 pub fn check_script(script: &Script) -> Result<(), AnalyzeError> {
-    early::analyze_script(script)?;
-    loops::check_break_continue(script)?;
-    resolve::resolve_script(script)?;
-    Ok(())
+    crate::compiler::Compiler::new().run_semantic_passes(script)
 }

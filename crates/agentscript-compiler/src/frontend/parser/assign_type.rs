@@ -2,7 +2,7 @@
 
 use chumsky::prelude::*;
 
-use crate::ast::{AssignOp, PrimitiveType, Type, VarQualifier};
+use crate::frontend::ast::{AssignOp, PrimitiveType, Type, VarQualifier};
 
 use super::lex::pad;
 

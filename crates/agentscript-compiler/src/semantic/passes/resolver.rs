@@ -2,12 +2,13 @@
 
 use std::collections::HashSet;
 
-use crate::ast::{
-    ElseBody, Expr, FnBody, FnDecl, IfStmt, Item, Script, ScriptDeclaration, ScriptKind, Stmt,
+use crate::frontend::ast::{
+    ElseBody, Expr, ExprKind, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, ScriptDeclaration,
+    ScriptKind, Stmt, StmtKind, Type,
 };
 
-use super::builtins::builtin_namespace_roots;
-use super::AnalyzeError;
+use super::super::builtins::builtin_namespace_roots;
+use super::super::AnalyzeError;
 
 struct ResolveCtx {
     script_kind: Option<ScriptKind>,
@@ -63,10 +64,10 @@ impl ResolveCtx {
     }
 
     fn walk_expr(&mut self, e: &Expr, context: &str) {
-        match e {
-            Expr::IdentPath(p) => self.check_ident_path(p, context),
-            Expr::Member { base, .. } => self.walk_expr(base, context),
-            Expr::Call {
+        match &e.kind {
+            ExprKind::IdentPath(p) => self.check_ident_path(p, context),
+            ExprKind::Member { base, .. } => self.walk_expr(base, context),
+            ExprKind::Call {
                 callee,
                 type_args,
                 args,
@@ -81,21 +82,21 @@ impl ResolveCtx {
                     self.walk_expr(a, context);
                 }
             }
-            Expr::Index { base, index } => {
+            ExprKind::Index { base, index } => {
                 self.walk_expr(base, context);
                 self.walk_expr(index, context);
             }
-            Expr::Array(elts) => {
+            ExprKind::Array(elts) => {
                 for x in elts {
                     self.walk_expr(x, context);
                 }
             }
-            Expr::Unary { expr, .. } => self.walk_expr(expr, context),
-            Expr::Binary { left, right, .. } => {
+            ExprKind::Unary { expr, .. } => self.walk_expr(expr, context),
+            ExprKind::Binary { left, right, .. } => {
                 self.walk_expr(left, context);
                 self.walk_expr(right, context);
             }
-            Expr::Ternary {
+            ExprKind::Ternary {
                 cond,
                 then_b,
                 else_b,
@@ -104,7 +105,7 @@ impl ResolveCtx {
                 self.walk_expr(then_b, context);
                 self.walk_expr(else_b, context);
             }
-            Expr::IfExpr {
+            ExprKind::IfExpr {
                 cond,
                 then_b,
                 else_b,
@@ -113,26 +114,25 @@ impl ResolveCtx {
                 self.walk_expr(then_b, context);
                 self.walk_expr(else_b, context);
             }
-            Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::String(_)
-            | Expr::Bool(_)
-            | Expr::Na
-            | Expr::Color(_)
-            | Expr::HexColor(_) => {}
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::String(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Na
+            | ExprKind::Color(_)
+            | ExprKind::HexColor(_) => {}
         }
     }
 
     fn walk_callee(&mut self, e: &Expr, context: &str) {
-        match e {
-            Expr::IdentPath(p) => self.check_ident_path(p, context),
-            Expr::Member { base, .. } => self.walk_expr(base, context),
+        match &e.kind {
+            ExprKind::IdentPath(p) => self.check_ident_path(p, context),
+            ExprKind::Member { base, .. } => self.walk_expr(base, context),
             _ => self.walk_expr(e, context),
         }
     }
 
-    fn walk_type(&mut self, t: &crate::ast::Type, context: &str) {
-        use crate::ast::Type;
+    fn walk_type(&mut self, t: &Type, context: &str) {
         match t {
             Type::Primitive(_) | Type::Named(_) => {}
             Type::Array(inner) | Type::Matrix(inner) => self.walk_type(inner, context),
@@ -152,24 +152,24 @@ impl ResolveCtx {
     }
 
     fn walk_stmt(&mut self, s: &Stmt, context: &str) {
-        match s {
-            Stmt::VarDecl(v) => {
+        match &s.kind {
+            StmtKind::VarDecl(v) => {
                 if let Some(ty) = &v.ty {
                     self.walk_type(ty, context);
                 }
                 self.walk_expr(&v.value, context);
             }
-            Stmt::Assign { value, .. } | Stmt::TupleAssign { value, .. } => {
+            StmtKind::Assign { value, .. } | StmtKind::TupleAssign { value, .. } => {
                 self.walk_expr(value, context);
             }
-            Stmt::Expr(e) => self.walk_expr(e, context),
-            Stmt::Block(stmts) => {
+            StmtKind::Expr(e) => self.walk_expr(e, context),
+            StmtKind::Block(stmts) => {
                 for x in stmts {
                     self.walk_stmt(x, context);
                 }
             }
-            Stmt::If(i) => self.walk_if(i, context),
-            Stmt::For {
+            StmtKind::If(i) => self.walk_if(i, context),
+            StmtKind::For {
                 var: _,
                 from,
                 to,
@@ -185,13 +185,13 @@ impl ResolveCtx {
                     self.walk_stmt(x, context);
                 }
             }
-            Stmt::ForIn { iterable, body, .. } => {
+            StmtKind::ForIn { iterable, body, .. } => {
                 self.walk_expr(iterable, context);
                 for x in body {
                     self.walk_stmt(x, context);
                 }
             }
-            Stmt::Switch {
+            StmtKind::Switch {
                 scrutinee,
                 cases,
                 default,
@@ -207,13 +207,13 @@ impl ResolveCtx {
                     self.walk_stmt(d, context);
                 }
             }
-            Stmt::While { cond, body } => {
+            StmtKind::While { cond, body } => {
                 self.walk_expr(cond, context);
                 for x in body {
                     self.walk_stmt(x, context);
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            StmtKind::Break | StmtKind::Continue => {}
         }
     }
 
@@ -267,20 +267,19 @@ pub fn resolve_script(script: &Script) -> Result<(), AnalyzeError> {
             }
             Item::Stmt(s) => c.walk_stmt(s, "top-level"),
             Item::FnDecl(f) => c.walk_fn(f),
-            Item::Export(crate::ast::ExportDecl::Fn(f)) => c.walk_fn(f),
-            Item::Export(crate::ast::ExportDecl::Var(v)) => {
+            Item::Export(ExportDecl::Fn(f)) => c.walk_fn(f),
+            Item::Export(ExportDecl::Var(v)) => {
                 if let Some(ty) = &v.ty {
                     c.walk_type(ty, "export var");
                 }
                 c.walk_expr(&v.value, "export var");
             }
-            Item::Export(crate::ast::ExportDecl::Enum(e)) | Item::Enum(e) => {
+            Item::Export(ExportDecl::Enum(e)) | Item::Enum(e) => {
                 for v in &e.variants {
                     c.walk_expr(&v.value, "enum variant");
                 }
             }
-            Item::Export(crate::ast::ExportDecl::TypeDef(t))
-            | Item::TypeDef(t) => {
+            Item::Export(ExportDecl::TypeDef(t)) | Item::TypeDef(t) => {
                 for f in &t.fields {
                     c.walk_type(&f.ty, "UDT field");
                     c.walk_expr(&f.default, "UDT field default");
