@@ -8,9 +8,11 @@ use super::AnalyzeError;
 mod early;
 mod loops;
 mod resolver;
+mod typecheck;
 
 pub use early::analyze_script;
 pub use resolver::resolve_script;
+pub use typecheck::typecheck_script;
 
 /// Pluggable pipeline step; add new passes without editing the driver’s control flow.
 pub trait CompilerPass {
@@ -57,11 +59,25 @@ impl CompilerPass for ResolverPass {
     }
 }
 
+/// Minimal typecheck (`series` vs `simple`, builtins, scoping).
+pub struct TypecheckPass;
+
+impl CompilerPass for TypecheckPass {
+    fn name(&self) -> &'static str {
+        "typecheck"
+    }
+
+    fn run(&mut self, _session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        typecheck::typecheck_script(script)
+    }
+}
+
 /// Default Phase-0 semantic pipeline (order matters).
 pub fn default_passes() -> Vec<Box<dyn CompilerPass>> {
     vec![
         Box::new(EarlyAnalyzePass),
         Box::new(BreakContinuePass),
         Box::new(ResolverPass),
+        Box::new(TypecheckPass),
     ]
 }

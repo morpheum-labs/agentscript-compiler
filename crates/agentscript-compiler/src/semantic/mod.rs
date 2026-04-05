@@ -1,7 +1,8 @@
 //! Semantic passes after parsing (Phase 1 groundwork).
 //!
 //! Today: duplicate definitions, dotted-path roots, and `strategy.*` script-kind rules.
-//! Later: full symbol tables, types, builtin signatures.
+//! Later: full symbol tables and richer builtin signatures. A minimal typechecker runs after
+//! resolution ([`crate::semantic::passes::typecheck`]).
 
 use crate::frontend::ast::Script;
 
@@ -9,8 +10,8 @@ mod builtins;
 pub mod passes;
 
 pub use passes::{
-    analyze_script, default_passes, resolve_script, BreakContinuePass, CompilerPass, EarlyAnalyzePass,
-    ResolverPass,
+    analyze_script, default_passes, resolve_script, typecheck_script, BreakContinuePass, CompilerPass,
+    EarlyAnalyzePass, ResolverPass, TypecheckPass,
 };
 
 /// Semantic analysis failed (spans exist on the AST; richer reporting can use them later).

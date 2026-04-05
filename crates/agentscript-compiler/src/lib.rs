@@ -21,10 +21,10 @@ pub use frontend::ast::{
 pub use error::{CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
 pub use semantic::{
-    analyze_script, check_script, resolve_script, AnalyzeError,
-    BreakContinuePass, CompilerPass, EarlyAnalyzePass, ResolverPass, default_passes,
+    analyze_script, check_script, resolve_script, typecheck_script, AnalyzeError,
+    BreakContinuePass, CompilerPass, EarlyAnalyzePass, ResolverPass, TypecheckPass, default_passes,
 };
-pub use hir::HirScript;
+pub use hir::{lower_script_to_hir, AstHirLowerer, HirLowerError, HirScript, LowerToHir};
 pub use session::CompilerSession;
 pub use visitor::AstVisitor;
 
@@ -76,7 +76,7 @@ pub fn parse_script(src_name: impl AsRef<str>, source: &str) -> Result<Script, C
     }
 }
 
-/// Parse and run [`check_script`] (duplicates + path / script-kind rules).
+/// Parse and run [`check_script`] (early checks, resolver, minimal typecheck).
 pub fn parse_and_analyze(
     src_name: impl AsRef<str>,
     source: &str,

@@ -6,5 +6,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinKind {
     TaSma,
-    // Expand: TaEma, Plot, InputInt, …
+    /// `input.int(default)` surface call (lowering may also record [`crate::hir::script::HirInputDecl`]).
+    InputInt,
 }

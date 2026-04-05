@@ -18,6 +18,7 @@
 //! Node storage uses [`crate::session::CompilerSession::arena`] (`bumpalo::Bump`) plus dense `Vec`s
 //! owned by a future builder; [`ids::HirId`] indexes those vectors.
 
+mod ast_lower;
 mod builtin;
 mod expr;
 mod ids;
@@ -29,6 +30,7 @@ mod stmt;
 mod symbols;
 mod ty;
 
+pub use ast_lower::{lower_script_to_hir, AstHirLowerer, HirLowerError};
 pub use builtin::BuiltinKind;
 pub use expr::HirExpr;
 pub use ids::{HirId, SymbolId};

@@ -3,7 +3,7 @@ strategy("Fixture", overlay = true, initial_capital = 10000)
 
 import user/lib as L
 
-var float len = 14
+var int len = 14
 signal = ta.sma(close, len)
 
 if signal > close {
