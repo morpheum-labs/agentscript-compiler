@@ -1,0 +1,17 @@
+//@version=6
+strategy("Fixture", overlay = true, initial_capital = 10000)
+
+import user/lib as L
+
+var float len = 14
+signal = ta.sma(close, len)
+
+if signal > close {
+    x = 1
+} else {
+    x = 2
+}
+
+for i = 0 to 3 by 1 {
+    y = i
+}

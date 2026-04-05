@@ -1,6 +1,7 @@
 use agentscript_compiler::{
-    parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, ForInPattern, ImportDecl,
-    Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarQualifier,
+    parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody,
+    ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type,
+    UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -559,6 +560,34 @@ z = +1
         panic!("expected unary +: {value:#?}");
     };
     assert_eq!(**expr, Expr::Int(1));
+}
+
+#[test]
+fn array_from_call() {
+    let src = r#"indicator("x")
+a = array.from(1, 2, 3)
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    let Expr::Call {
+        callee,
+        type_args,
+        args,
+    } = value
+    else {
+        panic!("expected call: {value:#?}");
+    };
+    assert_eq!(
+        **callee,
+        Expr::IdentPath(vec!["array".into(), "from".into()])
+    );
+    assert!(type_args.is_none());
+    assert_eq!(args.len(), 3);
+    assert_eq!(args[0], (None, Expr::Int(1)));
+    assert_eq!(args[1], (None, Expr::Int(2)));
+    assert_eq!(args[2], (None, Expr::Int(3)));
 }
 
 #[test]
@@ -1181,4 +1210,20 @@ fn dotted_ident_stays_ident_path() {
         *value,
         Expr::IdentPath(vec!["syminfo".into(), "ticker".into()])
     );
+}
+
+#[test]
+fn fixture_minimal_strategy_parse_and_analyze() {
+    let src = include_str!("fixtures/minimal_strategy.pine");
+    let s = parse_and_analyze("minimal_strategy.pine", src).expect("fixture parse + analyze");
+    assert_eq!(s.version, Some(6));
+    assert!(matches!(
+        &s.items[0],
+        Item::ScriptDecl(ScriptDeclaration {
+            kind: ScriptKind::Strategy,
+            ..
+        })
+    ));
+    assert!(matches!(&s.items[1], Item::Import(_)));
+    assert!(s.items.len() >= 5);
 }

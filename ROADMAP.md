@@ -77,9 +77,9 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST (current)
 
-- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
+- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for a **compiler-oriented EBNF** (plus product context). **Implementation vs that EBNF** is tracked in [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md) (divergences include version tokens and many QAS/Pine constructs not duplicated in the short EBNF block).
 - [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
-- [ ] **Close the gap vs `spec/agentscripts-v1.md`:** matrix / **map literals** (Pine typically uses `matrix.new` / `map.new`), Pine-indent bodies vs QAS braces, and full EBNF audit when `spec/agentscripts-v1.md` is in-tree. **`enum` / `type`:** braced forms + `export` are implemented; unbraced TV-style bodies still out of scope.
+- [ ] **Close remaining gaps vs `spec/agentscripts-v1.md`:** align the spec’s lexical `VERSION_DECL` and program-structure EBNF with what we parse (`5`/`6`, `import`/`export`, `enum`/`type`, extended control flow, etc.); Pine-indent bodies vs QAS braces; finalize **`map.from`** (spec line is a stub) if required. **`enum` / `type`:** braced forms + `export` are implemented; unbraced TV-style bodies still out of scope.
 - [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
 
 ### Pine v6 parity vs bundled docs (`pinescriptv6/`)
