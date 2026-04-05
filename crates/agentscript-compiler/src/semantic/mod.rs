@@ -10,8 +10,8 @@ mod builtins;
 pub mod passes;
 
 pub use passes::{
-    analyze_script, default_passes, resolve_script, typecheck_script, BreakContinuePass, CompilerPass,
-    EarlyAnalyzePass, ResolverPass, TypecheckPass,
+    analyze_script, default_passes, lexical_resolve_script, resolve_script, typecheck_script,
+    BreakContinuePass, CompilerPass, EarlyAnalyzePass, LexicalResolvePass, ResolverPass, TypecheckPass,
 };
 
 /// Semantic analysis failed (spans exist on the AST; richer reporting can use them later).

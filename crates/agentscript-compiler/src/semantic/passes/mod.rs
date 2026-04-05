@@ -6,11 +6,13 @@ use crate::session::CompilerSession;
 use super::AnalyzeError;
 
 mod early;
+mod lexical;
 mod loops;
 mod resolver;
 mod typecheck;
 
 pub use early::analyze_script;
+pub use lexical::lexical_resolve_script;
 pub use resolver::resolve_script;
 pub use typecheck::typecheck_script;
 
@@ -59,6 +61,19 @@ impl CompilerPass for ResolverPass {
     }
 }
 
+/// Unqualified identifier binding (locals, hoisted fns, imports, builtins).
+pub struct LexicalResolvePass;
+
+impl CompilerPass for LexicalResolvePass {
+    fn name(&self) -> &'static str {
+        "lexical_resolve"
+    }
+
+    fn run(&mut self, _session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        lexical::lexical_resolve_script(script)
+    }
+}
+
 /// Minimal typecheck (`series` vs `simple`, builtins, scoping).
 pub struct TypecheckPass;
 
@@ -78,6 +93,7 @@ pub fn default_passes() -> Vec<Box<dyn CompilerPass>> {
         Box::new(EarlyAnalyzePass),
         Box::new(BreakContinuePass),
         Box::new(ResolverPass),
+        Box::new(LexicalResolvePass),
         Box::new(TypecheckPass),
     ]
 }

@@ -51,3 +51,17 @@ pub fn builtin_namespace_roots() -> HashSet<&'static str> {
     .into_iter()
     .collect()
 }
+
+/// Single-segment identifiers that resolve without a local binding (matches typecheck globals).
+#[must_use]
+pub fn is_unqualified_builtin_ident(name: &str) -> bool {
+    matches!(
+        name,
+        "close" | "open" | "high" | "low" | "hl2" | "hlc3" | "ohlc4" | "hlcc4" | "volume"
+            | "bar_index"
+            | "time"
+            | "timenow"
+            | "true"
+            | "false"
+    )
+}

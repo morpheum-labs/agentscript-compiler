@@ -11,60 +11,69 @@
 | Semantic domain | Scope | Progress | Notes |
 |-----------------|-------|----------|--------|
 | **Lexical structure** | Whitespace, `//` / `/* */` comments, line structure | **Done** (parse) | Trivia handled in normal parse + leading scan. |
-| **`//@version=` / `// @agentscript=`** | Which Pine / QAS header numbers are allowed | **Partial** | `//@version=` restricted to **5 and 6** (`version_policy.rs`, `leading_scan.rs`, `lex.rs`). `// @agentscript=` ≥ 1. No semantic *differences* between v5 vs v6 bodies yet. |
-| **Script kind** | `indicator` / `strategy` / `library` declarations | **Partial** | Kind and args stored; [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) rejects `strategy.*` outside `strategy()` scripts. |
+| **`//@version=` / `// @agentscript=`** | Which Pine / QAS header numbers are allowed | **Partial** | `//@version=` restricted to **5 and 6** ([`version_policy.rs`](crates/agentscript-compiler/src/frontend/parser/version_policy.rs), [`leading_scan.rs`](crates/agentscript-compiler/src/frontend/parser/leading_scan.rs), [`lex.rs`](crates/agentscript-compiler/src/frontend/parser/lex.rs)). `// @agentscript=` ≥ 1. No semantic *differences* between v5 vs v6 bodies yet. |
+| **Script kind** | `indicator` / `strategy` / `library` declarations | **Partial** | Kind and args stored; [`resolve_script`](crates/agentscript-compiler/src/semantic/passes/resolver.rs) rejects `strategy.*` outside `strategy()` scripts. |
 | **Imports / exports** | `import … as`, `export` fn/var | **AST only** | No module graph, no symbol linking. |
-| **Array literals** | `[a, b]`, `[]` | **AST only** | `Expr::Array`; element types not checked. |
-| **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic/early.rs); no spans on AST yet. |
-| **Scopes & name resolution** | Bindings, shadowing, qualified names | **Partial** | Dotted roots: [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) + [`builtins`](crates/agentscript-compiler/src/semantic/builtins.rs); no lexical scope or user-type resolution yet. |
+| **Array literals** | `[a, b]`, `[]` | **AST only** | [`ExprKind::Array`](crates/agentscript-compiler/src/frontend/ast/expr.rs); element types not checked. |
+| **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic/passes/early.rs). Many AST nodes carry [`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs); semantic errors are still mostly strings ([`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs)). |
+| **Scopes & name resolution** | Bindings, shadowing, qualified names | **Partial** | Dotted roots: [`resolve_script`](crates/agentscript-compiler/src/semantic/passes/resolver.rs) + [`builtins`](crates/agentscript-compiler/src/semantic/builtins.rs). Minimal typecheck maintains scopes for a growing subset ([`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs)); full lexical + UDT resolution still open. |
 | **User functions** | `f name(params) => …` / block body, params, defaults | **AST only** | No recursion/arity/type checking. |
 | **Variable qualifiers** | `var`, `varip`, `const`, `input`, `simple`, `series` | **AST only** | No Pine-style persistence or series/simple rules. |
 | **Assignments** | `=` first assign vs `:=` reassignment | **AST only** | No “assign before declare” or single-assignment checks. |
 | **Types (surface)** | `int` / `float` / `bool` / `string` / `color`, **`float[]`**-style arrays, `array<>` / `matrix<>` / `map<,>`, drawing types | **AST only** | Type syntax parsed; not checked or enforced. |
-| **Type inference & checking** | `series` vs `simple`, call compatibility, generics | **None** | Planned Phase 1. |
-| **Historical reference** | `expr[i]`, validity of offset, series history | **None** | Parsed as `Expr::Index`; no semantics. |
+| **Type inference & checking** | `series` vs `simple`, call compatibility, generics | **Partial** | [`typecheck_script`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs) + default pipeline [`TypecheckPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs). Covers a **minimal** surface (builtins like `close` / `ta.sma` / `plot` / `request.security`, inputs, top-level flow); not a full Pine type system. |
+| **Historical reference** | `expr[i]`, validity of offset, series history | **None** | Parsed as [`ExprKind::Index`](crates/agentscript-compiler/src/frontend/ast/expr.rs); no semantics. |
 | **Operators** | Unary/binary, precedence, `==` vs `=` | **AST only** | No bool strictness or Na/na propagation rules. |
 | **Ternary** | `cond ? a : b` | **AST only** | No lazy/short-circuit semantics in IR. |
 | **Calls** | Positional / named args, `matrix.new<float>(…)` | **AST only** | No builtin resolution or signatures. |
 | **Member / method syntax** | `a.b`, `close.sma(20)` | **AST only** | Desugared to `Member` / `Call`; no method tables. |
-| **Control flow** | `if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i,v] in`**, `switch` (with or **without** scrutinee), `while`, `break`, `continue`, blocks | **Partial** | Parsed; `break`/`continue` inside `for`/`for…in`/`while` ([`loops`](crates/agentscript-compiler/src/semantic/loops.rs)); no reachability or Pine loop limits. |
+| **Control flow** | `if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i,v] in`**, `switch` (with or **without** scrutinee), `while`, `break`, `continue`, blocks | **Partial** | Parsed; `break`/`continue` inside `for`/`for…in`/`while` ([`loops.rs`](crates/agentscript-compiler/src/semantic/passes/loops.rs)); no reachability or Pine loop limits. |
 | **Bar execution model** | Once per bar, `varip`, bar states | **None** | Requires IR + runtime + host. |
-| **`ta.*` builtins** | Indicators, `crossover`, etc. | **None** | Registry + host/intrinsics (Phase 1–2). |
+| **`ta.*` builtins** | Indicators, `crossover`, etc. | **Partial** | `ta.sma` recognized in minimal typecheck and lowered to HIR ([`BuiltinKind::TaSma`](crates/agentscript-compiler/src/hir/builtin.rs)). Rest of `ta.*` still **None** until registry + host. |
 | **`strategy.*` builtins** | Orders, position, PnL, trade stats | **None** | Lowered to host imports; host implements semantics. |
 | **`math.*` builtins** | Scalar math, rounding policy | **None** | |
 | **`syminfo.*` / `timeframe.*`** | Symbol / timeframe metadata | **None** | Host-fed constants/imports. |
-| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **None** | Roadmap Phase 1–3; typing + ABI + host. |
+| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **Partial** | First-class HIR node [`SecurityCall`](crates/agentscript-compiler/src/hir/security.rs). [`ast_lower`](crates/agentscript-compiler/src/hir/ast_lower.rs) supports a **tiny** 3-arg literal subset; full signatures, `gaps` / `lookahead` / dynamic rules, and host ABI remain Phase 1–3. |
 | **`request.financial`** | Financial series by id/period | **None** | Roadmap Phase 1–3. |
 | **Other `request.*`** | e.g. economic, dividend, … | **None** | Same pattern as security/financial when prioritized. |
 | **`mcp.*` builtins** | `call`, `discover`, `emit`, quotas | **None** | QAS-specific; host MCP proxy. |
-| **`plot.*` / drawing / `color.*`** | Visualization side effects | **None** | May be no-op in WASM or side-channel metadata. |
-| **`input.*` factory fns** | `input.int`, `input.float`, … | **None** | `input` *qualifier* parsed; factories not special-cased. |
+| **`plot.*` / drawing / `color.*`** | Visualization side effects | **Partial** | Top-level `plot(expr)` lowered to [`HirStmt::Plot`](crates/agentscript-compiler/src/hir/stmt.rs) in the same tiny slice as `ast_lower`. Drawing / `plotshape` / `color.*` still **None** for semantics. |
+| **`input.*` factory fns** | `input.int`, `input.float`, … | **Partial** | `input.int` literal default in assign / `input int` decl handled in HIR lowering + typecheck subset ([`BuiltinKind::InputInt`](crates/agentscript-compiler/src/hir/builtin.rs)). Other `input.*` factories not modeled. |
 | **Side effects & order** | Order of `strategy.*` / `mcp.*` vs pure exprs | **None** | Needs effect typing + schedule in IR. |
 | **Constant folding** | Compile-time evaluation of literals | **None** | Optional optimization after typecheck. |
-| **IR & lowering** | Bar schedule, series nodes, calls → ops | **None** | Phase 2. |
+| **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** layout and spec: [`spec/hir.md`](spec/hir.md), [`crates/agentscript-compiler/src/hir/`](crates/agentscript-compiler/src/hir/). **AST → `HirScript`:** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) for indicator + `input.int` + `close` + `ta.sma` + `request.security` + `plot` (golden `insta` snapshot). No bar scheduler, no WASM lowering yet. |
 | **WASM codegen** | `wasm32` module shape | **None** | Phase 2. |
 | **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **None** | Spec + Aether/MWVM alignment; contract tests. |
 | **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
 | **Runtime / host (Aether)** | Data feeds, fills, `request.*`, MCP | **None** | Outside this crate; semantics live here for execution. |
-| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette**. Semantic: plain [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) until spans exist. |
+| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette** with spans. Semantic: [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) (string messages); attaching `Span` to every semantic diagnostic is still open. |
 
 ## Current status
 
 **Done today**
 
-- [x] **Parse → AST** (Chumsky): headers (`//@version=` **5 or 6**, optional `// @agentscript=`), `import` / `export`, script declarations (`indicator` / `strategy` / `library`), **control flow** (`if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i, v] in`**, **`switch` with optional scrutinee** `{ … }`, `while`, **`break` / `continue`**), **blocks** `{ … }`, **user functions** Pine-style `name(…) =>` / `{ … }` or QAS `f name(…)`, **`method name(…) =>`**, **export** of Pine-style or `f` functions, **qualified and typed vars** (`var` / `varip` / `const` / `input` / `simple` / `series`, optional types, **`float[]`**-style array types), assignments `=` / `:=` / **`+=` …**, **`[a, b] =` tuple destructuring**, **Pine `if` expression** `if cond a else b` (incl. `else if` via nested `IfExpr`), **ternary** `? :`, **indexing** `expr[i]`, **array literals** `[a, b]`, **dotted calls** and **method-style** `base.field(…)`, generics on calls (e.g. `matrix.new<float>`), numeric literals with **scientific notation**, optional trailing **`;`**, expressions and comments. See `crates/agentscript-compiler/src/parser/script.rs`, `expr.rs`, and `assign_type.rs`.
-- [x] **Lightweight semantic passes**: [`check_script`](crates/agentscript-compiler/src/semantic/mod.rs) runs [`analyze_script`](crates/agentscript-compiler/src/semantic/early.rs) (duplicates), [`check_break_continue`](crates/agentscript-compiler/src/semantic/loops.rs), and [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) (dotted roots + `strategy.*` vs script kind). [`parse_and_analyze`](crates/agentscript-compiler/src/lib.rs) chains parse + `check_script`.
-- [x] **Diagnostics**: miette-backed `CompileError` with source spans (parse); analyze messages are textual until the AST carries spans.
+- [x] **Parse → AST** (Chumsky): headers (`//@version=` **5 or 6**, optional `// @agentscript=`), `import` / `export`, script declarations (`indicator` / `strategy` / `library`), **control flow** (`if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i, v] in`**, **`switch` with optional scrutinee** `{ … }`, `while`, **`break` / `continue`**), **blocks** `{ … }`, **user functions** Pine-style `name(…) =>` / `{ … }` or QAS `f name(…)`, **`method name(…) =>`**, **export** of Pine-style or `f` functions, **qualified and typed vars** (`var` / `varip` / `const` / `input` / `simple` / `series`, optional types, **`float[]`**-style array types), assignments `=` / `:=` / **`+=` …**, **`[a, b] =` tuple destructuring**, **Pine `if` expression** `if cond a else b` (incl. `else if` via nested `IfExpr`), **ternary** `? :`, **indexing** `expr[i]`, **array literals** `[a, b]`, **dotted calls** and **method-style** `base.field(…)`, generics on calls (e.g. `matrix.new<float>`), numeric literals with **scientific notation**, optional trailing **`;`**, expressions and comments. See `crates/agentscript-compiler/src/frontend/parser/script.rs`, `expr.rs`, and `assign_type.rs`.
+- [x] **Semantic passes** ([`default_passes`](crates/agentscript-compiler/src/semantic/passes/mod.rs)): early analyze (duplicates), `break`/`continue` placement, resolver (dotted roots + `strategy.*` vs script kind), **minimal typecheck** ([`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs)). [`check_script`](crates/agentscript-compiler/src/semantic/mod.rs) / [`parse_and_analyze`](crates/agentscript-compiler/src/lib.rs) run this pipeline.
+- [x] **HIR crate** ([`hir/mod.rs`](crates/agentscript-compiler/src/hir/mod.rs)): `HirScript`, `HirExpr` arena (`exprs` + `HirId`), `SymbolTable`, `SecurityCall`, etc.; design in [`spec/hir.md`](spec/hir.md).
+- [x] **AST → HIR (first slice):** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs), [`AstHirLowerer`](crates/agentscript-compiler/src/hir/ast_lower.rs) + [`LowerToHir`](crates/agentscript-compiler/src/hir/lowering.rs); golden snapshot `crates/agentscript-compiler/src/hir/snapshots/`.
+- [x] **Session hook**: [`CompilerSession`](crates/agentscript-compiler/src/session.rs) with `bumpalo::Bump` (ready for arena-backed IR later).
+- [x] **Diagnostics**: miette-backed `CompileError` with spans (parse); semantic [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) is still mostly free text.
 - [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), run parse + analyze, print debug `Script` on success.
-- [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`.
+- [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`; HIR golden in-crate.
 
-**Not started**
+**Outstanding work (near term)**
 
-- [ ] Typechecker (scopes, builtins, strategy vs library rules).
-- [ ] **`request.security` / `request.financial`** end-to-end: Pine v6-aligned typing and lowering, guest ABI imports, and Aether/MWVM host that serves aligned foreign series (and financial fields where applicable).
-- [ ] IR and lowering.
-- [ ] Codegen to **`wasm32-unknown-unknown`** (or agreed target triple).
-- [ ] **Guest ABI** alignment with Aether (`aether-common` / ABI doc): exports, calling convention, host imports for data and backtest hooks.
+- [ ] **Widen HIR lowering** in step with typecheck: more statements/expressions, `request.security` args (gaps, lookahead, overloads), more builtins, user functions when typed.
+- [ ] **Wire HIR into the driver**: optional `CompilerPass` or session field so consumers get `HirScript` after the same pipeline (not only `lower_script_to_hir` by hand).
+- [ ] **Semantic diagnostics with spans** for imports, decls, and type errors on the hot path ([`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs) already on many nodes).
+- [ ] **Full** type system + symbol tables (Pine/QAS parity, generics, library linking).
+- [ ] **`request.security` / `request.financial`** end-to-end: v6-aligned typing, WASM/host imports, Aether/MWVM fixtures.
+- [ ] **Codegen** to **`wasm32-unknown-unknown`** (or agreed triple) + **guest ABI** (`aether-common` / ABI doc).
+
+**Not started (still accurate)**
+
+- [ ] WASM codegen and loadable modules.
+- [ ] **Guest ABI** fully implemented in emitted WASM and verified against Aether/MWVM smoke tests.
 
 ## Downstream alignment
 
@@ -75,13 +84,24 @@
 
 Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
-## Phase 0 — Parser & AST (current)
+## Phase 0 — Parser & AST
 
-- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for the **compiler-oriented EBNF** (§§1–13 aligned with the reference parser; plus surrounding product context). Residual spec↔parser notes: [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md).
-- [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
-- [x] **Spec EBNF alignment (§§1–13):** `//@version=` **5 or 6**, optional `// @agentscript=`, program **`item`** list (`import` / `export` / script decl / `enum` / `type` / functions / statements), extended **`for` / `while` / `switch`**, compound assigns, tuple assign, bracket + `array.from` collections, Pine + QAS function forms. **`enum` / `type`:** braced + `export` reflected in spec; unbraced TV-style bodies still out of scope.
-- [ ] **Remaining Phase 0 spec/grammar work:** Pine-indent bodies vs QAS braces; finalize **`map.from`** in §11 when Pine reference + tests are ready; optional ANTLR/Tree-sitter grammar export; corpus vs real `.pine` / `.qas` for parity.
-- [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
+**Dialect in scope:** **braced** blocks (`{ … }`), QAS `f` / Pine-style `name(…) =>`, and the constructs listed below. **Not** required for Phase 0 “done”: TradingView **indent-only** bodies, unbraced `enum`/`type`, or finalized **`map.from`** (see [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md)).
+
+### Exit criteria (aligned with success table below)
+
+- [x] Parser + AST cover the **§§1–13 EBNF** in [`spec/agentscripts-v1.md`](spec/agentscripts-v1.md) for the **braced** grammar, with known gaps documented in [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md).
+- [x] **`cargo test -p agentscript-compiler`** green; regression coverage in [`crates/agentscript-compiler/tests/parse_smoke.rs`](crates/agentscript-compiler/tests/parse_smoke.rs) (and related tests).
+- [x] Parse failures use **miette**-style diagnostics where the pipeline reports [`CompileError`](crates/agentscript-compiler/src/error.rs).
+- [ ] **Stretch (still Phase 0–friendly):** corpus vs real `.pine` / `.qas`, fuzz, or extra edge-case tests; optional grammar export (Tree-sitter / ANTLR).
+
+### Checklist
+
+- [x] Chumsky grammar for the **core QAS surface**: expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` **5 or 6**, comments, **`break` / `continue`**, imports/exports, `enum` / `type`, user functions (Pine + QAS shapes), extended **`for` / `while` / `switch`**, compound and tuple assign, **`array.from`** / **`matrix.new` / `map.new`** call forms. Implementation: [`crates/agentscript-compiler/src/frontend/parser/`](crates/agentscript-compiler/src/frontend/parser/).
+- [x] AST types for what the parser accepts: [`crates/agentscript-compiler/src/frontend/ast/`](crates/agentscript-compiler/src/frontend/ast/).
+- [x] **Spec EBNF alignment (§§1–13)** with intentional exclusions: unbraced TV **`enum` / `type`** bodies out of scope; **`map.from`** TBD in §11 until reference + tests lock it.
+- [ ] **Remaining grammar/spec work (optional tracks):** Pine-indent bodies vs braces; finalize **`map.from`** in §11; grammar export for external tooling.
+- [ ] **Test and UX polish:** larger fixtures, corpus samples, fuzz, sharper errors for common mistakes.
 
 ### Pine v6 parity vs bundled docs (`pinescriptv6/`)
 
@@ -90,19 +110,19 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 | Area | TV v6 (`pinescriptv6/` paths) | In roadmap semantics table | Parser / AST gap (compile path) |
 |------|------------------------------|----------------------------|--------------------------------|
 | **Function declaration shape** | `name(params) =>` / block; `export name(...) =>`; optional QAS `f name(...)` ([`reference/keywords.md`](pinescriptv6/reference/keywords.md) `export`) | — | **Parser:** Pine form `name(...) =>` / `{` and `export` + same; **`f` still supported.** Semantics / UDT `this` still missing. |
-| **`method` declarations** | `method foo(type id, ...) =>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `method`) | — | **Parser:** `method` + name + params + body; [`FnDecl.is_method`](crates/agentscript-compiler/src/ast.rs). No typecheck for first-param dispatch yet. |
-| **`type` (UDT)** | Composite types, `Type.new()`, field defaults ([`keywords.md`](pinescriptv6/reference/keywords.md) `type`, [`reference/types.md`](pinescriptv6/reference/types.md)) | Types (surface) partial | **Parser:** braced `type name { qual? ty field = expr; ... }`, `export type` ([`Item::TypeDef`](crates/agentscript-compiler/src/ast.rs)); no `Type.new` / method semantics yet. |
-| **`enum`** | `enum name` / fields / `export enum` ([`keywords.md`](pinescriptv6/reference/keywords.md) `enum`) | — | **Parser:** braced `enum name { id = expr; ... }`, `export enum`; **`Type::Named`** for `map<symbols, float>` ([`ast.rs`](crates/agentscript-compiler/src/ast.rs)). |
-| **`if` as expression** | `x = if cond a else b`, chained `else if` ([`keywords.md`](pinescriptv6/reference/keywords.md) `if`) | Ternary + **IfExpr** | **Parser:** [`Expr::IfExpr`](crates/agentscript-compiler/src/ast.rs); no type/lazy semantics yet. |
-| **`switch` forms** | Expression switch; **no-scrutinee** `switch` + `cond =>` arms ([`keywords.md`](pinescriptv6/reference/keywords.md) `switch`) | Control flow (partial) | **Parser:** [`Stmt::Switch`](crates/agentscript-compiler/src/ast.rs) with `scrutinee: Option<Expr>`; braced body only (no indent-only TV style). |
-| **`for … in` / `for [i, v] in`** | Arrays, matrices as iterables ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in`) | — | **Parser:** [`Stmt::ForIn`](crates/agentscript-compiler/src/ast.rs) + [`ForInPattern`](crates/agentscript-compiler/src/ast.rs). |
-| **Compound assignments** | `+=`, `-=`, `*=`, `/=`, `%=` ([`reference/operators.md`](pinescriptv6/reference/operators.md)) | Assignments AST only | **Parser:** all five compound ops + `=` / `:=` ([`AssignOp`](crates/agentscript-compiler/src/ast.rs)). No lowering to `x = x + y` yet. |
-| **Tuple / multi-assign** | `[a, b, c] = expr` ([`reference/types.md`](pinescriptv6/reference/types.md) `simple` example) | — | **Parser:** [`Stmt::TupleAssign`](crates/agentscript-compiler/src/ast.rs). |
-| **Type syntax variants** | `float[]` style vs `array<float>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in` examples) | Types (surface) | **Parser:** `int[]` / `float[]` / … in [`assign_type.rs`](crates/agentscript-compiler/src/parser/assign_type.rs). |
+| **`method` declarations** | `method foo(type id, ...) =>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `method`) | — | **Parser:** `method` + name + params + body; [`FnDecl.is_method`](crates/agentscript-compiler/src/frontend/ast/decl.rs). No typecheck for first-param dispatch yet. |
+| **`type` (UDT)** | Composite types, `Type.new()`, field defaults ([`keywords.md`](pinescriptv6/reference/keywords.md) `type`, [`reference/types.md`](pinescriptv6/reference/types.md)) | Types (surface) partial | **Parser:** braced `type name { qual? ty field = expr; ... }`, `export type` ([`Item::TypeDef`](crates/agentscript-compiler/src/frontend/ast/decl.rs)); no `Type.new` / method semantics yet. |
+| **`enum`** | `enum name` / fields / `export enum` ([`keywords.md`](pinescriptv6/reference/keywords.md) `enum`) | — | **Parser:** braced `enum name { id = expr; ... }`, `export enum`; **`Type::Named`** for `map<symbols, float>` ([`types.rs`](crates/agentscript-compiler/src/frontend/ast/types.rs)). |
+| **`if` as expression** | `x = if cond a else b`, chained `else if` ([`keywords.md`](pinescriptv6/reference/keywords.md) `if`) | Ternary + **IfExpr** | **Parser:** [`ExprKind::IfExpr`](crates/agentscript-compiler/src/frontend/ast/expr.rs); no type/lazy semantics yet. |
+| **`switch` forms** | Expression switch; **no-scrutinee** `switch` + `cond =>` arms ([`keywords.md`](pinescriptv6/reference/keywords.md) `switch`) | Control flow (partial) | **Parser:** [`StmtKind::Switch`](crates/agentscript-compiler/src/frontend/ast/stmt.rs) with `scrutinee: Option<Expr>`; braced body only (no indent-only TV style). |
+| **`for … in` / `for [i, v] in`** | Arrays, matrices as iterables ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in`) | — | **Parser:** [`StmtKind::ForIn`](crates/agentscript-compiler/src/frontend/ast/stmt.rs) + [`ForInPattern`](crates/agentscript-compiler/src/frontend/ast/stmt.rs). |
+| **Compound assignments** | `+=`, `-=`, `*=`, `/=`, `%=` ([`reference/operators.md`](pinescriptv6/reference/operators.md)) | Assignments AST only | **Parser:** all five compound ops + `=` / `:=` ([`AssignOp`](crates/agentscript-compiler/src/frontend/ast/stmt.rs)). No lowering to `x = x + y` yet. |
+| **Tuple / multi-assign** | `[a, b, c] = expr` ([`reference/types.md`](pinescriptv6/reference/types.md) `simple` example) | — | **Parser:** [`StmtKind::TupleAssign`](crates/agentscript-compiler/src/frontend/ast/stmt.rs). |
+| **Type syntax variants** | `float[]` style vs `array<float>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in` examples) | Types (surface) | **Parser:** `int[]` / `float[]` / … in [`assign_type.rs`](crates/agentscript-compiler/src/frontend/parser/assign_type.rs). |
 | **`footprint` type** | `request.footprint()` ([`reference/types.md`](pinescriptv6/reference/types.md) `footprint`) | — | **Missing:** type keyword + later `request.*` wiring. |
 | **Compiler annotations** | `//@description`, `//@function`, `//@param`, `//@field`, `//@enum`, `//@strategy_alert_message`, etc. ([`reference/annotations.md`](pinescriptv6/reference/annotations.md)) | — | **Parse:** treat as comments (ok today) or preserve for library docs / tooling. |
 | **Indentation-based blocks** | TV allows indent bodies for `while`/`if` in some styles; we use **`{ … }`** only | — | **Dialect:** many TV examples use braces in v6 docs; confirm against `limitations.md` / style. |
-| **`break` / `continue`** | Loop control ([`keywords.md`](pinescriptv6/reference/keywords.md) `while` remarks) | Control flow (partial) | **Parser:** `break` / `continue`; **semantic:** must appear inside `for` / `while` ([`loops.rs`](crates/agentscript-compiler/src/semantic/loops.rs)). |
+| **`break` / `continue`** | Loop control ([`keywords.md`](pinescriptv6/reference/keywords.md) `while` remarks) | Control flow (partial) | **Parser:** `break` / `continue`; **semantic:** must appear inside `for` / `while` ([`loops.rs`](crates/agentscript-compiler/src/semantic/passes/loops.rs)). |
 | **Built-in namespaces** | `ta`, `strategy`, `request` (+ `seed`, `currency_rate`, `footprint`, …), `math`, `str`, `array`, `matrix`, `map`, drawing APIs ([`LLM_MANIFEST.md`](pinescriptv6/LLM_MANIFEST.md), `reference/functions/*`) | Per-namespace rows (None) | **Semantics + ABI**, not parser-only; signatures live in `reference/functions/*.md`. |
 | **Visual / plot API** | `plot*`, `line`, `label`, `box`, `table`, fills, etc. ([`visuals/*.md`](pinescriptv6/visuals)) | plot.* / drawing row | Same: mostly **stdlib + host**, not syntax. |
 | **Execution model** | `barstate`, `var`, `varip`, history ([`concepts/execution_model.md`](pinescriptv6/concepts/execution_model.md), [`pine_script_execution_model.md`](pinescriptv6/pine_script_execution_model.md)) | Bar execution model | **IR + runtime**, Phase 2+. |
@@ -115,11 +135,13 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 
 ## Phase 1 — Semantic analysis
 
-- [x] **Early checks (no types yet):** duplicate top-level function names, duplicate `import` aliases, duplicate parameters per `f` — [`early.rs`](crates/agentscript-compiler/src/semantic/early.rs).
-- [x] **Path glue (no full symbol table):** known builtin namespace roots + import aliases; unknown dotted roots rejected; `strategy.*` only in `strategy()` — [`resolve.rs`](crates/agentscript-compiler/src/semantic/resolve.rs).
-- [x] **Loop control placement:** `break` / `continue` only inside `for` / `while` — [`loops.rs`](crates/agentscript-compiler/src/semantic/loops.rs).
-- [ ] Symbol tables and lexical name resolution (locals, params, shadowing).
-- [ ] Type system for core expressions (numbers, series, calls).
+- [x] **Early checks (no types yet):** duplicate top-level function names, duplicate `import` aliases, duplicate parameters per `f` — [`early.rs`](crates/agentscript-compiler/src/semantic/passes/early.rs).
+- [x] **Path glue (no full symbol table):** known builtin namespace roots + import aliases; unknown dotted roots rejected; `strategy.*` only in `strategy()` — [`resolver.rs`](crates/agentscript-compiler/src/semantic/passes/resolver.rs).
+- [x] **Loop control placement:** `break` / `continue` only inside `for` / `while` — [`loops.rs`](crates/agentscript-compiler/src/semantic/passes/loops.rs).
+- [x] **Minimal typecheck (subset):** [`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs) + [`TypecheckPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs) (not full Pine typing).
+- [x] **First HIR lowering slice:** [`ast_lower.rs`](crates/agentscript-compiler/src/hir/ast_lower.rs) + golden test (indicator + inputs + `ta.sma` + `request.security` + `plot`).
+- [ ] Symbol tables and lexical name resolution (locals, params, shadowing) **to completion**.
+- [ ] Type system for **all** core expressions (numbers, series, calls) and script kinds.
 - [ ] Further script-kind rules (`library` exports-only, etc., as you align with Pine/QAS).
 - [ ] **`request.security`:** Pine v6-aligned signatures and parameter typing (symbol, timeframe, expression, `gaps`, `lookahead`, `ignore_invalid_symbol`, related overloads); result type as **series** aligned with the expression’s type; **dynamic** first-argument rules (where TV allows `request.*` inside loops/conditionals—match or document QAS deltas); errors for invalid combinations.
 - [ ] **`request.financial`:** Pine v6-aligned signatures and field typing (symbol, financial id, period, `ignore_invalid_symbol`, related forms); result typing consistent with TV’s financial series rules; same **dynamic** / scope constraints as other `request.*` where QAS aligns.
@@ -127,8 +149,9 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 
 ## Phase 2 — IR & codegen
 
-- [ ] Internal IR suited for lowering and optimization passes.
-- [ ] **`request.security` lowering:** lower to documented **host imports** (resolve symbol/timeframe, merge bars, return OHLC/series slice or per-bar samples per ABI); specify **determinism** (feed + merge policy ⇒ stable results); optional **static request graph** in metadata for host prefetch.
+- [x] **HIR as internal IR (v0):** typed/normalized shapes under [`src/hir/`](crates/agentscript-compiler/src/hir/); AST lowering for a **small** language slice (see [`ast_lower.rs`](crates/agentscript-compiler/src/hir/ast_lower.rs)).
+- [ ] **HIR completeness:** cover the rest of the typed surface, optimizations, bar/series schedule if needed.
+- [ ] **`request.security` lowering to host:** beyond the HIR node — documented **host imports** (resolve symbol/timeframe, merge bars, return OHLC/series slice or per-bar samples per ABI); **determinism** (feed + merge policy ⇒ stable results); optional **static request graph** in metadata for host prefetch.
 - [ ] **`request.financial` lowering:** lower to **host imports** that resolve symbol + financial id + period and return series aligned with the ABI; **determinism** and prefetch/metadata story consistent with `request.security`.
 - [ ] WASM emission (likely `wasm-encoder` / `wasmparser` validation, or another chosen stack).
 - [ ] **ABI contract** implemented in codegen (documented in-repo + mirrored types in Aether where useful).
@@ -145,8 +168,8 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 
 | Phase | Done when |
 |-------|-----------|
-| **0** | `cargo test` green; real-world-ish `.qas` samples parse with clear errors on invalid input. |
-| **1** | Ill-typed scripts fail fast with actionable diagnostics; well-typed scripts have a stable semantic model; **`request.security` and `request.financial` are typed** (signatures + series rules) or rejected explicitly. |
+| **0** | `cargo test` green; braced QAS / Pine-shaped sources in scope parse with clear errors on invalid input; intentional gaps documented in [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md). *(Corpus / fuzz is a stretch, not a gate.)* |
+| **1** | Ill-typed scripts fail fast with actionable diagnostics; well-typed scripts have a stable semantic model; **`request.security` and `request.financial` are typed** (signatures + series rules) or rejected explicitly. *(Progress: minimal typecheck + first HIR slice; full Phase 1 criteria not met yet.)* |
 | **2** | Valid strategies compile to **loadable** WASM that satisfies the **written guest ABI** (verified against Aether/MWVM smoke tests); **`request.security` / `request.financial` map to imports** and a stub host can run a minimal MTF + financial example. |
 | **3** | Builders can compile and run end-to-end without reading compiler internals. |
 
@@ -154,6 +177,6 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 
 | Piece | Location |
 |-------|----------|
-| Library API | `crates/agentscript-compiler` (`parse_script`, AST, errors) |
+| Library API | `crates/agentscript-compiler` (`parse_script`, AST, `check_script`, `lower_script_to_hir`, `HirScript`, errors) |
 | CLI | `crates/agentscript-compiler/src/main.rs` |
 | Pine v6 manual (reference corpus) | `pinescriptv6/` (`LLM_MANIFEST.md`, `reference/`, `concepts/`, `visuals/`) |

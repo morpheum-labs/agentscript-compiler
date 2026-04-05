@@ -370,7 +370,7 @@ MCP_NS      ::= 'mcp.'
 
 ### 2. Program Structure
 
-Reference parser: leading padding, then **zero or more** header lines (each `VERSION_LINE` or `AGENTSCRIPT_LINE`, with duplicates of the same kind rejected), then **items**. Headers may be interleaved; see `script_parser` in `parser/script.rs`.
+Reference parser: leading padding, then **zero or more** header lines (each `VERSION_LINE` or `AGENTSCRIPT_LINE`, with duplicates of the same kind rejected), then **items**. Headers may be interleaved; see `script_parser` in `crates/agentscript-compiler/src/frontend/parser/script.rs`.
 
 ```
 program         ::= WS* (VERSION_LINE WS* | AGENTSCRIPT_LINE WS*)* item* WS* EOF
