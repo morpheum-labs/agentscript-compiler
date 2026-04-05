@@ -331,26 +331,35 @@ This DSL gives you:
 **QAS v1 Full EBNF Grammar** (QuantAgent Script v1)  
 **Version 1.0 – April 2026**  
 **Target**: Compiler-ready (ANTLR4 / Tree-sitter / PEG / hand-written parser friendly)  
-**Base**: 100% syntax-compatible superset of Pine Script® v6  
-**Addition**: Only the `mcp.` namespace (agentic extensions)
+**Base**: Pine Script® v5/v6–aligned surface syntax (TradingView headers `//@version=` **5 or 6**)  
+**Addition**: QAS `f` / `method` forms, `mcp.` namespace, optional `// @agentscript=` header  
 
-This grammar is **complete** and self-contained for lexer + parser implementation. It exactly matches all Pine Script v6 syntax (including v6-specific features: dynamic `request.*`, polylines, chart.point, stricter bool handling, varip, footprint, etc.) + our QAS extensions.
+**Reference implementation:** [`agentscript-compiler`](../crates/agentscript-compiler/) (Chumsky). **Tracked divergences and parser notes:** [`qas-v1-parser-status.md`](qas-v1-parser-status.md).
+
+This block is the **authoritative EBNF for what the reference compiler accepts today**, extended with **planned** productions (plot/drawing statement shapes, unfinished `map.from`, etc.) marked in comments. It is **not** a claim of byte-for-byte parity with every TradingView edge case until corpus tests say so.
 
 ### 1. Lexical Rules (Lexer Tokens)
 
 ```
 WS          ::= [ \t\r\n]+
 COMMENT     ::= '//' ~[\r\n]* | '/*' .*? '*/'
-VERSION_DECL::= '//@version=' ('1' | '6')
+              // Line comments: special forms below are recognized before generic '//' comments.
+
+// Pine-compatible script version (only 5 and 6 are accepted by agentscript-compiler).
+VERSION_LINE ::= '//@version=' ('5' | '6') ~[\r\n]*
+
+// Optional QAS metadata; digits >= 1. Whitespace after '//' is required before '@'.
+AGENTSCRIPT_LINE ::= '//' [ \t]+ '@agentscript=' [0-9]+ ~[\r\n]*
 
 IDENTIFIER  ::= [a-zA-Z_][a-zA-Z0-9_]*
 NUMBER      ::= [0-9]+ ('.' [0-9]+)? ([eE][+-]?[0-9]+)?
 STRING      ::= '"' ( '\\"' | '\\n' | '\\t' | ~["\\] )* '"'
 COLOR_CONST ::= 'color.' [a-zA-Z_]+
-STRATEGY_CONST ::= 'strategy.' [a-zA-Z_]+   // all strategy.*, plot.*, etc.
+STRATEGY_CONST ::= 'strategy.' [a-zA-Z_]+   // strategy.* namespace roots in expressions
 
-KEYWORD     ::= 'if' | 'else' | 'for' | 'switch' | 'var' | 'varip' | 'const' | 'input' | 'simple' | 'series'
-               | 'indicator' | 'strategy' | 'library' | 'true' | 'false' | 'na'
+KEYWORD     ::= 'if' | 'else' | 'for' | 'while' | 'switch' | 'var' | 'varip' | 'const' | 'input' | 'simple' | 'series'
+               | 'indicator' | 'strategy' | 'library' | 'import' | 'export' | 'enum' | 'type' | 'method' | 'break' | 'continue'
+               | 'true' | 'false' | 'na' | 'f'
 
 BUILTIN_NS  ::= 'ta.' | 'math.' | 'strategy.' | 'request.' | 'array.' | 'matrix.' | 'map.' | 'str.' 
                | 'input.' | 'syminfo.' | 'timeframe.' | 'barstate.' | 'chart.' | 'label.' | 'line.' 
@@ -361,32 +370,59 @@ MCP_NS      ::= 'mcp.'
 
 ### 2. Program Structure
 
+Reference parser: leading padding, then **zero or more** header lines (each `VERSION_LINE` or `AGENTSCRIPT_LINE`, with duplicates of the same kind rejected), then **items**. Headers may be interleaved; see `script_parser` in `parser/script.rs`.
+
 ```
-program         ::= version_decl? (declaration | statement)* EOF
+program         ::= WS* (VERSION_LINE WS* | AGENTSCRIPT_LINE WS*)* item* WS* EOF
 
-version_decl    ::= VERSION_DECL
-
-declaration     ::= script_decl
+item            ::= import_decl
+                  | export_decl
+                  | script_decl
                   | library_decl
-                  | type_decl? variable_decl
-                  | function_decl
+                  | enum_decl
+                  | udt_decl
+                  | function_decl      // top-level Pine-style or QAS 'f' / 'method' when not after 'export'
+                  | statement          // expr, assign, control flow, etc.
 
-script_decl     ::= ('indicator' | 'strategy') '(' script_args ')'
-library_decl    ::= 'library' '(' library_args ')'
+import_decl     ::= 'import' import_path 'as' IDENTIFIER
+import_path     ::= path_segment ('/' path_segment)*
+path_segment    ::= IDENTIFIER | NUMBER    // NUMBER matches numeric path segments in the reference lexer
 
-script_args     ::= arg_list
-library_args    ::= arg_list
+export_decl     ::= 'export' ( export_enum | export_udt | export_fn | export_varish )
+export_enum     ::= 'enum' IDENTIFIER '{' enum_body '}'
+export_udt      ::= 'type' IDENTIFIER '{' udt_field* '}'
+export_fn       ::= function_decl        // 'f' name … | 'method' name … | Pine name(…) =>
+export_varish   ::= qualified_var_decl | input_var_decl | typed_var_decl   // same forms as statements; see §3
+
+script_decl     ::= ('indicator' | 'strategy') '(' arg_list ')'
+library_decl    ::= 'library' '(' arg_list ')'
+
+arg_list        ::= (named_arg (',' named_arg)* ','? )?
+named_arg       ::= (IDENTIFIER '=')? expression
 ```
 
 ### 3. Variable & Type Declarations
 
 ```
-variable_decl   ::= qualifier? type? IDENTIFIER '=' expression
-                  | qualifier? IDENTIFIER '=' expression   // type inference (Pine style)
+// After var / const / varip / … : type position must not greedily consume the variable name
+// (handled in the reference parser via type_parser_decl_root + two-id UDT form). See qas-v1-parser-status.md.
+
+qualified_var_decl ::= qualifier decl_type_and_name assign_op expression
+input_var_decl     ::= 'input' type? IDENTIFIER assign_op expression
+typed_var_decl     ::= type IDENTIFIER assign_op expression
 
 qualifier       ::= 'var' | 'varip' | 'const' | 'input' | 'simple' | 'series'
 
-type            ::= primitive_type
+assign_op       ::= '=' | ':=' | '+=' | '-=' | '*=' | '/=' | '%='
+
+decl_type_and_name ::= (nonbare_root_type WS+ IDENTIFIER)           // e.g. float x, array<t> y
+                     | (IDENTIFIER WS+ IDENTIFIER)                  // UDT:  MyType fieldName
+                     | IDENTIFIER                                   // untyped:  x  (after qualifier)
+
+type            ::= nonbare_root_type | IDENTIFIER   // IDENTIFIER = named UDT / enum type
+
+nonbare_root_type ::= primitive_type
+                  | primitive_type '[' ']'             // Pine float[]  etc.
                   | 'array<' type '>'
                   | 'matrix<' type '>'
                   | 'map<' type ',' type '>'
@@ -396,15 +432,24 @@ primitive_type  ::= 'int' | 'float' | 'bool' | 'string' | 'color'
 
 object_type     ::= 'label' | 'line' | 'box' | 'table' | 'polyline' | 'linefill'
                   | 'chart.point' | 'volume_row'
+
+enum_decl       ::= 'enum' IDENTIFIER '{' enum_body '}'
+enum_body       ::= (WS* IDENTIFIER WS* '=' WS* expression WS* ';'? WS*)*
+
+udt_decl        ::= 'type' IDENTIFIER '{' udt_body '}'
+udt_body        ::= (WS* qualifier? type IDENTIFIER WS* '=' WS* expression WS* ';'? WS*)*
 ```
 
 ### 4. Function Declarations
 
 ```
-function_decl   ::= 'f' IDENTIFIER '(' param_list ')' '=>' expression     // short form
-                  | 'f' IDENTIFIER '(' param_list ')' '{' statement* '}'
+function_decl   ::= pine_function | qas_function | method_function
 
-param_list      ::= (param (',' param)*)? 
+pine_function   ::= IDENTIFIER '(' param_list ')' ( '=>' expression | compound_statement )
+qas_function    ::= 'f' IDENTIFIER '(' param_list ')' ( '=>' expression | compound_statement )
+method_function ::= 'method' IDENTIFIER '(' param_list ')' ( '=>' expression | compound_statement )
+
+param_list      ::= (param (',' param)* ','? )?
 param           ::= type? IDENTIFIER ('=' expression)?
 ```
 
@@ -415,36 +460,56 @@ statement       ::= simple_statement
                   | compound_statement
                   | control_flow
 
-simple_statement::= expression ';'?                     // most Pine statements are expressions
-                  | plot_statement
+simple_statement::= qualified_var_decl ';'?
+                  | input_var_decl ';'?
+                  | typed_var_decl ';'?
+                  | tuple_assign ';'?
+                  | assign_stmt ';'?
+                  | expression ';'?
+                  | plot_statement      // planned: same as expr stmt in reference today
                   | drawing_statement
                   | strategy_call
                   | mcp_call
                   | alert_statement
+                  | 'break' ';'?
+                  | 'continue' ';'?
+
+tuple_assign    ::= '[' IDENTIFIER (',' IDENTIFIER)+ ']' assign_op expression
+
+assign_stmt     ::= IDENTIFIER assign_op expression
 
 compound_statement ::= '{' statement* '}'
 
 control_flow    ::= if_statement
+                  | while_statement
                   | for_statement
                   | switch_statement
 
 if_statement    ::= 'if' expression compound_statement ( 'else' (if_statement | compound_statement) )?
 
-for_statement   ::= 'for' IDENTIFIER '=' expression 'to' expression compound_statement
+while_statement ::= 'while' expression compound_statement
 
-switch_statement::= 'switch' expression '{' switch_case* switch_default? '}'
-switch_case     ::= expression '=>' statement
-switch_default  ::= '=>' statement
+for_statement   ::= 'for' ( for_classic | for_in_single | for_in_pair ) compound_statement
+for_classic     ::= IDENTIFIER '=' expression 'to' expression ('by' expression)?
+for_in_single   ::= IDENTIFIER 'in' expression
+for_in_pair     ::= '[' IDENTIFIER ',' IDENTIFIER ']' 'in' expression
+
+// Scrutinee optional: Pine no-argument switch {  => … ; cond => … }
+switch_statement::= 'switch' expression? '{' switch_arms '}'
+switch_arms     ::= (WS* (switch_default | switch_case) WS*)*
+switch_default  ::= '=>' switch_arm
+switch_case     ::= expression '=>' switch_arm
+switch_arm      ::= statement | compound_statement
 ```
 
 ### 6. Expressions (Core – Series & Simple)
 
-```
-expression      ::= assignment_expr
-                  | ternary_expr
-                  | logical_or_expr
+Precedence and postfix (calls, `.` member, `[]` index, type args on calls) follow the reference `expr_parser`. Sketch:
 
-assignment_expr ::= IDENTIFIER ':=' expression          // Pine assignment
+```
+expression      ::= if_expr | ternary_expr | logical_or_expr   // 'if' expr has lower precedence than ternary in reference
+
+if_expr         ::= 'if' expression expression 'else' expression
 
 ternary_expr    ::= logical_or_expr '?' expression ':' expression
 
@@ -457,16 +522,19 @@ relational_expr ::= additive_expr ( ('<' | '<=' | '>' | '>=') additive_expr )*
 additive_expr   ::= multiplicative_expr ( ('+' | '-') multiplicative_expr )*
 multiplicative_expr ::= unary_expr ( ('*' | '/' | '%') unary_expr )*
 
-unary_expr      ::= ('+' | '-' | 'not')? primary_expr
+unary_expr      ::= ('+' | '-' | 'not')* postfix_expr
+
+postfix_expr    ::= primary postfix_tail*
+postfix_tail    ::= '[' expression ']'
+                  | '.' IDENTIFIER ('(' arg_list ')')?
 
 primary_expr    ::= literal
-                  | IDENTIFIER ( '[' expression ']' )*   // historical ref + array/matrix access
-                  | builtin_call
-                  | mcp_call
                   | '(' expression ')'
-                  | array_literal
+                  | bracket_array_literal
+                  | array_factory_literal
                   | matrix_literal
                   | map_literal
+                  | path_or_call                    // IDENTIFIER (.IDENTIFIER)* with optional type args + args
 
 literal         ::= NUMBER | STRING | 'true' | 'false' | 'na' | COLOR_CONST | STRATEGY_CONST
 ```
@@ -474,9 +542,10 @@ literal         ::= NUMBER | STRING | 'true' | 'false' | 'na' | COLOR_CONST | ST
 ### 7. Built-in Calls & Namespaces (Pine v6 coverage)
 
 ```
-builtin_call    ::= (BUILTIN_NS)? IDENTIFIER '(' arg_list ')'
+// Concrete path + call syntax is covered by path_or_call and postfix tails; BUILTIN_NS is conceptual.
+builtin_call    ::= path_or_call
 
-arg_list        ::= (named_arg (',' named_arg)*)?
+arg_list        ::= (named_arg (',' named_arg)* ','? )?
 
 named_arg       ::= (IDENTIFIER '=')? expression
 ```
@@ -524,10 +593,14 @@ strategy_call   ::= 'strategy.' IDENTIFIER '(' arg_list ')'
 ### 11. Literals & Collections
 
 ```
-array_literal   ::= 'array.from' '(' expression (',' expression)* ')'
-matrix_literal  ::= 'matrix.new<' type '>' '(' expression ',' expression ')'
-map_literal     ::= 'map.new<' type ',' type '>' '(' ')'
-                  | 'map.from' '(' ... ')'
+bracket_array_literal ::= '[' (expression (',' expression)* ','? )? ']'
+
+array_factory_literal ::= 'array.from' '(' expression (',' expression)* ','? ')'
+
+matrix_literal  ::= 'matrix.new<' type '>' '(' arg_list ')'
+
+map_literal     ::= 'map.new<' type ',' type '>' '(' arg_list ')'
+                  // 'map.from' — finalize against Pine v6 reference, then add here (currently not spelled out)
 ```
 
 ### 12. Request.* Calls (fully dynamic in v6)
@@ -538,36 +611,31 @@ request_call    ::= 'request.' IDENTIFIER '(' arg_list ')'
 
 ### 13. Whitespace & Comments
 - All WS and COMMENT tokens are ignored except inside strings.
-- Line comments `//` and block `/* */` supported.
+- Line comments `//` and block `/* */` supported; `//@version=` and `// @agentscript=` use dedicated shapes in the lexer so generic `//` comments do not consume them incorrectly.
 
 ---
 
 **Implementation Notes for Compiler Builders**
 
 1. **Ambiguity Resolution**  
-   - `[]` operator is left-associative for historical reference (`close[1]`) and array access.
-   - Method chaining (`close.sma(20)`) is syntactic sugar → rewritten to `ta.sma(close, 20)` during parsing.
+   - `[]` is left-associative for historical reference (`close[1]`) and indexing in the reference parser.  
+   - Member access and calls (`close`, `ta.sma(close, 20)`, `x.field(…)`) are parsed into `Member` / `Call` / `IdentPath` AST nodes; there is **no** mandatory rewrite to `ta.*` at parse time.
 
 2. **Type System Integration**  
-   - The grammar is untyped at parse time (Pine style). Type checker runs after AST construction using the official v6 reference rules + qualifiers.
+   - The grammar is untyped at parse time (Pine style). A type checker runs after AST construction (see roadmap Phase 1).
 
 3. **WASM Codegen Targets**  
-   - Every `expression` becomes a series computation node.
+   - Every `expression` becomes a series computation node in the planned IR.  
    - `mcp.call` becomes a runtime syscall (proxied).
 
 4. **Validation Against Pine v6**  
-   - All scripts that compile on TradingView v6 must compile here identically (except `mcp.` calls).  
-   - Use the official Pine Script v6 Reference Manual (https://www.tradingview.com/pine-script-reference/v6/) for exact function signatures and semantics.
+   - Goal: scripts that compile on TradingView for **`//@version=5`** and **`//@version=6`** should parse here when using the supported **QAS-shaped** surface (braced blocks, etc.).  
+   - Use the official Pine Script v6 Reference Manual (https://www.tradingview.com/pine-script-reference/v6/) for function signatures and semantics. Corpus tests in `agentscript-compiler` track parity over time.
 
-This EBNF is **ready to feed into ANTLR4, Tree-sitter, or a hand-written recursive-descent parser**. It is the complete formal definition of QAS v1.
+5. **Reference crate**  
+   - Treat [`agentscript-compiler`](../crates/agentscript-compiler/) as the normative behavior for this EBNF until a second frontend exists. See [`qas-v1-parser-status.md`](qas-v1-parser-status.md) for rule-by-rule notes.
 
-Would you like:
-- The ANTLR4 .g4 file version (ready to copy-paste)?
-- Tree-sitter grammar.json equivalent?
-- A minimal test suite of 50+ Pine v6 + MCP examples that this grammar accepts?
-- Or the next artifact (type checker rules / WASM ABI)?
-
-This grammar closes the loop — you now have everything needed to start building the QAS compiler.
+This EBNF is suitable as a **human-readable contract** alongside the Rust parser and can be ported to ANTLR4, Tree-sitter, or another generator; automated grammar extraction is not yet maintained in-repo.
 
 
 Expansion of the **`mcp.`** namespace in **QuantAgent Script (QAS) v1**. This namespace makes the DSL truly **agent-native** by embedding support for the **Model Context Protocol (MCP)** — the open standard (introduced by Anthropic in late 2024 and widely adopted by 2026 across OpenAI, Google, Microsoft, etc.) for secure, standardized communication between AI agents and external tools/data sources.
