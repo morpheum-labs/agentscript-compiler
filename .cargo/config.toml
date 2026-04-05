@@ -1,2 +1,3 @@
-[build]
-target-dir = "/Volumes/Mac-Mugen/rustcompile"
+# chumsky 0.9 combinator nesting uses a deep parse stack; default (~8MiB) overflows on modest scripts.
+[env]
+RUST_MIN_STACK = "16777216"

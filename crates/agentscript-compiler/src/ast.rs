@@ -22,12 +22,79 @@ impl Script {
 pub enum Item {
     /// `indicator(...)`, `strategy(...)`, or `library(...)`.
     ScriptDecl(ScriptDeclaration),
-    /// Executable line: assignment or bare expression (e.g. future `plot(...)`).
+    /// User function: `f name(...) => expr` or `f name(...) { ... }`.
+    FnDecl(FnDecl),
+    /// Executable statement (includes variable declarations at top level).
     Stmt(Stmt),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FnDecl {
+    pub name: String,
+    pub params: Vec<FnParam>,
+    pub body: FnBody,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnParam {
+    pub ty: Option<Type>,
+    pub name: String,
+    pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FnBody {
+    Expr(Expr),
+    Block(Vec<Stmt>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarDecl {
+    pub qualifier: Option<VarQualifier>,
+    pub ty: Option<Type>,
+    pub name: String,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VarQualifier {
+    Var,
+    Varip,
+    Const,
+    Input,
+    Simple,
+    Series,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Primitive(PrimitiveType),
+    Array(Box<Type>),
+    Matrix(Box<Type>),
+    Map(Box<Type>, Box<Type>),
+    Label,
+    Line,
+    BoxType,
+    Table,
+    Polyline,
+    Linefill,
+    ChartPoint,
+    VolumeRow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrimitiveType {
+    Int,
+    Float,
+    Bool,
+    String,
+    Color,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    /// `qualifier? type? name = expr` (declaration).
+    VarDecl(VarDecl),
     /// `name = expr` (first assignment) or `name := expr` (reassignment).
     Assign {
         name: String,
@@ -36,6 +103,33 @@ pub enum Stmt {
     },
     /// Expression used as a statement (calls, etc.).
     Expr(Expr),
+    /// `{ ... }`
+    Block(Vec<Stmt>),
+    If(IfStmt),
+    For {
+        var: String,
+        from: Expr,
+        to: Expr,
+        body: Vec<Stmt>,
+    },
+    Switch {
+        scrutinee: Expr,
+        cases: Vec<(Expr, Stmt)>,
+        default: Option<Box<Stmt>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfStmt {
+    pub cond: Expr,
+    pub then_body: Vec<Stmt>,
+    pub else_body: Option<ElseBody>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseBody {
+    If(Box<IfStmt>),
+    Block(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,6 +154,7 @@ pub enum ScriptKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
+    Pos,
     Neg,
     Not,
 }
@@ -81,7 +176,7 @@ pub enum BinOp {
     Or,
 }
 
-/// Expression (Phase 3: calls, subscripts, binary/unary; more forms later).
+/// Expression (parser phase; typecheck later).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Int(i64),
@@ -89,11 +184,15 @@ pub enum Expr {
     String(String),
     Bool(bool),
     Na,
+    /// `color.red`, etc.
+    Color(String),
     /// Reference without a call suffix, e.g. `close`, `strategy.long`.
     IdentPath(Vec<String>),
-    /// Function / method call: `ta.sma(...)`, `input.int(...)`.
+    /// Function / method call: `ta.sma(...)`, `matrix.new<float>(...)`.
     Call {
         path: Vec<String>,
+        /// Generic type arguments before `(` when present (e.g. `matrix.new<float>`).
+        type_args: Option<Vec<Type>>,
         args: Vec<(Option<String>, Expr)>,
     },
     /// Historical reference or indexing: `close[1]`.
@@ -109,5 +208,11 @@ pub enum Expr {
         op: BinOp,
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    /// Conditional (Pine / QAS `? :`), right-associative.
+    Ternary {
+        cond: Box<Expr>,
+        then_b: Box<Expr>,
+        else_b: Box<Expr>,
     },
 }

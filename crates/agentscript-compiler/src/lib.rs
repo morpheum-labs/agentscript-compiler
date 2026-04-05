@@ -8,7 +8,8 @@ mod error;
 mod parser;
 
 pub use ast::{
-    AssignOp, BinOp, Expr, Item, Script, ScriptDeclaration, ScriptKind, Stmt, UnaryOp,
+    AssignOp, BinOp, ElseBody, Expr, FnBody, FnDecl, FnParam, IfStmt, Item, PrimitiveType, Script,
+    ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarDecl, VarQualifier,
 };
 pub use error::CompileError;
 pub use parser::script_parser;

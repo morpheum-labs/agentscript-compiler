@@ -31,9 +31,14 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST (current)
 
-- [x] Chumsky grammar for QAS v1/v6 surface aligned with EBNF.
-- [x] AST types for declarations, statements, expressions.
-- [ ] Expand coverage: edge cases, larger fixtures, error messages for common mistakes.
+- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 1 or 6, comments). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
+- [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
+- [ ] **Close the gap vs `spec/agentscripts-v1.md`:** `if` / `else` / `for` / `switch`, blocks `{ … }`, user functions (`f` … `=>` / `{ … }`), `var` / `varip` / `const` / `input` / `simple` / `series` declarations with optional types, ternary `? :`, scientific `NUMBER` literals, array / matrix / map literals, optional trailing `;`, and other Pine v6 statement forms called out in the spec.
+- [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
+
+### Phases 1–3 vs parsing
+
+**Phases 1–3 in this roadmap are not “finish the parser.”** Phase 1 is semantics, Phase 2 is IR/codegen, Phase 3 is CLI and integration. Parser work that remains for **full** QAS syntax belongs under **Phase 0** (and can proceed in parallel with early Phase 1 on the subset).
 
 ## Phase 1 — Semantic analysis
 
