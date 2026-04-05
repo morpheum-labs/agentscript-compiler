@@ -6,7 +6,7 @@
 mod compiler;
 mod error;
 mod frontend;
-mod hir;
+pub mod hir;
 mod semantic;
 mod session;
 mod visitor;
@@ -24,6 +24,7 @@ pub use semantic::{
     analyze_script, check_script, resolve_script, AnalyzeError,
     BreakContinuePass, CompilerPass, EarlyAnalyzePass, ResolverPass, default_passes,
 };
+pub use hir::HirScript;
 pub use session::CompilerSession;
 pub use visitor::AstVisitor;
 

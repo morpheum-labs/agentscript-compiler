@@ -1,7 +1,7 @@
 use agentscript_compiler::{
-    parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody,
-    ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type,
-    UnaryOp, VarQualifier,
+    parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind,
+    FnBody, ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt,
+    StmtKind, Type, UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -28,7 +28,7 @@ fn version_and_indicator() {
     };
     assert_eq!(args.len(), 1);
     assert_eq!(args[0].0, None);
-    assert_eq!(args[0].1, Expr::String("x".into()));
+    assert_eq!(args[0].1.kind, ExprKind::String("x".into()));
 }
 
 #[test]
@@ -61,18 +61,18 @@ x = 1
     };
     assert_eq!(d.kind, ScriptKind::Strategy);
     assert_eq!(d.args.len(), 3);
-    assert_eq!(d.args[0], (None, Expr::String("My".into())));
-    assert_eq!(d.args[1], (Some("overlay".into()), Expr::Bool(true)));
-    assert_eq!(
-        d.args[2],
-        (Some("initial_capital".into()), Expr::Int(100_000))
-    );
-    let Item::Stmt(Stmt::Assign { name, op, value }) = &s.items[1] else {
+    assert_eq!(d.args[0].0, None);
+    assert_eq!(d.args[0].1.kind, ExprKind::String("My".into()));
+    assert_eq!(d.args[1].0, Some("overlay".into()));
+    assert_eq!(d.args[1].1.kind, ExprKind::Bool(true));
+    assert_eq!(d.args[2].0, Some("initial_capital".into()));
+    assert_eq!(d.args[2].1.kind, ExprKind::Int(100_000));
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, op, value }, .. }) = &s.items[1] else {
         panic!("expected assignment");
     };
     assert_eq!(name, "x");
     assert_eq!(*op, AssignOp::Eq);
-    assert_eq!(*value, Expr::Int(1));
+    assert_eq!(value.kind, ExprKind::Int(1));
 }
 
 #[test]
@@ -83,8 +83,8 @@ fn qualified_ident_positional() {
         panic!("expected decl");
     };
     assert_eq!(
-        d.args[1].1,
-        Expr::IdentPath(vec!["strategy".into(), "long".into()])
+        d.args[1].1.kind,
+        ExprKind::IdentPath(vec!["strategy".into(), "long".into()])
     );
 }
 
@@ -171,25 +171,22 @@ a = []
 b = [1, 2 + 3, x]
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign a");
     };
-    assert_eq!(*value, Expr::Array(vec![]));
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[2] else {
+    assert_eq!(value.kind, ExprKind::Array(vec![]));
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[2] else {
         panic!("expected assign b");
     };
-    assert_eq!(
-        *value,
-        Expr::Array(vec![
-            Expr::Int(1),
-            Expr::Binary {
-                op: BinOp::Add,
-                left: Box::new(Expr::Int(2)),
-                right: Box::new(Expr::Int(3)),
-            },
-            Expr::IdentPath(vec!["x".into()]),
-        ])
-    );
+    assert!(value.shape_eq(&Expr::synthetic(ExprKind::Array(vec![
+        Expr::synthetic(ExprKind::Int(1)),
+        Expr::synthetic(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expr::synthetic(ExprKind::Int(2))),
+            right: Box::new(Expr::synthetic(ExprKind::Int(3))),
+        }),
+        Expr::synthetic(ExprKind::IdentPath(vec!["x".into()])),
+    ]))));
 }
 
 #[test]
@@ -198,16 +195,16 @@ fn array_literal_then_index() {
 c = [10, 20][1]
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    assert_eq!(
-        *value,
-        Expr::Index {
-            base: Box::new(Expr::Array(vec![Expr::Int(10), Expr::Int(20)])),
-            index: Box::new(Expr::Int(1)),
-        }
-    );
+    assert!(value.shape_eq(&Expr::synthetic(ExprKind::Index {
+        base: Box::new(Expr::synthetic(ExprKind::Array(vec![
+            Expr::synthetic(ExprKind::Int(10)),
+            Expr::synthetic(ExprKind::Int(20)),
+        ]))),
+        index: Box::new(Expr::synthetic(ExprKind::Int(1))),
+    })));
 }
 
 #[test]
@@ -218,33 +215,33 @@ b = a == 2
 "#;
     let s = parse_script("t.pine", src).unwrap();
     assert_eq!(s.items.len(), 3);
-    let Item::Stmt(Stmt::Assign { name, op, value }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, op, value }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
     assert_eq!(name, "a");
     assert_eq!(*op, AssignOp::ColonEq);
-    let Expr::Binary { op, left, right } = value else {
+    let ExprKind::Binary { op, left, right } = &value.kind else {
         panic!("expected binary +");
     };
     assert_eq!(*op, BinOp::Add);
-    assert_eq!(**left, Expr::Int(1));
-    let Expr::Binary {
+    assert!(left.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(1))));
+    let ExprKind::Binary {
         op,
         left: l,
         right: r,
-    } = right.as_ref()
+    } = &right.as_ref().kind
     else {
         panic!("expected *");
     };
     assert_eq!(*op, BinOp::Mul);
-    assert_eq!(**l, Expr::Int(2));
-    assert_eq!(**r, Expr::Int(3));
+    assert!(l.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(2))));
+    assert!(r.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(3))));
 
-    let Item::Stmt(Stmt::Assign { name, value, .. }) = &s.items[2] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, value, .. }, .. }) = &s.items[2] else {
         panic!("expected assign b");
     };
     assert_eq!(name, "b");
-    let Expr::Binary { op, .. } = value else {
+    let ExprKind::Binary { op, .. } = &value.kind else {
         panic!("expected ==");
     };
     assert_eq!(*op, BinOp::Eq);
@@ -257,29 +254,32 @@ y = ta.sma(close, 20)
 z = close[1]
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { name, value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, value, .. }, .. }) = &s.items[1] else {
         panic!("expected y assign");
     };
     assert_eq!(name, "y");
-    let Expr::Call { callee, args, .. } = value else {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
         panic!("expected call");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["ta".into(), "sma".into()]));
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "ta".into(),
+        "sma".into(),
+    ]))));
     assert_eq!(args.len(), 2);
     assert_eq!(args[0].0, None);
-    assert_eq!(args[0].1, Expr::IdentPath(vec!["close".into()]));
+    assert!(args[0].1.shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["close".into()]))));
     assert_eq!(args[1].0, None);
-    assert_eq!(args[1].1, Expr::Int(20));
+    assert!(args[1].1.shape_eq(&Expr::synthetic(ExprKind::Int(20))));
 
-    let Item::Stmt(Stmt::Assign { name, value, .. }) = &s.items[2] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, value, .. }, .. }) = &s.items[2] else {
         panic!("expected z assign");
     };
     assert_eq!(name, "z");
-    let Expr::Index { base, index } = value else {
+    let ExprKind::Index { base, index } = &value.kind else {
         panic!("expected index");
     };
-    assert_eq!(**base, Expr::IdentPath(vec!["close".into()]));
-    assert_eq!(**index, Expr::Int(1));
+    assert!(base.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["close".into()]))));
+    assert!(index.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(1))));
 }
 
 #[test]
@@ -288,15 +288,15 @@ fn expr_stmt_call() {
 plot(close)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Expr(e)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Expr(e), .. }) = &s.items[1] else {
         panic!("expected expr stmt");
     };
-    let Expr::Call { callee, args, .. } = e else {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
         panic!("expected plot call");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["plot".into()]));
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["plot".into()]))));
     assert_eq!(args.len(), 1);
-    assert_eq!(args[0].1, Expr::IdentPath(vec!["close".into()]));
+    assert!(args[0].1.shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["close".into()]))));
 }
 
 #[test]
@@ -305,36 +305,36 @@ fn logical_and_or_not() {
 ok = not a and b or c
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
     // Parsed as (not a) and b or c  —  or lowest:  ((not a) and b) or c
-    let Expr::Binary {
+    let ExprKind::Binary {
         op: BinOp::Or,
         left,
         right,
-    } = value
+    } = &value.kind
     else {
         panic!("expected or at root: {value:#?}");
     };
-    assert_eq!(**right, Expr::IdentPath(vec!["c".into()]));
-    let Expr::Binary {
+    assert!(right.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["c".into()]))));
+    let ExprKind::Binary {
         op: BinOp::And,
         left: l,
         right: r,
-    } = left.as_ref()
+    } = &left.as_ref().kind
     else {
         panic!("expected and: {left:#?}");
     };
-    assert_eq!(**r, Expr::IdentPath(vec!["b".into()]));
-    let Expr::Unary {
+    assert!(r.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["b".into()]))));
+    let ExprKind::Unary {
         op: agentscript_compiler::UnaryOp::Not,
         expr: inner,
-    } = l.as_ref()
+    } = &l.as_ref().kind
     else {
         panic!("expected not a: {l:#?}");
     };
-    assert_eq!(**inner, Expr::IdentPath(vec!["a".into()]));
+    assert!(inner.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["a".into()]))));
 }
 
 #[test]
@@ -343,20 +343,20 @@ fn ternary_simple() {
 x = true ? 1 : 2
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Ternary {
+    let ExprKind::Ternary {
         cond,
         then_b,
         else_b,
-    } = value
+    } = &value.kind
     else {
         panic!("expected ternary: {value:#?}");
     };
-    assert_eq!(**cond, Expr::Bool(true));
-    assert_eq!(**then_b, Expr::Int(1));
-    assert_eq!(**else_b, Expr::Int(2));
+    assert!(cond.as_ref().shape_eq(&Expr::synthetic(ExprKind::Bool(true))));
+    assert!(then_b.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(1))));
+    assert!(else_b.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(2))));
 }
 
 #[test]
@@ -365,30 +365,30 @@ fn ternary_right_associative() {
 x = a ? b : c ? d : e
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Ternary {
+    let ExprKind::Ternary {
         cond,
         then_b,
         else_b,
-    } = value
+    } = &value.kind
     else {
         panic!("expected outer ternary: {value:#?}");
     };
-    assert_eq!(**cond, Expr::IdentPath(vec!["a".into()]));
-    assert_eq!(**then_b, Expr::IdentPath(vec!["b".into()]));
-    let Expr::Ternary {
+    assert!(cond.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["a".into()]))));
+    assert!(then_b.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["b".into()]))));
+    let ExprKind::Ternary {
         cond: c2,
         then_b: t2,
         else_b: e2,
-    } = else_b.as_ref()
+    } = &else_b.as_ref().kind
     else {
         panic!("expected nested ternary in else: {else_b:#?}");
     };
-    assert_eq!(**c2, Expr::IdentPath(vec!["c".into()]));
-    assert_eq!(**t2, Expr::IdentPath(vec!["d".into()]));
-    assert_eq!(**e2, Expr::IdentPath(vec!["e".into()]));
+    assert!(c2.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["c".into()]))));
+    assert!(t2.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["d".into()]))));
+    assert!(e2.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["e".into()]))));
 }
 
 #[test]
@@ -397,15 +397,18 @@ fn var_decl() {
 var fast = ta.sma(close, 10)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected var decl");
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Var));
     assert_eq!(v.name, "fast");
-    let Expr::Call { callee, args, .. } = &v.value else {
+    let ExprKind::Call { callee, args, .. } = &v.value.kind else {
         panic!("expected call");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["ta".into(), "sma".into()]));
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "ta".into(),
+        "sma".into(),
+    ]))));
     assert_eq!(args.len(), 2);
 }
 
@@ -415,12 +418,12 @@ fn varip_decl() {
 varip ticks = 0
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected varip decl");
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Varip));
     assert_eq!(v.name, "ticks");
-    assert_eq!(v.value, Expr::Int(0));
+    assert_eq!(v.value.kind, ExprKind::Int(0));
 }
 
 #[test]
@@ -429,11 +432,11 @@ fn varname_is_assign_not_var_keyword() {
 varname = 1
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { name, value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign to varname");
     };
     assert_eq!(name, "varname");
-    assert_eq!(*value, Expr::Int(1));
+    assert_eq!(value.kind, ExprKind::Int(1));
 }
 
 #[test]
@@ -442,13 +445,13 @@ fn typed_decl_primitive_float() {
 float len = 14
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected typed var decl");
     };
     assert_eq!(v.qualifier, None);
     assert_eq!(v.ty, Some(Type::Primitive(PrimitiveType::Float)));
     assert_eq!(v.name, "len");
-    assert_eq!(v.value, Expr::Int(14));
+    assert_eq!(v.value.kind, ExprKind::Int(14));
 }
 
 #[test]
@@ -457,13 +460,13 @@ fn qualified_const_untyped() {
 const n = 0
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected const decl");
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Const));
     assert_eq!(v.ty, None);
     assert_eq!(v.name, "n");
-    assert_eq!(v.value, Expr::Int(0));
+    assert_eq!(v.value.kind, ExprKind::Int(0));
 }
 
 #[test]
@@ -472,13 +475,13 @@ fn var_with_primitive_type() {
 var float y = 1
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected var + type decl");
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Var));
     assert_eq!(v.ty, Some(Type::Primitive(PrimitiveType::Float)));
     assert_eq!(v.name, "y");
-    assert_eq!(v.value, Expr::Int(1));
+    assert_eq!(v.value.kind, ExprKind::Int(1));
 }
 
 #[test]
@@ -487,17 +490,17 @@ fn input_dotted_call_is_expr_not_decl() {
 x = input.int(9, "Lots")
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { name, value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign, not misparsed input decl");
     };
     assert_eq!(name, "x");
-    let Expr::Call { callee, args, .. } = value else {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
         panic!("expected call: {value:#?}");
     };
-    assert_eq!(
-        **callee,
-        Expr::IdentPath(vec!["input".into(), "int".into()])
-    );
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "input".into(),
+        "int".into(),
+    ]))));
     assert_eq!(args.len(), 2);
 }
 
@@ -507,13 +510,15 @@ fn input_qualifier_decl_with_type() {
 input float x = 1.0
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected input decl");
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Input));
     assert_eq!(v.ty, Some(Type::Primitive(PrimitiveType::Float)));
     assert_eq!(v.name, "x");
-    assert_eq!(v.value, Expr::Float(1.0));
+    assert!(v
+        .value
+        .shape_eq(&Expr::synthetic(ExprKind::Float(1.0))));
 }
 
 #[test]
@@ -522,10 +527,10 @@ fn scientific_float() {
 y = 1.5e-2
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Float(v) = value else {
+    let ExprKind::Float(v) = &value.kind else {
         panic!("expected float");
     };
     assert!((v - 0.015).abs() < 1e-9);
@@ -537,10 +542,10 @@ fn color_literal() {
 c = color.red
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    assert_eq!(*value, Expr::Color("red".into()));
+    assert_eq!(value.kind, ExprKind::Color("red".into()));
 }
 
 #[test]
@@ -549,17 +554,17 @@ fn unary_plus() {
 z = +1
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Unary {
+    let ExprKind::Unary {
         op: UnaryOp::Pos,
         expr,
-    } = value
+    } = &value.kind
     else {
         panic!("expected unary +: {value:#?}");
     };
-    assert_eq!(**expr, Expr::Int(1));
+    assert!(expr.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(1))));
 }
 
 #[test]
@@ -568,26 +573,29 @@ fn array_from_call() {
 a = array.from(1, 2, 3)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Call {
+    let ExprKind::Call {
         callee,
         type_args,
         args,
-    } = value
+    } = &value.kind
     else {
         panic!("expected call: {value:#?}");
     };
-    assert_eq!(
-        **callee,
-        Expr::IdentPath(vec!["array".into(), "from".into()])
-    );
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "array".into(),
+        "from".into(),
+    ]))));
     assert!(type_args.is_none());
     assert_eq!(args.len(), 3);
-    assert_eq!(args[0], (None, Expr::Int(1)));
-    assert_eq!(args[1], (None, Expr::Int(2)));
-    assert_eq!(args[2], (None, Expr::Int(3)));
+    assert_eq!(args[0].0, None);
+    assert!(args[0].1.shape_eq(&Expr::synthetic(ExprKind::Int(1))));
+    assert_eq!(args[1].0, None);
+    assert!(args[1].1.shape_eq(&Expr::synthetic(ExprKind::Int(2))));
+    assert_eq!(args[2].0, None);
+    assert!(args[2].1.shape_eq(&Expr::synthetic(ExprKind::Int(3))));
 }
 
 #[test]
@@ -596,21 +604,21 @@ fn generic_call_matrix_new() {
 m = matrix.new<float>(2, 3)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Call {
+    let ExprKind::Call {
         callee,
         type_args,
         args,
-    } = value
+    } = &value.kind
     else {
         panic!("expected call");
     };
-    assert_eq!(
-        **callee,
-        Expr::IdentPath(vec!["matrix".into(), "new".into()])
-    );
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "matrix".into(),
+        "new".into(),
+    ]))));
     assert_eq!(
         type_args.as_deref(),
         Some(&[Type::Primitive(PrimitiveType::Float)][..])
@@ -628,7 +636,7 @@ if true {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::If(if_s)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::If(if_s), .. }) = &s.items[1] else {
         panic!("expected if");
     };
     assert_eq!(if_s.then_body.len(), 1);
@@ -650,7 +658,7 @@ if a {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::If(outer)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::If(outer), .. }) = &s.items[1] else {
         panic!("expected if");
     };
     let Some(ElseBody::If(inner)) = &outer.else_body else {
@@ -697,7 +705,7 @@ switch {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Switch { scrutinee, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Switch { scrutinee, .. }, .. }) = &s.items[1] else {
         panic!("expected switch");
     };
     assert!(scrutinee.is_none());
@@ -711,16 +719,16 @@ for el in arr {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::ForIn {
+    let Item::Stmt(Stmt { kind: StmtKind::ForIn {
         pattern,
         iterable,
         body,
-    }) = &s.items[1]
+    }, .. }) = &s.items[1]
     else {
         panic!("expected for-in");
     };
     assert_eq!(pattern, &ForInPattern::Name("el".into()));
-    assert_eq!(*iterable, Expr::IdentPath(vec!["arr".into()]));
+    assert!(iterable.shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["arr".into()]))));
     assert_eq!(body.len(), 1);
 }
 
@@ -732,7 +740,7 @@ for [i, v] in m {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::ForIn { pattern, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::ForIn { pattern, .. }, .. }) = &s.items[1] else {
         panic!("expected for-in");
     };
     assert_eq!(
@@ -747,25 +755,25 @@ fn if_expression_else_if_chain() {
 y = if a 1 else if b 2 else 3
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::IfExpr { cond, then_b, else_b } = value else {
+    let ExprKind::IfExpr { cond, then_b, else_b } = &value.kind else {
         panic!("expected if expr, got {value:#?}");
     };
-    assert_eq!(**cond, Expr::IdentPath(vec!["a".into()]));
-    assert_eq!(**then_b, Expr::Int(1));
-    let Expr::IfExpr {
+    assert!(cond.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["a".into()]))));
+    assert!(then_b.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(1))));
+    let ExprKind::IfExpr {
         cond: c2,
         then_b: t2,
         else_b: e2,
-    } = else_b.as_ref()
+    } = &else_b.as_ref().kind
     else {
         panic!("expected else-if as nested IfExpr");
     };
-    assert_eq!(**c2, Expr::IdentPath(vec!["b".into()]));
-    assert_eq!(**t2, Expr::Int(2));
-    assert_eq!(**e2, Expr::Int(3));
+    assert!(c2.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec!["b".into()]))));
+    assert!(t2.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(2))));
+    assert!(e2.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(3))));
 }
 
 #[test]
@@ -774,7 +782,7 @@ fn tuple_destructure_assign() {
 [a, b, c] = t
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::TupleAssign { names, op, value }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::TupleAssign { names, op, value }, .. }) = &s.items[1] else {
         panic!("expected tuple assign");
     };
     assert_eq!(
@@ -786,7 +794,10 @@ fn tuple_destructure_assign() {
         ]
     );
     assert_eq!(*op, AssignOp::Eq);
-    assert_eq!(*value, Expr::IdentPath(vec!["t".into()]));
+    assert_eq!(
+        value.kind,
+        ExprKind::IdentPath(vec!["t".into()])
+    );
 }
 
 #[test]
@@ -795,7 +806,7 @@ fn float_array_bracket_type() {
 float[] xs = array.new<float>(0)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected var decl");
     };
     assert_eq!(
@@ -820,8 +831,11 @@ enum tz {
     assert_eq!(e.name, "tz");
     assert_eq!(e.variants.len(), 2);
     assert_eq!(e.variants[0].name, "utc");
-    assert_eq!(e.variants[0].value, Expr::String("UTC".into()));
-    assert_eq!(e.variants[1].value, Expr::String("America/New_York".into()));
+    assert_eq!(e.variants[0].value.kind, ExprKind::String("UTC".into()));
+    assert_eq!(
+        e.variants[1].value.kind,
+        ExprKind::String("America/New_York".into())
+    );
 }
 
 #[test]
@@ -843,10 +857,9 @@ type bar {
         t.fields[0].ty,
         Type::Primitive(PrimitiveType::Float)
     ));
-    assert_eq!(
-        t.fields[0].default,
-        Expr::IdentPath(vec!["open".into()])
-    );
+    assert!(t.fields[0].default.shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "open".into(),
+    ]))));
 }
 
 #[test]
@@ -871,7 +884,7 @@ fn map_named_key_type() {
 map<symbols, float> m = map.new<symbols, float>()
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
         panic!("expected var");
     };
     assert_eq!(
@@ -896,7 +909,7 @@ type b {
     };
     assert_eq!(t.fields[0].qualifier, Some(VarQualifier::Varip));
     assert_eq!(t.fields[0].name, "ticks");
-    assert_eq!(t.fields[0].default, Expr::Int(-1));
+    assert_eq!(t.fields[0].default.kind, ExprKind::Int(-1));
 }
 
 #[test]
@@ -907,20 +920,22 @@ for i = 0 to 9 by 2 {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::For {
+    let Item::Stmt(Stmt { kind: StmtKind::For {
         var,
         from,
         to,
         by,
         body,
-    }) = &s.items[1]
+    }, .. }) = &s.items[1]
     else {
         panic!("expected for");
     };
     assert_eq!(var, "i");
-    assert_eq!(*from, Expr::Int(0));
-    assert_eq!(*to, Expr::Int(9));
-    assert_eq!(*by, Some(Expr::Int(2)));
+    assert_eq!(from.kind, ExprKind::Int(0));
+    assert_eq!(to.kind, ExprKind::Int(9));
+    assert!(by
+        .as_ref()
+        .is_some_and(|e| e.kind == ExprKind::Int(2)));
     assert_eq!(body.len(), 1);
 }
 
@@ -930,19 +945,19 @@ fn leading_dot_float() {
 x = .25 + .5e0
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Binary {
+    let ExprKind::Binary {
         op: BinOp::Add,
         left,
         right,
-    } = value
+    } = &value.kind
     else {
         panic!("expected add");
     };
-    assert_eq!(**left, Expr::Float(0.25));
-    assert_eq!(**right, Expr::Float(0.5));
+    assert!(left.as_ref().shape_eq(&Expr::synthetic(ExprKind::Float(0.25))));
+    assert!(right.as_ref().shape_eq(&Expr::synthetic(ExprKind::Float(0.5))));
 }
 
 #[test]
@@ -1019,13 +1034,13 @@ switch z {
 }
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Switch { default, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Switch { default, .. }, .. }) = &s.items[1] else {
         panic!("expected switch");
     };
     let Some(d) = default else {
         panic!("expected default");
     };
-    let Stmt::Block(stmts) = d.as_ref() else {
+    let Stmt { kind: StmtKind::Block(stmts), .. } = d.as_ref() else {
         panic!("expected block default: {d:#?}");
     };
     assert_eq!(stmts.len(), 2);
@@ -1037,13 +1052,16 @@ fn mcp_namespace_call() {
 r = mcp.call("tool", syminfo.ticker)
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Call { callee, args, .. } = value else {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
         panic!("expected call");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["mcp".into(), "call".into()]));
+    assert!(callee.as_ref().shape_eq(&Expr::synthetic(ExprKind::IdentPath(vec![
+        "mcp".into(),
+        "call".into(),
+    ]))));
     assert_eq!(args.len(), 2);
 }
 
@@ -1060,8 +1078,8 @@ y = 1
     assert!(!f.is_method);
     assert_eq!(f.name, "add");
     assert_eq!(f.params.len(), 2);
-    assert!(matches!(f.body, FnBody::Expr(Expr::Binary { .. })));
-    assert!(matches!(&s.items[2], Item::Stmt(Stmt::Assign { .. })));
+    assert!(matches!(f.body, FnBody::Expr(Expr { kind: ExprKind::Binary { .. }, .. })));
+    assert!(matches!(&s.items[2], Item::Stmt(Stmt { kind: StmtKind::Assign { .. }, .. })));
 }
 
 #[test]
@@ -1111,7 +1129,7 @@ n = 0
 n += 1
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { name, op, .. }) = &s.items[2] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { name, op, .. }, .. }) = &s.items[2] else {
         panic!("expected assign");
     };
     assert_eq!(name, "n");
@@ -1162,7 +1180,7 @@ fn pine_export_var() {
         panic!("expected export var");
     };
     assert_eq!(v.name, "N");
-    assert_eq!(v.value, Expr::Int(42));
+    assert_eq!(v.value.kind, ExprKind::Int(42));
 }
 
 #[test]
@@ -1175,40 +1193,40 @@ fn while_loop_parses() {
 fn hex_color_rrggbb() {
     let src = "indicator(\"x\")\nc = #ff00Aa\n";
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("assign");
     };
-    assert_eq!(*value, Expr::HexColor("ff00Aa".into()));
+    assert_eq!(value.kind, ExprKind::HexColor("ff00Aa".into()));
 }
 
 #[test]
 fn postfix_call_on_grouped_expr() {
     let src = "indicator(\"x\")\ny = (close + open).m()\n";
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("assign");
     };
-    let Expr::Call { callee, args, .. } = value else {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
         panic!("expected call, got {value:#?}");
     };
     assert!(args.is_empty());
-    let Expr::Member { base, field } = callee.as_ref() else {
+    let ExprKind::Member { base, field } = &callee.as_ref().kind else {
         panic!("member callee: {callee:#?}");
     };
     assert_eq!(field, "m");
-    assert!(matches!(base.as_ref(), Expr::Binary { .. }));
+    assert!(matches!(&base.as_ref().kind, ExprKind::Binary { .. }));
 }
 
 #[test]
 fn dotted_ident_stays_ident_path() {
     let src = "indicator(\"x\")\ny = syminfo.ticker\n";
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("assign");
     };
     assert_eq!(
-        *value,
-        Expr::IdentPath(vec!["syminfo".into(), "ticker".into()])
+        value.kind,
+        ExprKind::IdentPath(vec!["syminfo".into(), "ticker".into()])
     );
 }
 

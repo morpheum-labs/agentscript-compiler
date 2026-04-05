@@ -1,0 +1,19 @@
+//! HIR statements (let, control flow, strategy commands, …).
+//!
+//! **SRP:** statement shapes; expressions referenced by [`super::ids::HirId`].
+
+use super::ids::{HirId, SymbolId};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirStmt {
+    Let {
+        symbol: SymbolId,
+        value: HirId,
+    },
+    Plot {
+        expr: HirId,
+        title: Option<String>,
+    },
+    Block(Vec<HirStmt>),
+    // If, While, StrategyOrder, …
+}
