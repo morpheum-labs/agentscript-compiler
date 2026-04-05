@@ -126,4 +126,14 @@ mod tests {
         .unwrap();
         check_break_continue(&s).unwrap();
     }
+
+    #[test]
+    fn continue_in_for_in_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\nfor x in arr {\n  continue\n}\n",
+        )
+        .unwrap();
+        check_break_continue(&s).unwrap();
+    }
 }

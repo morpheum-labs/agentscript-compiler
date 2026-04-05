@@ -1,6 +1,6 @@
 use agentscript_compiler::{
-    parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, ImportDecl, Item,
-    PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarQualifier,
+    parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, ForInPattern, ImportDecl,
+    Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -657,6 +657,123 @@ fn break_outside_loop_rejected_by_analyze() {
         msg.contains("break") && (msg.contains("for") || msg.contains("while")),
         "{msg}"
     );
+}
+
+#[test]
+fn switch_without_scrutinee_braced() {
+    let src = r#"indicator("x")
+switch {
+  a => { x = 1 }
+  => { y = 2 }
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Switch { scrutinee, .. }) = &s.items[1] else {
+        panic!("expected switch");
+    };
+    assert!(scrutinee.is_none());
+}
+
+#[test]
+fn for_in_single_element() {
+    let src = r#"indicator("x")
+for el in arr {
+  y = el
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::ForIn {
+        pattern,
+        iterable,
+        body,
+    }) = &s.items[1]
+    else {
+        panic!("expected for-in");
+    };
+    assert_eq!(pattern, &ForInPattern::Name("el".into()));
+    assert_eq!(*iterable, Expr::IdentPath(vec!["arr".into()]));
+    assert_eq!(body.len(), 1);
+}
+
+#[test]
+fn for_in_index_value_pair() {
+    let src = r#"indicator("x")
+for [i, v] in m {
+  y = v
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::ForIn { pattern, .. }) = &s.items[1] else {
+        panic!("expected for-in");
+    };
+    assert_eq!(
+        pattern,
+        &ForInPattern::Pair("i".into(), "v".into())
+    );
+}
+
+#[test]
+fn if_expression_else_if_chain() {
+    let src = r#"indicator("x")
+y = if a 1 else if b 2 else 3
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    let Expr::IfExpr { cond, then_b, else_b } = value else {
+        panic!("expected if expr, got {value:#?}");
+    };
+    assert_eq!(**cond, Expr::IdentPath(vec!["a".into()]));
+    assert_eq!(**then_b, Expr::Int(1));
+    let Expr::IfExpr {
+        cond: c2,
+        then_b: t2,
+        else_b: e2,
+    } = else_b.as_ref()
+    else {
+        panic!("expected else-if as nested IfExpr");
+    };
+    assert_eq!(**c2, Expr::IdentPath(vec!["b".into()]));
+    assert_eq!(**t2, Expr::Int(2));
+    assert_eq!(**e2, Expr::Int(3));
+}
+
+#[test]
+fn tuple_destructure_assign() {
+    let src = r#"indicator("x")
+[a, b, c] = t
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::TupleAssign { names, op, value }) = &s.items[1] else {
+        panic!("expected tuple assign");
+    };
+    assert_eq!(
+        names,
+        &vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ]
+    );
+    assert_eq!(*op, AssignOp::Eq);
+    assert_eq!(*value, Expr::IdentPath(vec!["t".into()]));
+}
+
+#[test]
+fn float_array_bracket_type() {
+    let src = r#"indicator("x")
+float[] xs = array.new<float>(0)
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+        panic!("expected var decl");
+    };
+    assert_eq!(
+        v.ty,
+        Some(Type::Array(Box::new(Type::Primitive(PrimitiveType::Float))))
+    );
+    assert_eq!(v.name, "xs");
 }
 
 #[test]
