@@ -1,19 +1,11 @@
-//! Early semantic passes (Phase 1 groundwork): duplicate definitions, etc.
-//!
-//! Full typechecking and builtin resolution live in later milestones.
+//! Duplicate-definition checks (no types).
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ExportDecl, FnDecl, Item, Script};
 
-/// Semantic analysis failed (no source spans on the AST yet; messages are textual).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{message}")]
-pub struct AnalyzeError {
-    pub message: String,
-}
+use super::AnalyzeError;
 
-/// Check script-wide consistency that does not require types or builtins.
 pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
     let mut fn_counts: HashMap<String, usize> = HashMap::new();

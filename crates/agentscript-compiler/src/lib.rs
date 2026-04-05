@@ -16,7 +16,7 @@ pub use ast::{
 };
 pub use error::{CompileError, ParseFileError};
 pub use parser::script_parser;
-pub use semantic::{analyze_script, AnalyzeError};
+pub use semantic::{analyze_script, check_script, resolve_script, AnalyzeError};
 
 use chumsky::Parser;
 use std::fs;
@@ -66,13 +66,13 @@ pub fn parse_script(src_name: impl AsRef<str>, source: &str) -> Result<Script, C
     }
 }
 
-/// Parse and run [`analyze_script`] (duplicate fn/import/param checks).
+/// Parse and run [`check_script`] (duplicates + path / script-kind rules).
 pub fn parse_and_analyze(
     src_name: impl AsRef<str>,
     source: &str,
 ) -> Result<Script, CompileOrAnalyzeError> {
     let script = parse_script(src_name.as_ref(), source)?;
-    analyze_script(&script).map_err(CompileOrAnalyzeError::Analyze)?;
+    check_script(&script).map_err(CompileOrAnalyzeError::Analyze)?;
     Ok(script)
 }
 
