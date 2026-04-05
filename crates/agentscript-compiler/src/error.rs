@@ -1,3 +1,5 @@
+#![allow(unused_assignments)] // miette/thiserror derive triggers false positives on field reads
+
 use chumsky::error::Simple;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
@@ -7,7 +9,7 @@ use thiserror::Error;
 #[error("failed to parse AgentScript source")]
 pub struct CompileError {
     #[source_code]
-    pub source: miette::NamedSource<String>,
+    pub src: miette::NamedSource<String>,
     #[related]
     pub labels: Vec<ParseLabel>,
 }
@@ -21,7 +23,7 @@ pub struct ParseLabel {
 }
 
 pub(crate) fn compile_error_from_parse_errors(
-    src_name: impl Into<String>,
+    src_name: impl AsRef<str>,
     source: String,
     errs: Vec<Simple<char>>,
 ) -> CompileError {
@@ -40,7 +42,7 @@ pub(crate) fn compile_error_from_parse_errors(
         })
         .collect();
     CompileError {
-        source: miette::NamedSource::new(src_name, source),
+        src: miette::NamedSource::new(src_name.as_ref(), source),
         labels,
     }
 }
