@@ -3,8 +3,10 @@
 /// Parsed AgentScript / QAS compilation unit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Script {
-    /// `//@version=1`, `5`, or `6` when present (QAS / Pine-shaped scripts).
+    /// `//@version=5` or `6` when present (Pine-shaped scripts; same header as TradingView).
     pub version: Option<u32>,
+    /// `// @agentscript=<n>` when present (requires whitespace after `//` so Pine `//@…` is unchanged).
+    pub agentscript_version: Option<u32>,
     /// Top-level declarations and statements.
     pub items: Vec<Item>,
 }
@@ -13,6 +15,7 @@ impl Script {
     pub fn empty() -> Self {
         Self {
             version: None,
+            agentscript_version: None,
             items: Vec::new(),
         }
     }

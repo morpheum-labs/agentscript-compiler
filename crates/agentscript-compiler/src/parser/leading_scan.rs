@@ -1,12 +1,12 @@
-//! Scan leading trivia so invalid `//@version=` lines surface as errors (see `parse_script` in `lib.rs`).
+//! Leading trivia: validate `//@version=` (Pine) and `// @agentscript=` before the main parse.
 
 use chumsky::error::Simple;
 
-use super::version_policy::{qas_version_allowed, qas_version_unsupported_message};
+use crate::version_policy::{qas_version_allowed, qas_version_unsupported_message};
 
-/// Walk leading whitespace, `//` (non-version) lines, and `/* */` blocks; if the first `//@version=` line
-/// is missing a number or not allowed for QAS, return a parse error.
-pub(crate) fn scan_leading_bad_version_directive(source: &str) -> Option<Simple<char>> {
+/// Walk leading whitespace, `//` lines, and `/* */` blocks; validate any `//@version=` (Pine 5/6) or
+/// `// @agentscript=` (≥1) in that trivia. Stops at the first non-trivia byte.
+pub(crate) fn scan_leading_bad_directives(source: &str) -> Option<Simple<char>> {
     let mut i = 0usize;
     let b = source.as_bytes();
     while i < b.len() {
@@ -46,7 +46,38 @@ pub(crate) fn scan_leading_bad_version_directive(source: &str) -> Option<Simple<
                         qas_version_unsupported_message(),
                     ));
                 }
-                return None;
+            } else if let Some(after_cc) = line.strip_prefix("//") {
+                let bytes = after_cc.as_bytes();
+                let mut k = 0usize;
+                while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+                    k += 1;
+                }
+                const AS_TAG: &str = "@agentscript=";
+                if k > 0 && after_cc[k..].starts_with(AS_TAG) {
+                    let num_start = line_start + 2 + k + AS_TAG.len();
+                    let mut num_end = num_start;
+                    for ch in source.get(num_start..j)?.chars() {
+                        if ch.is_ascii_digit() {
+                            num_end += ch.len_utf8();
+                        } else {
+                            break;
+                        }
+                    }
+                    if num_end == num_start {
+                        return Some(Simple::custom(
+                            num_start..num_start.saturating_add(1).min(source.len()),
+                            "missing number after // @agentscript=",
+                        ));
+                    }
+                    let digits = source.get(num_start..num_end).unwrap_or("0");
+                    let n: u32 = digits.parse().unwrap_or(0);
+                    if n < 1 {
+                        return Some(Simple::custom(
+                            num_start..num_end,
+                            "AgentScript version must be at least 1",
+                        ));
+                    }
+                }
             }
             i = j;
             if i < b.len() && b[i] == b'\r' {

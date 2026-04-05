@@ -7,6 +7,7 @@ use agentscript_compiler::{
 fn empty_script() {
     let s = parse_script("empty", "").unwrap();
     assert_eq!(s.version, None);
+    assert_eq!(s.agentscript_version, None);
     assert!(s.items.is_empty());
 }
 
@@ -15,6 +16,7 @@ fn version_and_indicator() {
     let src = "//@version=6\nindicator(\"x\")\n";
     let s = parse_script("t.pine", src).unwrap();
     assert_eq!(s.version, Some(6));
+    assert_eq!(s.agentscript_version, None);
     assert_eq!(s.items.len(), 1);
     let Item::ScriptDecl(ScriptDeclaration {
         kind: ScriptKind::Indicator,
@@ -29,10 +31,10 @@ fn version_and_indicator() {
 }
 
 #[test]
-fn version_one_no_newline_before_decl() {
-    let src = "//@version=1 strategy(\"S\")";
+fn version_five_no_newline_before_decl() {
+    let src = "//@version=5 strategy(\"S\")";
     let s = parse_script("t.pine", src).unwrap();
-    assert_eq!(s.version, Some(1));
+    assert_eq!(s.version, Some(5));
     assert!(matches!(
         &s.items[0],
         Item::ScriptDecl(ScriptDeclaration {
@@ -44,14 +46,14 @@ fn version_one_no_newline_before_decl() {
 
 #[test]
 fn strategy_named_args_and_comment() {
-    let src = r#"//@version=1
+    let src = r#"//@version=5
 /* head */
 strategy("My", overlay=true, initial_capital=100000)
 // tail
 x = 1
 "#;
     let s = parse_script("t.pine", src).unwrap();
-    assert_eq!(s.version, Some(1));
+    assert_eq!(s.version, Some(5));
     assert_eq!(s.items.len(), 2);
     let Item::ScriptDecl(d) = &s.items[0] else {
         panic!("expected strategy decl");
@@ -59,10 +61,7 @@ x = 1
     assert_eq!(d.kind, ScriptKind::Strategy);
     assert_eq!(d.args.len(), 3);
     assert_eq!(d.args[0], (None, Expr::String("My".into())));
-    assert_eq!(
-        d.args[1],
-        (Some("overlay".into()), Expr::Bool(true))
-    );
+    assert_eq!(d.args[1], (Some("overlay".into()), Expr::Bool(true)));
     assert_eq!(
         d.args[2],
         (Some("initial_capital".into()), Expr::Int(100_000))
@@ -94,9 +93,63 @@ fn invalid_version_rejected() {
 }
 
 #[test]
+fn pine_version_one_rejected() {
+    let r = parse_script("t.pine", "//@version=1\nindicator(\"x\")\n");
+    assert!(r.is_err());
+}
+
+#[test]
 fn version_five_accepted() {
     let s = parse_script("t", "//@version=5\nindicator(\"v5\")\n").unwrap();
     assert_eq!(s.version, Some(5));
+}
+
+#[test]
+fn agentscript_directive_with_pine() {
+    let src = "//@version=6\n// @agentscript=1\nindicator(\"x\")\n";
+    let s = parse_script("t.qas", src).unwrap();
+    assert_eq!(s.version, Some(6));
+    assert_eq!(s.agentscript_version, Some(1));
+}
+
+#[test]
+fn agentscript_directive_before_pine_version() {
+    let src = "// @agentscript=2\n//@version=5\nindicator(\"x\")\n";
+    let s = parse_script("t.qas", src).unwrap();
+    assert_eq!(s.version, Some(5));
+    assert_eq!(s.agentscript_version, Some(2));
+}
+
+#[test]
+fn agentscript_without_pine_version() {
+    let src = "// @agentscript=1\nindicator(\"x\")\n";
+    let s = parse_script("t.qas", src).unwrap();
+    assert_eq!(s.version, None);
+    assert_eq!(s.agentscript_version, Some(1));
+}
+
+#[test]
+fn duplicate_agentscript_directive_rejected() {
+    let src = "// @agentscript=1\n// @agentscript=2\nindicator(\"x\")\n";
+    assert!(parse_script("t", src).is_err());
+}
+
+#[test]
+fn agentscript_version_zero_rejected() {
+    assert!(parse_script("t", "// @agentscript=0\nindicator(\"x\")\n").is_err());
+}
+
+#[test]
+fn agentscript_missing_number_rejected() {
+    assert!(parse_script("t", "// @agentscript=\nindicator(\"x\")\n").is_err());
+}
+
+#[test]
+fn agentscript_requires_space_after_slashes() {
+    let src = "//@agentscript=1\nindicator(\"x\")\n";
+    let s = parse_script("t", src).unwrap();
+    assert_eq!(s.agentscript_version, None);
+    assert_eq!(s.version, None);
 }
 
 #[test]
@@ -128,7 +181,12 @@ b = a == 2
     };
     assert_eq!(*op, BinOp::Add);
     assert_eq!(**left, Expr::Int(1));
-    let Expr::Binary { op, left: l, right: r } = right.as_ref() else {
+    let Expr::Binary {
+        op,
+        left: l,
+        right: r,
+    } = right.as_ref()
+    else {
         panic!("expected *");
     };
     assert_eq!(*op, BinOp::Mul);
@@ -204,11 +262,21 @@ ok = not a and b or c
         panic!("expected assign");
     };
     // Parsed as (not a) and b or c  —  or lowest:  ((not a) and b) or c
-    let Expr::Binary { op: BinOp::Or, left, right } = value else {
+    let Expr::Binary {
+        op: BinOp::Or,
+        left,
+        right,
+    } = value
+    else {
         panic!("expected or at root: {value:#?}");
     };
     assert_eq!(**right, Expr::IdentPath(vec!["c".into()]));
-    let Expr::Binary { op: BinOp::And, left: l, right: r } = left.as_ref() else {
+    let Expr::Binary {
+        op: BinOp::And,
+        left: l,
+        right: r,
+    } = left.as_ref()
+    else {
         panic!("expected and: {left:#?}");
     };
     assert_eq!(**r, Expr::IdentPath(vec!["b".into()]));
@@ -231,7 +299,12 @@ x = true ? 1 : 2
     let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Ternary { cond, then_b, else_b } = value else {
+    let Expr::Ternary {
+        cond,
+        then_b,
+        else_b,
+    } = value
+    else {
         panic!("expected ternary: {value:#?}");
     };
     assert_eq!(**cond, Expr::Bool(true));
@@ -248,7 +321,12 @@ x = a ? b : c ? d : e
     let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Ternary { cond, then_b, else_b } = value else {
+    let Expr::Ternary {
+        cond,
+        then_b,
+        else_b,
+    } = value
+    else {
         panic!("expected outer ternary: {value:#?}");
     };
     assert_eq!(**cond, Expr::IdentPath(vec!["a".into()]));
@@ -369,7 +447,10 @@ x = input.int(9, "Lots")
     let Expr::Call { callee, args, .. } = value else {
         panic!("expected call: {value:#?}");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["input".into(), "int".into()]));
+    assert_eq!(
+        **callee,
+        Expr::IdentPath(vec!["input".into(), "int".into()])
+    );
     assert_eq!(args.len(), 2);
 }
 
@@ -451,7 +532,10 @@ m = matrix.new<float>(2, 3)
     else {
         panic!("expected call");
     };
-    assert_eq!(**callee, Expr::IdentPath(vec!["matrix".into(), "new".into()]));
+    assert_eq!(
+        **callee,
+        Expr::IdentPath(vec!["matrix".into(), "new".into()])
+    );
     assert_eq!(
         type_args.as_deref(),
         Some(&[Type::Primitive(PrimitiveType::Float)][..])
@@ -538,7 +622,12 @@ x = .25 + .5e0
     let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    let Expr::Binary { op: BinOp::Add, left, right } = value else {
+    let Expr::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+    } = value
+    else {
         panic!("expected add");
     };
     assert_eq!(**left, Expr::Float(0.25));
@@ -594,7 +683,8 @@ fn switch_case_plus_default_after_indicator() {
 
 #[test]
 fn switch_default_block_two_stmts() {
-    let src = "indicator(\"x\")\nswitch z {\n  x => { a = 1 }\n  => {\n    b = 2\n    c = 3\n  }\n}\n";
+    let src =
+        "indicator(\"x\")\nswitch z {\n  x => { a = 1 }\n  => {\n    b = 2\n    c = 3\n  }\n}\n";
     let r = parse_script("t.pine", src);
     assert!(r.is_ok(), "{r:?}");
 }
@@ -671,11 +761,7 @@ fn pine_import_line() {
     };
     assert_eq!(
         path,
-        &vec![
-            "TradingView".to_string(),
-            "ta".to_string(),
-            "5".to_string(),
-        ]
+        &vec!["TradingView".to_string(), "ta".to_string(), "5".to_string(),]
     );
     assert_eq!(alias, "ta");
 }

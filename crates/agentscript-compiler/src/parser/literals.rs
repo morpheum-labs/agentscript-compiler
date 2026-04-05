@@ -1,3 +1,5 @@
+//! String, numeric, and hex-color literals.
+
 use chumsky::prelude::*;
 
 use crate::ast::Expr;
@@ -47,7 +49,9 @@ pub(super) fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> 
                 s.push_str(&exp_s);
             }
             if !is_float {
-                let n: i64 = s.parse().map_err(|_| Simple::custom(span.clone(), "invalid integer"))?;
+                let n: i64 = s
+                    .parse()
+                    .map_err(|_| Simple::custom(span.clone(), "invalid integer"))?;
                 Ok(Expr::Int(n))
             } else {
                 let v: f64 = s
@@ -76,22 +80,21 @@ pub(super) fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> 
 
 /// `#RRGGBB` or `#RRGGBBAA` (Pine-style hex color).
 pub(super) fn hex_color_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
-    just('#')
-        .ignore_then(
-            filter(|&c: &char| c.is_ascii_hexdigit())
-                .repeated()
-                .at_least(6)
-                .at_most(8)
-                .collect::<String>()
-                .try_map(|s, span| {
-                    if s.len() == 6 || s.len() == 8 {
-                        Ok(Expr::HexColor(s))
-                    } else {
-                        Err(Simple::custom(
-                            span,
-                            "hex color must be exactly 6 or 8 hex digits",
-                        ))
-                    }
-                }),
-        )
+    just('#').ignore_then(
+        filter(|&c: &char| c.is_ascii_hexdigit())
+            .repeated()
+            .at_least(6)
+            .at_most(8)
+            .collect::<String>()
+            .try_map(|s, span| {
+                if s.len() == 6 || s.len() == 8 {
+                    Ok(Expr::HexColor(s))
+                } else {
+                    Err(Simple::custom(
+                        span,
+                        "hex color must be exactly 6 or 8 hex digits",
+                    ))
+                }
+            }),
+    )
 }
