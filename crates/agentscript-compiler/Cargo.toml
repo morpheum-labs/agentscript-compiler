@@ -1,0 +1,16 @@
+[package]
+name = "agentscript-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser and compiler front-end for AgentScript (QAS / Pine v6–aligned syntax)."
+
+[dependencies]
+chumsky = "0.9"
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
+
+[[bin]]
+name = "agentscriptc"
+path = "src/main.rs"
