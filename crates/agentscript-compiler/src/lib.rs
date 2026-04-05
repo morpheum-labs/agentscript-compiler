@@ -10,9 +10,9 @@ mod semantic;
 mod version_policy;
 
 pub use ast::{
-    AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern, IfStmt,
-    ImportDecl, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp,
-    VarDecl, VarQualifier,
+    AssignOp, BinOp, ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam,
+    ForInPattern, IfStmt, ImportDecl, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind,
+    Stmt, Type, UdtField, UnaryOp, UserTypeDef, VarDecl, VarQualifier,
 };
 pub use error::{CompileError, ParseFileError};
 pub use parser::script_parser;

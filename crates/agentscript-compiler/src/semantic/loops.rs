@@ -10,7 +10,13 @@ pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
         match item {
             Item::Stmt(s) => walk_stmt(s, 0, &mut issues),
             Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => walk_fn(f, &mut issues),
-            Item::ScriptDecl(_) | Item::Export(ExportDecl::Var(_)) | Item::Import(_) => {}
+            Item::ScriptDecl(_)
+            | Item::Export(ExportDecl::Var(_))
+            | Item::Export(ExportDecl::Enum(_))
+            | Item::Export(ExportDecl::TypeDef(_))
+            | Item::Enum(_)
+            | Item::TypeDef(_)
+            | Item::Import(_) => {}
         }
     }
     if issues.is_empty() {

@@ -113,7 +113,12 @@ pub(super) fn type_parser() -> impl Parser<char, Type, Error = Simple<char>> + C
                 .then_ignore(just('>'))
                 .map(|(a, b)| Type::Map(Box::new(a), Box::new(b))),
         ));
-        choice((generic, object, primitive))
+        choice((
+            generic,
+            object,
+            primitive,
+            text::ident().map(Type::Named),
+        ))
     })
 }
 

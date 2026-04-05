@@ -777,6 +777,100 @@ float[] xs = array.new<float>(0)
 }
 
 #[test]
+fn enum_braced_string_variants() {
+    let src = r#"indicator("x")
+enum tz {
+  utc = "UTC"
+  ny = "America/New_York"
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Enum(e) = &s.items[1] else {
+        panic!("expected enum");
+    };
+    assert_eq!(e.name, "tz");
+    assert_eq!(e.variants.len(), 2);
+    assert_eq!(e.variants[0].name, "utc");
+    assert_eq!(e.variants[0].value, Expr::String("UTC".into()));
+    assert_eq!(e.variants[1].value, Expr::String("America/New_York".into()));
+}
+
+#[test]
+fn type_udt_float_fields() {
+    let src = r#"indicator("x")
+type bar {
+  float o = open
+  float c = close
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::TypeDef(t) = &s.items[1] else {
+        panic!("expected type def");
+    };
+    assert_eq!(t.name, "bar");
+    assert_eq!(t.fields.len(), 2);
+    assert_eq!(t.fields[0].name, "o");
+    assert!(matches!(
+        t.fields[0].ty,
+        Type::Primitive(PrimitiveType::Float)
+    ));
+    assert_eq!(
+        t.fields[0].default,
+        Expr::IdentPath(vec!["open".into()])
+    );
+}
+
+#[test]
+fn export_enum_in_library() {
+    let src = r#"//@version=6
+library("L")
+export enum sym {
+  a = "A"
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Export(ExportDecl::Enum(e)) = &s.items[1] else {
+        panic!("expected export enum");
+    };
+    assert_eq!(e.name, "sym");
+    assert_eq!(e.variants.len(), 1);
+}
+
+#[test]
+fn map_named_key_type() {
+    let src = r#"indicator("x")
+map<symbols, float> m = map.new<symbols, float>()
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::VarDecl(v)) = &s.items[1] else {
+        panic!("expected var");
+    };
+    assert_eq!(
+        v.ty,
+        Some(Type::Map(
+            Box::new(Type::Named("symbols".into())),
+            Box::new(Type::Primitive(PrimitiveType::Float))
+        ))
+    );
+}
+
+#[test]
+fn udt_field_varip_qualifier() {
+    let src = r#"indicator("x")
+type b {
+  varip int ticks = -1
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::TypeDef(t) = &s.items[1] else {
+        panic!("expected type");
+    };
+    assert_eq!(t.fields[0].qualifier, Some(VarQualifier::Varip));
+    assert_eq!(t.fields[0].name, "ticks");
+    assert_eq!(t.fields[0].default, Expr::Int(-1));
+}
+
+#[test]
 fn for_loop_by_step() {
     let src = r#"indicator("x")
 for i = 0 to 9 by 2 {

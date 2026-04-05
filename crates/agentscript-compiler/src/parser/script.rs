@@ -3,8 +3,9 @@
 use chumsky::prelude::*;
 
 use crate::ast::{
-    ElseBody, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern, IfStmt, ImportDecl, Item,
-    Script, ScriptDeclaration, ScriptKind, Stmt, VarDecl, VarQualifier,
+    ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern,
+    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, UdtField, UserTypeDef,
+    VarDecl, VarQualifier,
 };
 
 use super::assign_type::{assign_op, type_parser, var_qualifier};
@@ -373,6 +374,64 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .boxed()
     });
 
+    let enum_variant_line = text::ident()
+        .then_ignore(pad())
+        .then_ignore(just('='))
+        .then_ignore(pad())
+        .then(expr.clone())
+        .then_ignore(optional_semicolon())
+        .map(|(name, value)| EnumVariant { name, value });
+
+    let enum_brace_body = just('{')
+        .ignore_then(pad())
+        .ignore_then(enum_variant_line.repeated())
+        .then_ignore(pad())
+        .then_ignore(just('}'));
+
+    let enum_name_and_body = text::ident()
+        .then_ignore(pad())
+        .then(enum_brace_body.clone())
+        .map(|(name, variants)| EnumDef { name, variants });
+
+    let enum_item = text::keyword("enum")
+        .ignore_then(pad().ignore_then(enum_name_and_body.clone()))
+        .map(Item::Enum)
+        .boxed();
+
+    let udt_field_line = var_qualifier()
+        .or_not()
+        .then_ignore(pad())
+        .then(type_parser())
+        .then_ignore(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then_ignore(just('='))
+        .then_ignore(pad())
+        .then(expr.clone())
+        .then_ignore(optional_semicolon())
+        .map(|(((qual, ty), name), default)| UdtField {
+            qualifier: qual,
+            ty,
+            name,
+            default,
+        });
+
+    let typedef_brace_body = just('{')
+        .ignore_then(pad())
+        .ignore_then(udt_field_line.repeated())
+        .then_ignore(pad())
+        .then_ignore(just('}'));
+
+    let typedef_name_fields = text::ident()
+        .then_ignore(pad())
+        .then(typedef_brace_body.clone())
+        .map(|(name, fields)| UserTypeDef { name, fields });
+
+    let typedef_item = text::keyword("type")
+        .ignore_then(pad().ignore_then(typedef_name_fields.clone()))
+        .map(Item::TypeDef)
+        .boxed();
+
     let param = type_parser()
         .or_not()
         .then_ignore(pad())
@@ -483,6 +542,12 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     let export_decl = text::keyword("export")
         .ignore_then(pad())
         .ignore_then(choice((
+            text::keyword("enum")
+                .ignore_then(pad().ignore_then(enum_name_and_body.clone()))
+                .map(ExportDecl::Enum),
+            text::keyword("type")
+                .ignore_then(pad().ignore_then(typedef_name_fields.clone()))
+                .map(ExportDecl::TypeDef),
             fn_decl_f.clone().map(ExportDecl::Fn),
             fn_decl_method.clone().map(ExportDecl::Fn),
             fn_decl_pine.clone().map(ExportDecl::Fn),
@@ -495,6 +560,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         import_decl.clone(),
         export_decl.clone(),
         decl.clone(),
+        enum_item.clone(),
+        typedef_item.clone(),
         fn_decl.clone(),
         stmt.clone().map(Item::Stmt),
     ))

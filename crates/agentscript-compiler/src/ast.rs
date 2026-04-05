@@ -29,11 +29,13 @@ pub struct ImportDecl {
     pub alias: String,
 }
 
-/// `export f ...` or `export var ...` in a `library()` script.
+/// `export f ...`, `export var ...`, `export enum ...`, or `export type ...` in a `library()` script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExportDecl {
     Fn(FnDecl),
     Var(VarDecl),
+    Enum(EnumDef),
+    TypeDef(UserTypeDef),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,8 +48,40 @@ pub enum Item {
     ScriptDecl(ScriptDeclaration),
     /// User function: Pine `name(...) =>`, `method name(...) =>`, or QAS `f name(...) =>` / block.
     FnDecl(FnDecl),
+    /// Pine `enum name { a = expr, ... }` (braced QAS/TV-style body).
+    Enum(EnumDef),
+    /// Pine `type name { fields... }` user-defined type.
+    TypeDef(UserTypeDef),
     /// Executable statement (includes variable declarations at top level).
     Stmt(Stmt),
+}
+
+/// Enumeration definition (`enum tz { ... }`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub value: Expr,
+}
+
+/// User-defined type (`type bar { float o = open ... }`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserTypeDef {
+    pub name: String,
+    pub fields: Vec<UdtField>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UdtField {
+    pub qualifier: Option<VarQualifier>,
+    pub ty: Type,
+    pub name: String,
+    pub default: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +127,8 @@ pub enum VarQualifier {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Primitive(PrimitiveType),
+    /// User `enum` or `type` name, e.g. `map<symbols, float>`.
+    Named(String),
     Array(Box<Type>),
     Matrix(Box<Type>),
     Map(Box<Type>, Box<Type>),

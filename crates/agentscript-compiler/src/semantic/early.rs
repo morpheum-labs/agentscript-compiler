@@ -2,13 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ExportDecl, FnDecl, Item, Script};
+use crate::ast::{EnumDef, ExportDecl, FnDecl, Item, Script, UserTypeDef};
 
 use super::AnalyzeError;
 
 pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
-    let mut fn_counts: HashMap<String, usize> = HashMap::new();
+    let mut def_counts: HashMap<String, usize> = HashMap::new();
     let mut import_counts: HashMap<String, usize> = HashMap::new();
 
     for item in &script.items {
@@ -17,19 +17,31 @@ pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
                 *import_counts.entry(i.alias.clone()).or_insert(0) += 1;
             }
             Item::FnDecl(f) => {
-                *fn_counts.entry(f.name.clone()).or_insert(0) += 1;
+                *def_counts.entry(f.name.clone()).or_insert(0) += 1;
             }
             Item::Export(ExportDecl::Fn(f)) => {
-                *fn_counts.entry(f.name.clone()).or_insert(0) += 1;
+                *def_counts.entry(f.name.clone()).or_insert(0) += 1;
+            }
+            Item::Enum(e) => {
+                *def_counts.entry(e.name.clone()).or_insert(0) += 1;
+            }
+            Item::Export(ExportDecl::Enum(e)) => {
+                *def_counts.entry(e.name.clone()).or_insert(0) += 1;
+            }
+            Item::TypeDef(t) => {
+                *def_counts.entry(t.name.clone()).or_insert(0) += 1;
+            }
+            Item::Export(ExportDecl::TypeDef(t)) => {
+                *def_counts.entry(t.name.clone()).or_insert(0) += 1;
             }
             _ => {}
         }
     }
 
-    for (name, n) in &fn_counts {
+    for (name, n) in &def_counts {
         if *n > 1 {
             issues.push(format!(
-                "duplicate function definition `{name}` ({n} declarations)"
+                "duplicate top-level definition `{name}` ({n} declarations)"
             ));
         }
     }
@@ -45,6 +57,12 @@ pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
         match item {
             Item::FnDecl(f) => check_fn_params(f, &mut issues),
             Item::Export(ExportDecl::Fn(f)) => check_fn_params(f, &mut issues),
+            Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
+                check_enum_variants(e, &mut issues);
+            }
+            Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
+                check_udt_fields(t, &mut issues);
+            }
             _ => {}
         }
     }
@@ -70,6 +88,30 @@ fn check_fn_params(f: &FnDecl, issues: &mut Vec<String>) {
     }
 }
 
+fn check_enum_variants(e: &EnumDef, issues: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    for v in &e.variants {
+        if !seen.insert(&v.name) {
+            issues.push(format!(
+                "duplicate variant `{}` in enum `{}`",
+                v.name, e.name
+            ));
+        }
+    }
+}
+
+fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    for f in &t.fields {
+        if !seen.insert(&f.name) {
+            issues.push(format!(
+                "duplicate field `{}` in type `{}`",
+                f.name, t.name
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +132,7 @@ mod tests {
         )
         .unwrap();
         let e = analyze_script(&s).unwrap_err();
-        assert!(e.message.contains("duplicate function"));
+        assert!(e.message.contains("duplicate"));
         assert!(e.message.contains("a"));
     }
 
@@ -106,6 +148,7 @@ f dup() => 2
         )
         .unwrap();
         let e = analyze_script(&s).unwrap_err();
+        assert!(e.message.contains("duplicate"), "{}", e.message);
         assert!(e.message.contains("dup"));
     }
 

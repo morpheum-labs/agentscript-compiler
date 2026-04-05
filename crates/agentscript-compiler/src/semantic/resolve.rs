@@ -134,7 +134,7 @@ impl ResolveCtx {
     fn walk_type(&mut self, t: &crate::ast::Type, context: &str) {
         use crate::ast::Type;
         match t {
-            Type::Primitive(_) => {}
+            Type::Primitive(_) | Type::Named(_) => {}
             Type::Array(inner) | Type::Matrix(inner) => self.walk_type(inner, context),
             Type::Map(a, b) => {
                 self.walk_type(a, context);
@@ -273,6 +273,18 @@ pub fn resolve_script(script: &Script) -> Result<(), AnalyzeError> {
                     c.walk_type(ty, "export var");
                 }
                 c.walk_expr(&v.value, "export var");
+            }
+            Item::Export(crate::ast::ExportDecl::Enum(e)) | Item::Enum(e) => {
+                for v in &e.variants {
+                    c.walk_expr(&v.value, "enum variant");
+                }
+            }
+            Item::Export(crate::ast::ExportDecl::TypeDef(t))
+            | Item::TypeDef(t) => {
+                for f in &t.fields {
+                    c.walk_type(&f.ty, "UDT field");
+                    c.walk_expr(&f.default, "UDT field default");
+                }
             }
             Item::Import(_) => {}
         }
