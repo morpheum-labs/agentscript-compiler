@@ -77,9 +77,10 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST (current)
 
-- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for a **compiler-oriented EBNF** (plus product context). **Implementation vs that EBNF** is tracked in [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md) (divergences include version tokens and many QAS/Pine constructs not duplicated in the short EBNF block).
+- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for the **compiler-oriented EBNF** (§§1–13 aligned with the reference parser; plus surrounding product context). Residual spec↔parser notes: [`spec/qas-v1-parser-status.md`](spec/qas-v1-parser-status.md).
 - [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
-- [ ] **Close remaining gaps vs `spec/agentscripts-v1.md`:** align the spec’s lexical `VERSION_DECL` and program-structure EBNF with what we parse (`5`/`6`, `import`/`export`, `enum`/`type`, extended control flow, etc.); Pine-indent bodies vs QAS braces; finalize **`map.from`** (spec line is a stub) if required. **`enum` / `type`:** braced forms + `export` are implemented; unbraced TV-style bodies still out of scope.
+- [x] **Spec EBNF alignment (§§1–13):** `//@version=` **5 or 6**, optional `// @agentscript=`, program **`item`** list (`import` / `export` / script decl / `enum` / `type` / functions / statements), extended **`for` / `while` / `switch`**, compound assigns, tuple assign, bracket + `array.from` collections, Pine + QAS function forms. **`enum` / `type`:** braced + `export` reflected in spec; unbraced TV-style bodies still out of scope.
+- [ ] **Remaining Phase 0 spec/grammar work:** Pine-indent bodies vs QAS braces; finalize **`map.from`** in §11 when Pine reference + tests are ready; optional ANTLR/Tree-sitter grammar export; corpus vs real `.pine` / `.qas` for parity.
 - [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
 
 ### Pine v6 parity vs bundled docs (`pinescriptv6/`)

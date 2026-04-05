@@ -1,47 +1,40 @@
 # QAS v1 — parser implementation status
 
-This file tracks how the **`agentscript-compiler`** crate (Chumsky parsers under `crates/agentscript-compiler/src/parser/`) lines up with the narrative + EBNF in [`agentscripts-v1.md`](agentscripts-v1.md). The spec mixes product context with a **compiler-oriented EBNF** (§§1–13 around line 331); that EBNF is **aspirational** in places and does not yet list every construct the compiler accepts.
+This file tracks how the **`agentscript-compiler`** crate (Chumsky parsers under `crates/agentscript-compiler/src/parser/`) lines up with [`agentscripts-v1.md`](agentscripts-v1.md). The **EBNF block (§§1–13)** in that document was revised to follow the **reference parser** (program shape, headers, imports/exports, `enum`/`type`, control flow, expression sketch). Remaining mismatches are called out below.
 
 ## Version headers
 
-| Document / policy | Allowed `//@version=` |
-|-------------------|----------------------|
-| [`agentscripts-v1.md`](agentscripts-v1.md) EBNF (§1) | `1` \| `6` |
-| [`version_policy.rs`](../crates/agentscript-compiler/src/version_policy.rs) + lexer | **`5` and `6`** (QAS / AgentScript alignment) |
+| Source | Allowed `//@version=` |
+|--------|------------------------|
+| [`agentscripts-v1.md`](agentscripts-v1.md) §1 `VERSION_LINE` | **`5` \| `6`** |
+| [`version_policy.rs`](../crates/agentscript-compiler/src/version_policy.rs) + lexer | **`5` and `6`** |
 
-Treat **`5`/`6`** as authoritative for this repository until the spec EBNF is revised to match.
+Optional **`// @agentscript=<n>`** (`n` ≥ 1): see §1 `AGENTSCRIPT_LINE` in the spec and `agentscript_directive` in `parser/lex.rs`.
 
 ## EBNF §11 “literals & collections” vs AST
 
 | Spec rule | Implemented? | Notes |
 |-----------|----------------|-------|
-| `matrix_literal` → `matrix.new<…>(…)` | **Yes** | Parsed as [`Expr::Call`](../crates/agentscript-compiler/src/ast.rs) + type args; see `generic_call_matrix_new` in `tests/parse_smoke.rs`. |
-| `map_literal` → `map.new<…,…>(…)` | **Yes** | Same; see `map_named_key_type` in `parse_smoke.rs`. |
-| `array_literal` → `array.from(…)` | **Yes** | Parsed as a dotted call (`array` · `from`); not a separate AST variant. See `array_from_call` in `parse_smoke.rs`. |
-| `array_literal` → `[a, b]` | **Yes** | Pine-style bracket literals; **extra** vs the spec’s single `array.from` line. |
-| `map.from(…)` | **Not in spec body** | EBNF shows `map.from '(' ... ')'` as incomplete; no dedicated tests until grammar is finalized. |
+| `matrix_literal` → `matrix.new<…>(…)` | **Yes** | [`Expr::Call`](../crates/agentscript-compiler/src/ast.rs) + type args; `generic_call_matrix_new` in `tests/parse_smoke.rs`. |
+| `map_literal` → `map.new<…,…>(…)` | **Yes** | Same; `map_named_key_type` in `parse_smoke.rs`. |
+| `array_factory_literal` → `array.from(…)` | **Yes** | Dotted call; `array_from_call` in `parse_smoke.rs`. |
+| `bracket_array_literal` → `[a, b]` | **Yes** | `Expr::Array`; not a separate spec name before the EBNF update. |
+| `map.from(…)` | **TBD** | Not finalized in spec §11; parse as ordinary calls once signatures are fixed. |
 
-## Major syntax present in the compiler but absent or narrower in the spec EBNF
+## Spec vs parser — residual gaps
 
-The following are **implemented** in [`script.rs`](../crates/agentscript-compiler/src/parser/script.rs) / [`expr.rs`](../crates/agentscript-compiler/src/parser/expr.rs) but **not** reflected in the short EBNF excerpt in `agentscripts-v1.md`:
-
-- `import` / `export` (including `export enum`, `export type`, `export` functions and vars)
-- `enum` and `type` (UDT) braced declarations
-- Pine-style `name(…) =>` / block functions and `method` declarations; QAS `f name(…)`
-- `for … in`, `for [i, v] in`, `for` … `to` … [`by`], `while`, `break`, `continue`
-- `switch` with optional scrutinee and `=>` arms
-- Tuple destructuring assign `[a, b] = expr`
-- Compound assignments `+=`, `-=`, …
-- `if` as expression (`Expr::IfExpr`) and ternary
-- Optional `// @agentscript=<n>` header (≥ 1)
+- **§9 plot/drawing** productions are **declarative** in the spec; the reference parser often accepts the same calls as **expression statements** without dedicated statement AST variants.
+- **Indent-only** TradingView bodies are **not** in the reference grammar (`{ … }` first).
+- **`footprint` type** and full **`request.*` typing** are Phase 1+.
+- **EBNF** uses nonterminals like `path_or_call`, `label_new`, … as **documentation**; the Rust code is the fine-grained source of truth for precedence and token boundaries.
 
 ## Still out of scope for Phase 0 (parser)
 
-- Indentation-only blocks (TV-style); compiler is **`{ … }`-first**
-- Unbraced TV-style `enum` / `type` bodies
-- Dedicated AST / parse rules for every `plot*` / drawing statement as **statements** (many parse today as generic calls / expr stmts depending on form)
-- `footprint` type keyword and full `request.*` typing (Phase 1+)
+- Indentation-only blocks (TV-style).
+- Unbraced TV-style `enum` / `type` bodies.
+- Dedicated statement AST for every `plot*` / drawing form.
+- `map.from` until Pine v6 reference + tests lock the shape.
 
 ## How to extend this doc
 
-When adding syntax, update the table above and add or extend a test in `crates/agentscript-compiler/tests/parse_smoke.rs` (or a fixture under `crates/agentscript-compiler/tests/fixtures/`, e.g. `minimal_strategy.pine`, wired by `fixture_minimal_strategy_parse_and_analyze`).
+When adding syntax, update [`agentscripts-v1.md`](agentscripts-v1.md) §§ as needed and add tests in `crates/agentscript-compiler/tests/parse_smoke.rs` or fixtures under `crates/agentscript-compiler/tests/fixtures/`.
