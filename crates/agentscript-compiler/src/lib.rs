@@ -142,6 +142,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn agentscript_source_extensions_recognize_pine_and_qas_case_insensitive() {
@@ -155,14 +156,24 @@ mod tests {
 
     #[test]
     fn parse_script_file_accepts_pine_extension() {
-        let mut tmp = tempfile::NamedTempFile::with_suffix(".pine").unwrap();
-        writeln!(tmp, "//@version=6\nindicator(\"t\")").unwrap();
-        let p = tmp.path();
-        assert!(is_agentscript_source_path(p));
-        let script = parse_script_file(p).expect("valid .pine should parse");
-        assert!(matches!(
-            script.declaration.kind,
-            ast::ScriptKind::Indicator
-        ));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut p = std::env::temp_dir();
+        p.push(format!("agentscript_test_{nanos}.pine"));
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "//@version=6\nindicator(\"t\")").unwrap();
+        drop(f);
+        assert!(is_agentscript_source_path(&p));
+        let script = parse_script_file(&p).expect("valid .pine should parse");
+        let Item::ScriptDecl(ScriptDeclaration {
+            kind: ScriptKind::Indicator,
+            ..
+        }) = &script.items[0]
+        else {
+            panic!("expected indicator decl");
+        };
+        let _ = std::fs::remove_file(&p);
     }
 }
