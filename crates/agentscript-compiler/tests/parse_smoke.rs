@@ -164,6 +164,52 @@ indicator("I")
 }
 
 #[test]
+fn array_literal_empty_and_elements() {
+    let src = r#"indicator("I")
+a = []
+b = [1, 2 + 3, x]
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign a");
+    };
+    assert_eq!(*value, Expr::Array(vec![]));
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[2] else {
+        panic!("expected assign b");
+    };
+    assert_eq!(
+        *value,
+        Expr::Array(vec![
+            Expr::Int(1),
+            Expr::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expr::Int(2)),
+                right: Box::new(Expr::Int(3)),
+            },
+            Expr::IdentPath(vec!["x".into()]),
+        ])
+    );
+}
+
+#[test]
+fn array_literal_then_index() {
+    let src = r#"indicator("I")
+c = [10, 20][1]
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    assert_eq!(
+        *value,
+        Expr::Index {
+            base: Box::new(Expr::Array(vec![Expr::Int(10), Expr::Int(20)])),
+            index: Box::new(Expr::Int(1)),
+        }
+    );
+}
+
+#[test]
 fn assign_colon_eq_and_binary() {
     let src = r#"indicator("I")
 a := 1 + 2 * 3
@@ -746,10 +792,65 @@ y = 1
     let Item::FnDecl(f) = &s.items[1] else {
         panic!("expected fn decl");
     };
+    assert!(!f.is_method);
     assert_eq!(f.name, "add");
     assert_eq!(f.params.len(), 2);
     assert!(matches!(f.body, FnBody::Expr(Expr::Binary { .. })));
     assert!(matches!(&s.items[2], Item::Stmt(Stmt::Assign { .. })));
+}
+
+#[test]
+fn pine_function_without_f_keyword() {
+    let src = r#"indicator("x")
+add(int a, int b) => a + b
+y = 1
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::FnDecl(f) = &s.items[1] else {
+        panic!("expected Pine-style fn decl");
+    };
+    assert!(!f.is_method);
+    assert_eq!(f.name, "add");
+}
+
+#[test]
+fn pine_function_named_f_uses_pine_form() {
+    let src = r#"indicator("x")
+f() => 1
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::FnDecl(f) = &s.items[1] else {
+        panic!("expected fn named f");
+    };
+    assert_eq!(f.name, "f");
+    assert!(f.params.is_empty());
+}
+
+#[test]
+fn method_declaration_sets_flag() {
+    let src = r#"indicator("x")
+method push(array<float> id, float v) => id
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::FnDecl(f) = &s.items[1] else {
+        panic!("expected method decl");
+    };
+    assert!(f.is_method);
+    assert_eq!(f.name, "push");
+}
+
+#[test]
+fn compound_assignment_plus_eq() {
+    let src = r#"indicator("x")
+n = 0
+n += 1
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { name, op, .. }) = &s.items[2] else {
+        panic!("expected assign");
+    };
+    assert_eq!(name, "n");
+    assert_eq!(*op, AssignOp::PlusEq);
 }
 
 #[test]
@@ -775,6 +876,17 @@ fn pine_export_function() {
     };
     assert_eq!(f.name, "inc");
     assert_eq!(f.params.len(), 1);
+}
+
+#[test]
+fn pine_export_without_f_keyword() {
+    let src = "library(\"L\")\nexport inc(float x) => x + 1\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Export(ExportDecl::Fn(f)) = &s.items[1] else {
+        panic!("expected export fn");
+    };
+    assert!(!f.is_method);
+    assert_eq!(f.name, "inc");
 }
 
 #[test]

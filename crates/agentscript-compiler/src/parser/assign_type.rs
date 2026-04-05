@@ -9,6 +9,11 @@ use super::lex::pad;
 pub(super) fn assign_op() -> impl Parser<char, AssignOp, Error = Simple<char>> + Clone {
     choice((
         just(':').ignore_then(just('=')).to(AssignOp::ColonEq),
+        just('+').ignore_then(just('=')).to(AssignOp::PlusEq),
+        just('-').ignore_then(just('=')).to(AssignOp::MinusEq),
+        just('*').ignore_then(just('=')).to(AssignOp::StarEq),
+        just('/').ignore_then(just('=')).to(AssignOp::SlashEq),
+        just('%').ignore_then(just('=')).to(AssignOp::PercentEq),
         // Single `=` assignment must not swallow the leading `=` of `==` or `=>` (Chumsky `Then` does not rewind).
         just('=')
             .ignore_then(choice((

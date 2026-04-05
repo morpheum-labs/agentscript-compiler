@@ -4,18 +4,64 @@
 
 **Turn AgentScript / QAS (`.qas`) into validated, reproducible `wasm32` modules** that downstream runtimes—**Aether** (`aether-mwvm`, wasmtime / MWVM)—can load under a **shared strategy guest ABI**. The compiler is the language front end; execution policy and job orchestration live in Aether and **MWVM**.
 
+## Semantics — development progress
+
+**Legend:** **None** = not implemented. **AST only** = syntax is parsed into the AST; no typecheck, runtime, or codegen meaning. **Partial** = some real rules exist (validation, policy, or docs) but not a full semantic implementation.
+
+| Semantic domain | Scope | Progress | Notes |
+|-----------------|-------|----------|--------|
+| **Lexical structure** | Whitespace, `//` / `/* */` comments, line structure | **Done** (parse) | Trivia handled in normal parse + leading scan. |
+| **`//@version=` / `// @agentscript=`** | Which Pine / QAS header numbers are allowed | **Partial** | `//@version=` restricted to **5 and 6** (`version_policy.rs`, `leading_scan.rs`, `lex.rs`). `// @agentscript=` ≥ 1. No semantic *differences* between v5 vs v6 bodies yet. |
+| **Script kind** | `indicator` / `strategy` / `library` declarations | **AST only** | Kind and call args stored; no rules (e.g. `strategy.*` only in strategies). |
+| **Imports / exports** | `import … as`, `export` fn/var | **AST only** | No module graph, no symbol linking. |
+| **Array literals** | `[a, b]`, `[]` | **AST only** | `Expr::Array`; element types not checked. |
+| **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic.rs); no spans on AST yet. |
+| **Scopes & name resolution** | Bindings, shadowing, qualified names | **None** | Planned Phase 1. |
+| **User functions** | `f name(params) => …` / block body, params, defaults | **AST only** | No recursion/arity/type checking. |
+| **Variable qualifiers** | `var`, `varip`, `const`, `input`, `simple`, `series` | **AST only** | No Pine-style persistence or series/simple rules. |
+| **Assignments** | `=` first assign vs `:=` reassignment | **AST only** | No “assign before declare” or single-assignment checks. |
+| **Types (surface)** | `int` / `float` / `bool` / `string` / `color`, `array<>` / `matrix<>` / `map<,>`, drawing types | **AST only** | Type syntax parsed; not checked or enforced. |
+| **Type inference & checking** | `series` vs `simple`, call compatibility, generics | **None** | Planned Phase 1. |
+| **Historical reference** | `expr[i]`, validity of offset, series history | **None** | Parsed as `Expr::Index`; no semantics. |
+| **Operators** | Unary/binary, precedence, `==` vs `=` | **AST only** | No bool strictness or Na/na propagation rules. |
+| **Ternary** | `cond ? a : b` | **AST only** | No lazy/short-circuit semantics in IR. |
+| **Calls** | Positional / named args, `matrix.new<float>(…)` | **AST only** | No builtin resolution or signatures. |
+| **Member / method syntax** | `a.b`, `close.sma(20)` | **AST only** | Desugared to `Member` / `Call`; no method tables. |
+| **Control flow** | `if` / `else`, `for` … `to` [`by`], `switch`, `while`, blocks | **AST only** | No definite assignment, reachability, or Pine loop limits. |
+| **Bar execution model** | Once per bar, `varip`, bar states | **None** | Requires IR + runtime + host. |
+| **`ta.*` builtins** | Indicators, `crossover`, etc. | **None** | Registry + host/intrinsics (Phase 1–2). |
+| **`strategy.*` builtins** | Orders, position, PnL, trade stats | **None** | Lowered to host imports; host implements semantics. |
+| **`math.*` builtins** | Scalar math, rounding policy | **None** | |
+| **`syminfo.*` / `timeframe.*`** | Symbol / timeframe metadata | **None** | Host-fed constants/imports. |
+| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **None** | Roadmap Phase 1–3; typing + ABI + host. |
+| **`request.financial`** | Financial series by id/period | **None** | Roadmap Phase 1–3. |
+| **Other `request.*`** | e.g. economic, dividend, … | **None** | Same pattern as security/financial when prioritized. |
+| **`mcp.*` builtins** | `call`, `discover`, `emit`, quotas | **None** | QAS-specific; host MCP proxy. |
+| **`plot.*` / drawing / `color.*`** | Visualization side effects | **None** | May be no-op in WASM or side-channel metadata. |
+| **`input.*` factory fns** | `input.int`, `input.float`, … | **None** | `input` *qualifier* parsed; factories not special-cased. |
+| **Side effects & order** | Order of `strategy.*` / `mcp.*` vs pure exprs | **None** | Needs effect typing + schedule in IR. |
+| **Constant folding** | Compile-time evaluation of literals | **None** | Optional optimization after typecheck. |
+| **IR & lowering** | Bar schedule, series nodes, calls → ops | **None** | Phase 2. |
+| **WASM codegen** | `wasm32` module shape | **None** | Phase 2. |
+| **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **None** | Spec + Aether/MWVM alignment; contract tests. |
+| **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
+| **Runtime / host (Aether)** | Data feeds, fills, `request.*`, MCP | **None** | Outside this crate; semantics live here for execution. |
+| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette**. Analyze: plain [`AnalyzeError`](crates/agentscript-compiler/src/semantic.rs) until spans exist. |
+
 ## Current status
 
 **Done today**
 
-- [x] **Parse → AST** (Chumsky): `//@version=1` or `//@version=6`, script declarations (`indicator` / `strategy` / `library`), statements (assign `=` / `:=`, expressions).
-- [x] **Diagnostics**: miette-backed `CompileError` with source spans.
-- [x] **CLI**: read a file path or stdin (`-`), print debug representation of `Script` on success.
+- [x] **Parse → AST** (Chumsky): headers (`//@version=` **5 or 6**, optional `// @agentscript=`), `import` / `export`, script declarations (`indicator` / `strategy` / `library`), **control flow** (`if` / `else`, `for` … `to` [`by`], `switch`, `while`), **blocks** `{ … }`, **user functions** Pine-style `name(…) =>` / `{ … }` or QAS `f name(…)`, **`method name(…) =>`**, **export** of Pine-style or `f` functions, **qualified and typed vars** (`var` / `varip` / `const` / `input` / `simple` / `series`, optional types), assignments `=` / `:=` / **`+=` / `-=` / `*=` / `/=` / `%=`**, **ternary** `? :`, **indexing** `expr[i]`, **array literals** `[a, b]`, **dotted calls** and **method-style** `base.field(…)` (e.g. `close.sma(20)`), generics on calls (e.g. `matrix.new<float>`), numeric literals with **scientific notation**, optional trailing **`;`**, expressions and comments. See `crates/agentscript-compiler/src/parser/script.rs` and `expr.rs`.
+- [x] **Lightweight semantic pass**: [`analyze_script`](crates/agentscript-compiler/src/semantic.rs) rejects duplicate top-level function names (including `export f`), duplicate `import` aliases, and duplicate parameters in one function; [`parse_and_analyze`](crates/agentscript-compiler/src/lib.rs) chains parse + analyze.
+- [x] **Diagnostics**: miette-backed `CompileError` with source spans (parse); analyze messages are textual until the AST carries spans.
+- [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), run parse + analyze, print debug `Script` on success.
 - [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`.
 
 **Not started**
 
 - [ ] Typechecker (scopes, builtins, strategy vs library rules).
+- [ ] **`request.security` / `request.financial`** end-to-end: Pine v6-aligned typing and lowering, guest ABI imports, and Aether/MWVM host that serves aligned foreign series (and financial fields where applicable).
 - [ ] IR and lowering.
 - [ ] Codegen to **`wasm32-unknown-unknown`** (or agreed target triple).
 - [ ] **Guest ABI** alignment with Aether (`aether-common` / ABI doc): exports, calling convention, host imports for data and backtest hooks.
@@ -31,10 +77,36 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST (current)
 
-- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 1 or 6, comments). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
+- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
 - [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
-- [ ] **Close the gap vs `spec/agentscripts-v1.md`:** `if` / `else` / `for` / `switch`, blocks `{ … }`, user functions (`f` … `=>` / `{ … }`), `var` / `varip` / `const` / `input` / `simple` / `series` declarations with optional types, ternary `? :`, scientific `NUMBER` literals, array / matrix / map literals, optional trailing `;`, and other Pine v6 statement forms called out in the spec.
+- [ ] **Close the gap vs `spec/agentscripts-v1.md`:** matrix / **map literals** (and any remaining composite literal forms) and other Pine v6 expression or statement forms the spec lists that are not yet in the grammar (e.g. extra builtins-only syntax, enum / tuple forms if required, edge cases in `switch` / `for`, etc.—audit against `spec/agentscripts-v1.md` EBNF).
 - [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
+
+### Pine v6 parity vs bundled docs (`pinescriptv6/`)
+
+The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (keywords, types, operators, namespaces, visuals). Use it as the **checklist** below; the compiler today is **QAS-shaped** (`f` functions, braced blocks) and only **partially** overlaps TV v6 **syntax**.
+
+| Area | TV v6 (`pinescriptv6/` paths) | In roadmap semantics table | Parser / AST gap (compile path) |
+|------|------------------------------|----------------------------|--------------------------------|
+| **Function declaration shape** | `name(params) =>` / block; `export name(...) =>`; optional QAS `f name(...)` ([`reference/keywords.md`](pinescriptv6/reference/keywords.md) `export`) | — | **Parser:** Pine form `name(...) =>` / `{` and `export` + same; **`f` still supported.** Semantics / UDT `this` still missing. |
+| **`method` declarations** | `method foo(type id, ...) =>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `method`) | — | **Parser:** `method` + name + params + body; [`FnDecl.is_method`](crates/agentscript-compiler/src/ast.rs). No typecheck for first-param dispatch yet. |
+| **`type` (UDT)** | Composite types, `Type.new()`, field defaults ([`keywords.md`](pinescriptv6/reference/keywords.md) `type`, [`reference/types.md`](pinescriptv6/reference/types.md)) | Types (surface) partial | **Missing:** UDT items, field defs, `varip` on fields ([`keywords.md`](pinescriptv6/reference/keywords.md) `varip` + UDT example). |
+| **`enum`** | `enum name` / fields / `export enum` ([`keywords.md`](pinescriptv6/reference/keywords.md) `enum`) | — | **Missing:** enum declarations; `map<enum, T>`, `input.enum`, etc. depend on this. |
+| **`if` as expression** | `x = if cond a else b`, chained `else if` ([`keywords.md`](pinescriptv6/reference/keywords.md) `if`) | Ternary AST only | **Missing:** statement-form `if` exists; **expression-form** `if`/`else` is separate in TV. |
+| **`switch` forms** | Expression switch; **no-scrutinee** `switch` + `cond =>` arms ([`keywords.md`](pinescriptv6/reference/keywords.md) `switch`) | Control flow AST only | **Gap:** verify / extend grammar for `switch` without scrutinee (strategy example in docs). |
+| **`for … in` / `for [i, v] in`** | Arrays, matrices as iterables ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in`) | — | **Missing:** all `for…in` variants. |
+| **Compound assignments** | `+=`, `-=`, `*=`, `/=`, `%=` ([`reference/operators.md`](pinescriptv6/reference/operators.md)) | Assignments AST only | **Parser:** all five compound ops + `=` / `:=` ([`AssignOp`](crates/agentscript-compiler/src/ast.rs)). No lowering to `x = x + y` yet. |
+| **Tuple / multi-assign** | `[a, b, c] = expr` ([`reference/types.md`](pinescriptv6/reference/types.md) `simple` example) | — | **Missing:** lhs destructuring pattern. |
+| **Type syntax variants** | `float[]` style vs `array<float>` ([`keywords.md`](pinescriptv6/reference/keywords.md) `for...in` examples) | Types (surface) | **Missing / verify:** bracket array type form if required by TV v6 grammar. |
+| **`footprint` type** | `request.footprint()` ([`reference/types.md`](pinescriptv6/reference/types.md) `footprint`) | — | **Missing:** type keyword + later `request.*` wiring. |
+| **Compiler annotations** | `//@description`, `//@function`, `//@param`, `//@field`, `//@enum`, `//@strategy_alert_message`, etc. ([`reference/annotations.md`](pinescriptv6/reference/annotations.md)) | — | **Parse:** treat as comments (ok today) or preserve for library docs / tooling. |
+| **Indentation-based blocks** | TV allows indent bodies for `while`/`if` in some styles; we use **`{ … }`** only | — | **Dialect:** many TV examples use braces in v6 docs; confirm against `limitations.md` / style. |
+| **`break` / `continue`** | Loop control ([`keywords.md`](pinescriptv6/reference/keywords.md) `while` remarks) | — | **Missing** in parser if not present. |
+| **Built-in namespaces** | `ta`, `strategy`, `request` (+ `seed`, `currency_rate`, `footprint`, …), `math`, `str`, `array`, `matrix`, `map`, drawing APIs ([`LLM_MANIFEST.md`](pinescriptv6/LLM_MANIFEST.md), `reference/functions/*`) | Per-namespace rows (None) | **Semantics + ABI**, not parser-only; signatures live in `reference/functions/*.md`. |
+| **Visual / plot API** | `plot*`, `line`, `label`, `box`, `table`, fills, etc. ([`visuals/*.md`](pinescriptv6/visuals)) | plot.* / drawing row | Same: mostly **stdlib + host**, not syntax. |
+| **Execution model** | `barstate`, `var`, `varip`, history ([`concepts/execution_model.md`](pinescriptv6/concepts/execution_model.md), [`pine_script_execution_model.md`](pinescriptv6/pine_script_execution_model.md)) | Bar execution model | **IR + runtime**, Phase 2+. |
+
+**Summary:** ROADMAP Phase 0 already tracks **matrix/map literals** and spec EBNF audit; the table above adds **TV-specific syntax** documented under `pinescriptv6/` but not listed explicitly before (especially **`f`-less functions**, **`method`**, **`type`/`enum`**, **`for…in`**, **compound assigns**, **`if` expression**, **tuple assign**, and **`switch` without scrutinee**). Phase 1+ rows still cover builtins (`reference/functions/*`) and semantics.
 
 ### Phases 1–3 vs parsing
 
@@ -42,14 +114,19 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 1 — Semantic analysis
 
+- [x] **Early checks (no types yet):** duplicate top-level function names, duplicate `import` aliases, duplicate parameters per `f` — see [`semantic.rs`](crates/agentscript-compiler/src/semantic.rs).
 - [ ] Symbol tables and name resolution.
 - [ ] Type system for core expressions (numbers, series, calls).
 - [ ] Script-kind rules (`strategy` vs `indicator` vs `library`).
+- [ ] **`request.security`:** Pine v6-aligned signatures and parameter typing (symbol, timeframe, expression, `gaps`, `lookahead`, `ignore_invalid_symbol`, related overloads); result type as **series** aligned with the expression’s type; **dynamic** first-argument rules (where TV allows `request.*` inside loops/conditionals—match or document QAS deltas); errors for invalid combinations.
+- [ ] **`request.financial`:** Pine v6-aligned signatures and field typing (symbol, financial id, period, `ignore_invalid_symbol`, related forms); result typing consistent with TV’s financial series rules; same **dynamic** / scope constraints as other `request.*` where QAS aligns.
 - [ ] Rich diagnostics (second pass after typecheck).
 
 ## Phase 2 — IR & codegen
 
 - [ ] Internal IR suited for lowering and optimization passes.
+- [ ] **`request.security` lowering:** lower to documented **host imports** (resolve symbol/timeframe, merge bars, return OHLC/series slice or per-bar samples per ABI); specify **determinism** (feed + merge policy ⇒ stable results); optional **static request graph** in metadata for host prefetch.
+- [ ] **`request.financial` lowering:** lower to **host imports** that resolve symbol + financial id + period and return series aligned with the ABI; **determinism** and prefetch/metadata story consistent with `request.security`.
 - [ ] WASM emission (likely `wasm-encoder` / `wasmparser` validation, or another chosen stack).
 - [ ] **ABI contract** implemented in codegen (documented in-repo + mirrored types in Aether where useful).
 
@@ -57,6 +134,8 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 - [ ] CLI flags: `--emit-ast`, `--emit-wasm`, `-o`, quiet / JSON diagnostics (as needed).
 - [ ] **Documented loop**: `.qas` → `agentscript-compiler` → `.wasm` → `aether` run (when Aether’s WASM path is ready).
+- [ ] **`request.security`:** integration / golden tests with multi-timeframe fixture data (compiler + host), including at least one dynamic-symbol case if QAS supports it.
+- [ ] **`request.financial`:** integration / golden tests with fixture financial data (compiler + host), including invalid-symbol / missing-field cases as needed.
 - [ ] Optional: `cargo` integration or `build.rs` helper for strategy crates.
 
 ## Success criteria by phase
@@ -64,8 +143,8 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 | Phase | Done when |
 |-------|-----------|
 | **0** | `cargo test` green; real-world-ish `.qas` samples parse with clear errors on invalid input. |
-| **1** | Ill-typed scripts fail fast with actionable diagnostics; well-typed scripts have a stable semantic model. |
-| **2** | Valid strategies compile to **loadable** WASM that satisfies the **written guest ABI** (verified against Aether/MWVM smoke tests). |
+| **1** | Ill-typed scripts fail fast with actionable diagnostics; well-typed scripts have a stable semantic model; **`request.security` and `request.financial` are typed** (signatures + series rules) or rejected explicitly. |
+| **2** | Valid strategies compile to **loadable** WASM that satisfies the **written guest ABI** (verified against Aether/MWVM smoke tests); **`request.security` / `request.financial` map to imports** and a stub host can run a minimal MTF + financial example. |
 | **3** | Builders can compile and run end-to-end without reading compiler internals. |
 
 ## Repository layout
@@ -74,3 +153,4 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 |-------|----------|
 | Library API | `crates/agentscript-compiler` (`parse_script`, AST, errors) |
 | CLI | `crates/agentscript-compiler/src/main.rs` |
+| Pine v6 manual (reference corpus) | `pinescriptv6/` (`LLM_MANIFEST.md`, `reference/`, `concepts/`, `visuals/`) |

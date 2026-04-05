@@ -1,11 +1,12 @@
-//! AgentScript (QAS) compiler front-end: parse → AST (typecheck + codegen later).
+//! AgentScript (QAS) compiler front-end: parse → AST → lightweight semantic checks; typecheck + codegen later.
 //!
-//! Development progress: see repository root `ROADMAP.md`. Planned path: typechecker, IR,
+//! Development progress: see repository root `ROADMAP.md`. Planned path: full typechecker, IR,
 //! codegen, and `wasm32` output aligned with the Aether strategy guest ABI.
 
 mod ast;
 mod error;
 mod parser;
+mod semantic;
 mod version_policy;
 
 pub use ast::{
@@ -15,6 +16,7 @@ pub use ast::{
 };
 pub use error::{CompileError, ParseFileError};
 pub use parser::script_parser;
+pub use semantic::{analyze_script, AnalyzeError};
 
 use chumsky::Parser;
 use std::fs;
@@ -62,6 +64,25 @@ pub fn parse_script(src_name: impl AsRef<str>, source: &str) -> Result<Script, C
             src_name, owned, errs,
         )),
     }
+}
+
+/// Parse and run [`analyze_script`] (duplicate fn/import/param checks).
+pub fn parse_and_analyze(
+    src_name: impl AsRef<str>,
+    source: &str,
+) -> Result<Script, CompileOrAnalyzeError> {
+    let script = parse_script(src_name.as_ref(), source)?;
+    analyze_script(&script).map_err(CompileOrAnalyzeError::Analyze)?;
+    Ok(script)
+}
+
+/// Parse failure ([`CompileError`]) or post-parse semantic failure ([`AnalyzeError`]).
+#[derive(Debug, thiserror::Error)]
+pub enum CompileOrAnalyzeError {
+    #[error(transparent)]
+    Parse(#[from] CompileError),
+    #[error(transparent)]
+    Analyze(#[from] AnalyzeError),
 }
 
 #[cfg(test)]

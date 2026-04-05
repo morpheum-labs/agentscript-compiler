@@ -44,7 +44,7 @@ pub enum Item {
     Export(ExportDecl),
     /// `indicator(...)`, `strategy(...)`, or `library(...)`.
     ScriptDecl(ScriptDeclaration),
-    /// User function: `f name(...) => expr` or `f name(...) { ... }`.
+    /// User function: Pine `name(...) =>`, `method name(...) =>`, or QAS `f name(...) =>` / block.
     FnDecl(FnDecl),
     /// Executable statement (includes variable declarations at top level).
     Stmt(Stmt),
@@ -52,6 +52,8 @@ pub enum Item {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
+    /// Pine `method foo(...)` declarations; QAS `f` / Pine bare `foo(...)` are `false`.
+    pub is_method: bool,
     pub name: String,
     pub params: Vec<FnParam>,
     pub body: FnBody,
@@ -165,6 +167,11 @@ pub enum ElseBody {
 pub enum AssignOp {
     Eq,
     ColonEq,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +243,8 @@ pub enum Expr {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    /// Literal array: `[a, b, c]` or `[]`.
+    Array(Vec<Expr>),
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,

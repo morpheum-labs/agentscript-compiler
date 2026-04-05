@@ -318,9 +318,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(pad())
         .then(text::ident())
         .then(
-            pad()
-                .ignore_then(just('='))
-                .then_ignore(pad())
+            just('=')
+                .ignore_then(pad())
                 .ignore_then(expr.clone())
                 .or_not(),
         )
@@ -338,24 +337,62 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(just('}'))
         .map(FnBody::Block);
 
-    let fn_decl_core = text::keyword("f")
+    let fn_body_arrow = just('=')
+        .ignore_then(just('>'))
         .ignore_then(pad())
-        .ignore_then(text::ident())
+        .ignore_then(expr.clone())
+        .map(FnBody::Expr);
+
+    let fn_after_params = param_list
         .then_ignore(pad())
-        .then(param_list)
-        .then_ignore(pad())
-        .then(choice((
-            just('=')
-                .ignore_then(just('>'))
-                .ignore_then(pad())
-                .ignore_then(expr.clone())
-                .map(FnBody::Expr),
-            fn_body_block.clone(),
-        )))
-        .map(|((name, params), body)| FnDecl { name, params, body })
+        .then(choice((fn_body_arrow, fn_body_block.clone())))
         .boxed();
 
-    let fn_decl = fn_decl_core.clone().map(Item::FnDecl);
+    // Pine `foo() =>` before QAS `f foo() =>` so a function named `f` can use Pine form.
+    let fn_decl_pine = text::ident()
+        .then_ignore(pad())
+        .then(fn_after_params.clone())
+        .map(|(name, (params, body))| FnDecl {
+            is_method: false,
+            name,
+            params,
+            body,
+        })
+        .boxed();
+
+    let fn_decl_f = text::keyword("f")
+        .ignore_then(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then(fn_after_params.clone())
+        .map(|((_, name), (params, body))| FnDecl {
+            is_method: false,
+            name,
+            params,
+            body,
+        })
+        .boxed();
+
+    let fn_decl_method = text::keyword("method")
+        .ignore_then(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then(fn_after_params.clone())
+        .map(|((_, name), (params, body))| FnDecl {
+            is_method: true,
+            name,
+            params,
+            body,
+        })
+        .boxed();
+
+    let fn_decl_any = choice((
+        fn_decl_pine.clone(),
+        fn_decl_f.clone(),
+        fn_decl_method.clone(),
+    ));
+
+    let fn_decl = fn_decl_any.map(Item::FnDecl);
 
     let import_decl = text::keyword("import")
         .ignore_then(pad())
@@ -386,7 +423,9 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     let export_decl = text::keyword("export")
         .ignore_then(pad())
         .ignore_then(choice((
-            fn_decl_core.clone().map(ExportDecl::Fn),
+            fn_decl_f.clone().map(ExportDecl::Fn),
+            fn_decl_method.clone().map(ExportDecl::Fn),
+            fn_decl_pine.clone().map(ExportDecl::Fn),
             export_var_decl.clone(),
         )))
         .map(Item::Export)

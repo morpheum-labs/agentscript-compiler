@@ -83,6 +83,17 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then_ignore(pad())
             .then_ignore(just(')'));
 
+        let array_lit = just('[')
+            .ignore_then(pad())
+            .then(
+                expr.clone()
+                    .separated_by(just(',').ignore_then(pad()))
+                    .allow_trailing(),
+            )
+            .then_ignore(pad())
+            .then_ignore(just(']'))
+            .map(|(_, elements)| Expr::Array(elements));
+
         let atom_base = choice((
             string_literal(),
             number_literal(),
@@ -91,6 +102,7 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             text::keyword("false").to(Expr::Bool(false)),
             text::keyword("na").to(Expr::Na),
             color_lit,
+            array_lit,
             paren,
             call_or_ident,
         ));
