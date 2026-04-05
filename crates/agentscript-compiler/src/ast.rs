@@ -125,6 +125,12 @@ pub enum Stmt {
         op: AssignOp,
         value: Expr,
     },
+    /// `[a, b, ...] = expr` / `:=` (Pine tuple destructuring).
+    TupleAssign {
+        names: Vec<String>,
+        op: AssignOp,
+        value: Expr,
+    },
     /// Expression used as a statement (calls, etc.).
     Expr(Expr),
     /// `{ ... }`
@@ -138,8 +144,15 @@ pub enum Stmt {
         by: Option<Expr>,
         body: Vec<Stmt>,
     },
+    /// `for x in arr` or `for [i, v] in mat` (Pine `for…in`).
+    ForIn {
+        pattern: ForInPattern,
+        iterable: Expr,
+        body: Vec<Stmt>,
+    },
     Switch {
-        scrutinee: Expr,
+        /// `None` for strategy-style `switch { cond => ... }` with no scrutinee.
+        scrutinee: Option<Expr>,
         cases: Vec<(Expr, Stmt)>,
         default: Option<Box<Stmt>>,
     },
@@ -152,6 +165,15 @@ pub enum Stmt {
     Break,
     /// `continue` — only valid inside `for` / `while`.
     Continue,
+}
+
+/// Binding pattern for [`Stmt::ForIn`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ForInPattern {
+    /// `for name in iterable`
+    Name(String),
+    /// `for [index, value] in iterable`
+    Pair(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -260,6 +282,12 @@ pub enum Expr {
     },
     /// Conditional (Pine / QAS `? :`), right-associative.
     Ternary {
+        cond: Box<Expr>,
+        then_b: Box<Expr>,
+        else_b: Box<Expr>,
+    },
+    /// Pine expression `if cond thenExpr else elseExpr` (distinct from ternary `? :`).
+    IfExpr {
         cond: Box<Expr>,
         then_b: Box<Expr>,
         else_b: Box<Expr>,

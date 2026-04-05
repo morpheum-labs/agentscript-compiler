@@ -38,12 +38,43 @@ pub(super) fn assign_op() -> impl Parser<char, AssignOp, Error = Simple<char>> +
 pub(super) fn type_parser() -> impl Parser<char, Type, Error = Simple<char>> + Clone {
     recursive(|ty| {
         let ty = ty.boxed();
+        // Pine `float[]` style is equivalent to `array<float>`.
         let primitive = choice((
-            text::keyword("int").to(Type::Primitive(PrimitiveType::Int)),
-            text::keyword("float").to(Type::Primitive(PrimitiveType::Float)),
-            text::keyword("bool").to(Type::Primitive(PrimitiveType::Bool)),
-            text::keyword("string").to(Type::Primitive(PrimitiveType::String)),
-            text::keyword("color").to(Type::Primitive(PrimitiveType::Color)),
+            text::keyword("int").ignore_then(choice((
+                just('[')
+                    .ignore_then(pad())
+                    .ignore_then(just(']'))
+                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))),
+                empty().to(Type::Primitive(PrimitiveType::Int)),
+            ))),
+            text::keyword("float").ignore_then(choice((
+                just('[')
+                    .ignore_then(pad())
+                    .ignore_then(just(']'))
+                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Float)))),
+                empty().to(Type::Primitive(PrimitiveType::Float)),
+            ))),
+            text::keyword("bool").ignore_then(choice((
+                just('[')
+                    .ignore_then(pad())
+                    .ignore_then(just(']'))
+                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Bool)))),
+                empty().to(Type::Primitive(PrimitiveType::Bool)),
+            ))),
+            text::keyword("string").ignore_then(choice((
+                just('[')
+                    .ignore_then(pad())
+                    .ignore_then(just(']'))
+                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::String)))),
+                empty().to(Type::Primitive(PrimitiveType::String)),
+            ))),
+            text::keyword("color").ignore_then(choice((
+                just('[')
+                    .ignore_then(pad())
+                    .ignore_then(just(']'))
+                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Color)))),
+                empty().to(Type::Primitive(PrimitiveType::Color)),
+            ))),
         ));
         let object = choice((
             text::keyword("label").to(Type::Label),

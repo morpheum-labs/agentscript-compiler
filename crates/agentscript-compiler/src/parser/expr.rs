@@ -270,7 +270,8 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                 right: Box::new(rhs),
             });
 
-        or_expr
+        let ternary_expr = or_expr
+            .clone()
             .then(
                 pad()
                     .ignore_then(just('?'))
@@ -291,7 +292,22 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     then_b: Box::new(then_b),
                     else_b: Box::new(else_b),
                 },
-            })
-            .boxed()
+            });
+
+        let if_expr = text::keyword("if")
+            .ignore_then(pad().ignore_then(expr.clone()))
+            .then_ignore(pad())
+            .then(expr.clone())
+            .then_ignore(pad())
+            .then_ignore(text::keyword("else"))
+            .then_ignore(pad())
+            .then(expr.clone())
+            .map(|((cond, then_b), else_b)| Expr::IfExpr {
+                cond: Box::new(cond),
+                then_b: Box::new(then_b),
+                else_b: Box::new(else_b),
+            });
+
+        choice((if_expr, ternary_expr)).boxed()
     })
 }

@@ -104,6 +104,15 @@ impl ResolveCtx {
                 self.walk_expr(then_b, context);
                 self.walk_expr(else_b, context);
             }
+            Expr::IfExpr {
+                cond,
+                then_b,
+                else_b,
+            } => {
+                self.walk_expr(cond, context);
+                self.walk_expr(then_b, context);
+                self.walk_expr(else_b, context);
+            }
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::String(_)
@@ -150,7 +159,9 @@ impl ResolveCtx {
                 }
                 self.walk_expr(&v.value, context);
             }
-            Stmt::Assign { value, .. } => self.walk_expr(value, context),
+            Stmt::Assign { value, .. } | Stmt::TupleAssign { value, .. } => {
+                self.walk_expr(value, context);
+            }
             Stmt::Expr(e) => self.walk_expr(e, context),
             Stmt::Block(stmts) => {
                 for x in stmts {
@@ -174,12 +185,20 @@ impl ResolveCtx {
                     self.walk_stmt(x, context);
                 }
             }
+            Stmt::ForIn { iterable, body, .. } => {
+                self.walk_expr(iterable, context);
+                for x in body {
+                    self.walk_stmt(x, context);
+                }
+            }
             Stmt::Switch {
                 scrutinee,
                 cases,
                 default,
             } => {
-                self.walk_expr(scrutinee, context);
+                if let Some(s) = scrutinee {
+                    self.walk_expr(s, context);
+                }
                 for (e, arm) in cases {
                     self.walk_expr(e, context);
                     self.walk_stmt(arm, context);

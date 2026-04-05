@@ -50,7 +50,7 @@ fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
             }
         }
         Stmt::If(i) => walk_if(i, loop_depth, issues),
-        Stmt::For { body, .. } => {
+        Stmt::For { body, .. } | Stmt::ForIn { body, .. } => {
             for x in body {
                 walk_stmt(x, loop_depth.saturating_add(1), issues);
             }
@@ -74,6 +74,7 @@ fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
         }
         Stmt::VarDecl(_)
         | Stmt::Assign { .. }
+        | Stmt::TupleAssign { .. }
         | Stmt::Expr(_) => {}
     }
 }

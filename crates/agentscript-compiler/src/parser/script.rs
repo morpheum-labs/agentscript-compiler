@@ -3,8 +3,8 @@
 use chumsky::prelude::*;
 
 use crate::ast::{
-    ElseBody, ExportDecl, Expr, FnBody, FnDecl, FnParam, IfStmt, ImportDecl, Item, Script,
-    ScriptDeclaration, ScriptKind, Stmt, VarDecl, VarQualifier,
+    ElseBody, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern, IfStmt, ImportDecl, Item,
+    Script, ScriptDeclaration, ScriptKind, Stmt, VarDecl, VarQualifier,
 };
 
 use super::assign_type::{assign_op, type_parser, var_qualifier};
@@ -176,9 +176,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         });
         let if_stmt = if_stmt_ast.map(Stmt::If);
 
-        let for_stmt = text::keyword("for")
-            .ignore_then(pad())
-            .ignore_then(text::ident())
+        let for_classic = text::ident()
             .then_ignore(pad())
             .then_ignore(just('='))
             .then_ignore(pad())
@@ -203,6 +201,43 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                 by,
                 body,
             });
+
+        let for_in_pair = just('[')
+            .ignore_then(pad().ignore_then(text::ident()))
+            .then_ignore(pad())
+            .then_ignore(just(','))
+            .then_ignore(pad())
+            .then(text::ident())
+            .then_ignore(pad())
+            .then_ignore(just(']'))
+            .then_ignore(pad())
+            .then_ignore(text::keyword("in"))
+            .then_ignore(pad())
+            .then(expr_for_stmt.clone())
+            .then_ignore(pad())
+            .then(compound_vec())
+            .map(|(((idx, val), iterable), body)| Stmt::ForIn {
+                pattern: ForInPattern::Pair(idx, val),
+                iterable,
+                body,
+            });
+
+        let for_in_single = text::ident()
+            .then_ignore(pad())
+            .then_ignore(text::keyword("in"))
+            .then_ignore(pad())
+            .then(expr_for_stmt.clone())
+            .then_ignore(pad())
+            .then(compound_vec())
+            .map(|((var, iterable), body)| Stmt::ForIn {
+                pattern: ForInPattern::Name(var),
+                iterable,
+                body,
+            });
+
+        let for_stmt = text::keyword("for").ignore_then(
+            pad().ignore_then(choice((for_in_pair, for_in_single, for_classic))),
+        );
 
         let switch_arm = choice((
             compound_vec().map(|mut v| match v.len() {
@@ -269,9 +304,9 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             });
 
         let switch_stmt = text::keyword("switch")
-            .ignore_then(pad())
-            .ignore_then(expr_for_stmt.clone())
-            .then_ignore(pad())
+            .ignore_then(
+                pad().ignore_then(expr_for_stmt.clone().then_ignore(pad()).or_not()),
+            )
             .then(switch_body)
             .map(|(scrutinee, (cases, default))| Stmt::Switch {
                 scrutinee,
@@ -290,6 +325,25 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         let continue_stmt = text::keyword("continue").to(Stmt::Continue);
 
         let block_stmt = compound_vec().map(Stmt::Block);
+
+        let tuple_assign = just('[')
+            .ignore_then(pad().ignore_then(text::ident()))
+            .then(
+                just(',')
+                    .ignore_then(pad().ignore_then(text::ident()))
+                    .repeated(),
+            )
+            .then_ignore(pad())
+            .then_ignore(just(']'))
+            .then_ignore(pad())
+            .then(assign_op())
+            .then_ignore(pad())
+            .then(expr_for_stmt.clone())
+            .map(|(((first, rest), op), value)| {
+                let mut names = vec![first];
+                names.extend(rest);
+                Stmt::TupleAssign { names, op, value }
+            });
 
         let stmt_assign = text::ident()
             .then_ignore(pad())
@@ -311,6 +365,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             var_decl_qualified_stmt.clone(),
             var_decl_input_stmt.clone(),
             var_decl_typed_stmt.clone(),
+            tuple_assign,
             stmt_assign,
             expr_stmt,
         ))
