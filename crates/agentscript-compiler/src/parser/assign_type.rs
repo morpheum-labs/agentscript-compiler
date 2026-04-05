@@ -35,91 +35,101 @@ pub(super) fn assign_op() -> impl Parser<char, AssignOp, Error = Simple<char>> +
     ))
 }
 
+/// Recursive type syntax used inside `array<…>`, `map<…,…>`, etc.
+fn type_parser_core<P>(ty: P) -> impl Parser<char, Type, Error = Simple<char>> + Clone
+where
+    P: Parser<char, Type, Error = Simple<char>> + Clone + 'static,
+{
+    let ty = ty.boxed();
+    // Pine `float[]` style is equivalent to `array<float>`.
+    let primitive = choice((
+        text::keyword("int").ignore_then(choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(just(']'))
+                .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))),
+            empty().to(Type::Primitive(PrimitiveType::Int)),
+        ))),
+        text::keyword("float").ignore_then(choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(just(']'))
+                .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Float)))),
+            empty().to(Type::Primitive(PrimitiveType::Float)),
+        ))),
+        text::keyword("bool").ignore_then(choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(just(']'))
+                .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Bool)))),
+            empty().to(Type::Primitive(PrimitiveType::Bool)),
+        ))),
+        text::keyword("string").ignore_then(choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(just(']'))
+                .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::String)))),
+            empty().to(Type::Primitive(PrimitiveType::String)),
+        ))),
+        text::keyword("color").ignore_then(choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(just(']'))
+                .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Color)))),
+            empty().to(Type::Primitive(PrimitiveType::Color)),
+        ))),
+    ));
+    let object = choice((
+        text::keyword("label").to(Type::Label),
+        text::keyword("line").to(Type::Line),
+        text::keyword("box").to(Type::BoxType),
+        text::keyword("table").to(Type::Table),
+        text::keyword("polyline").to(Type::Polyline),
+        text::keyword("linefill").to(Type::Linefill),
+        text::keyword("volume_row").to(Type::VolumeRow),
+        text::keyword("chart")
+            .ignore_then(just('.'))
+            .ignore_then(text::keyword("point"))
+            .to(Type::ChartPoint),
+    ));
+    let generic = choice((
+        text::keyword("array")
+            .ignore_then(just('<'))
+            .ignore_then(pad())
+            .ignore_then(ty.clone())
+            .then_ignore(pad())
+            .then_ignore(just('>'))
+            .map(|t| Type::Array(Box::new(t))),
+        text::keyword("matrix")
+            .ignore_then(just('<'))
+            .ignore_then(pad())
+            .ignore_then(ty.clone())
+            .then_ignore(pad())
+            .then_ignore(just('>'))
+            .map(|t| Type::Matrix(Box::new(t))),
+        text::keyword("map")
+            .ignore_then(just('<'))
+            .ignore_then(pad())
+            .ignore_then(ty.clone())
+            .then(just(',').ignore_then(pad()).ignore_then(ty.clone()))
+            .then_ignore(pad())
+            .then_ignore(just('>'))
+            .map(|(a, b)| Type::Map(Box::new(a), Box::new(b))),
+    ));
+    choice((generic, object, primitive))
+}
+
 pub(super) fn type_parser() -> impl Parser<char, Type, Error = Simple<char>> + Clone {
     recursive(|ty| {
-        let ty = ty.boxed();
-        // Pine `float[]` style is equivalent to `array<float>`.
-        let primitive = choice((
-            text::keyword("int").ignore_then(choice((
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(just(']'))
-                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Int)))),
-                empty().to(Type::Primitive(PrimitiveType::Int)),
-            ))),
-            text::keyword("float").ignore_then(choice((
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(just(']'))
-                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Float)))),
-                empty().to(Type::Primitive(PrimitiveType::Float)),
-            ))),
-            text::keyword("bool").ignore_then(choice((
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(just(']'))
-                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Bool)))),
-                empty().to(Type::Primitive(PrimitiveType::Bool)),
-            ))),
-            text::keyword("string").ignore_then(choice((
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(just(']'))
-                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::String)))),
-                empty().to(Type::Primitive(PrimitiveType::String)),
-            ))),
-            text::keyword("color").ignore_then(choice((
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(just(']'))
-                    .to(Type::Array(Box::new(Type::Primitive(PrimitiveType::Color)))),
-                empty().to(Type::Primitive(PrimitiveType::Color)),
-            ))),
-        ));
-        let object = choice((
-            text::keyword("label").to(Type::Label),
-            text::keyword("line").to(Type::Line),
-            text::keyword("box").to(Type::BoxType),
-            text::keyword("table").to(Type::Table),
-            text::keyword("polyline").to(Type::Polyline),
-            text::keyword("linefill").to(Type::Linefill),
-            text::keyword("volume_row").to(Type::VolumeRow),
-            text::keyword("chart")
-                .ignore_then(just('.'))
-                .ignore_then(text::keyword("point"))
-                .to(Type::ChartPoint),
-        ));
-        let generic = choice((
-            text::keyword("array")
-                .ignore_then(just('<'))
-                .ignore_then(pad())
-                .ignore_then(ty.clone())
-                .then_ignore(pad())
-                .then_ignore(just('>'))
-                .map(|t| Type::Array(Box::new(t))),
-            text::keyword("matrix")
-                .ignore_then(just('<'))
-                .ignore_then(pad())
-                .ignore_then(ty.clone())
-                .then_ignore(pad())
-                .then_ignore(just('>'))
-                .map(|t| Type::Matrix(Box::new(t))),
-            text::keyword("map")
-                .ignore_then(just('<'))
-                .ignore_then(pad())
-                .ignore_then(ty.clone())
-                .then(just(',').ignore_then(pad()).ignore_then(ty.clone()))
-                .then_ignore(pad())
-                .then_ignore(just('>'))
-                .map(|(a, b)| Type::Map(Box::new(a), Box::new(b))),
-        ));
-        choice((
-            generic,
-            object,
-            primitive,
-            text::ident().map(Type::Named),
-        ))
+        let core = type_parser_core(ty);
+        choice((core, text::ident().map(Type::Named)))
     })
+}
+
+/// Like [`type_parser`], but does not treat a bare identifier as a named type at the top level.
+/// Used after `var` / `const` / `varip` so the variable name is not consumed as `Type::Named`.
+pub(super) fn type_parser_decl_root() -> impl Parser<char, Type, Error = Simple<char>> + Clone {
+    recursive(|ty| type_parser_core(ty))
 }
 
 pub(super) fn var_qualifier() -> impl Parser<char, VarQualifier, Error = Simple<char>> + Clone {

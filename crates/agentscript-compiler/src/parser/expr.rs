@@ -178,9 +178,13 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .repeated()
             .then(pad().ignore_then(postfix))
             .map(|(ops, e)| {
-                ops.into_iter().rev().fold(e, |acc, op| Expr::Unary {
-                    op,
-                    expr: Box::new(acc),
+                ops.into_iter().rev().fold(e, |acc, op| match (op, acc) {
+                    (UnaryOp::Neg, Expr::Int(n)) => Expr::Int(-n),
+                    (UnaryOp::Neg, Expr::Float(x)) => Expr::Float(-x),
+                    (op, acc) => Expr::Unary {
+                        op,
+                        expr: Box::new(acc),
+                    },
                 })
             });
 

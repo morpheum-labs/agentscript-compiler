@@ -4,11 +4,11 @@ use chumsky::prelude::*;
 
 use crate::ast::{
     ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern,
-    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, UdtField, UserTypeDef,
-    VarDecl, VarQualifier,
+    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, Type, UdtField,
+    UserTypeDef, VarDecl, VarQualifier,
 };
 
-use super::assign_type::{assign_op, type_parser, var_qualifier};
+use super::assign_type::{assign_op, type_parser, type_parser_decl_root, var_qualifier};
 use super::expr::expr_parser;
 use super::lex::{
     agentscript_directive, fat_arrow, optional_semicolon, pad, pad_non_empty, version_directive,
@@ -81,16 +81,30 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
 
     let expr_for_stmt = expr.clone();
 
+    // After `var`/`const`/…, optional type must not use a bare `Type::Named` at the root, or we
+    // consume the variable name (`var fast = …` would parse `fast` as the type). UDT form uses
+    // two idents: `var MyType x = …`.
+    let name_after_qual = choice((
+        type_parser_decl_root()
+            .then_ignore(pad())
+            .then(text::ident())
+            .map(|(ty, name)| (Some(ty), name)),
+        text::ident()
+            .then_ignore(pad())
+            .then(text::ident())
+            .map(|(ty_name, name)| (Some(Type::Named(ty_name)), name)),
+        text::ident().map(|name| (None, name)),
+    ))
+    .boxed();
+
     let var_decl_qualified = var_qualifier()
         .then_ignore(pad())
-        .then(type_parser().or_not())
-        .then_ignore(pad())
-        .then(text::ident())
+        .then(name_after_qual.clone())
         .then_ignore(pad())
         .then(assign_op())
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
-        .map(|((((qual, ty), name), _op), value)| {
+        .map(|(((qual, (ty, name)), _op), value)| {
             Stmt::VarDecl(VarDecl {
                 qualifier: Some(qual),
                 ty,
@@ -384,7 +398,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
 
     let enum_brace_body = just('{')
         .ignore_then(pad())
-        .ignore_then(enum_variant_line.repeated())
+        .ignore_then(pad().ignore_then(enum_variant_line).repeated())
         .then_ignore(pad())
         .then_ignore(just('}'));
 
