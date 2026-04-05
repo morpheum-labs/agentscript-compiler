@@ -194,6 +194,7 @@ impl ResolveCtx {
                     self.walk_stmt(x, context);
                 }
             }
+            Stmt::Break | Stmt::Continue => {}
         }
     }
 

@@ -12,11 +12,11 @@
 |-----------------|-------|----------|--------|
 | **Lexical structure** | Whitespace, `//` / `/* */` comments, line structure | **Done** (parse) | Trivia handled in normal parse + leading scan. |
 | **`//@version=` / `// @agentscript=`** | Which Pine / QAS header numbers are allowed | **Partial** | `//@version=` restricted to **5 and 6** (`version_policy.rs`, `leading_scan.rs`, `lex.rs`). `// @agentscript=` ≥ 1. No semantic *differences* between v5 vs v6 bodies yet. |
-| **Script kind** | `indicator` / `strategy` / `library` declarations | **AST only** | Kind and call args stored; no rules (e.g. `strategy.*` only in strategies). |
+| **Script kind** | `indicator` / `strategy` / `library` declarations | **Partial** | Kind and args stored; [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) rejects `strategy.*` outside `strategy()` scripts. |
 | **Imports / exports** | `import … as`, `export` fn/var | **AST only** | No module graph, no symbol linking. |
 | **Array literals** | `[a, b]`, `[]` | **AST only** | `Expr::Array`; element types not checked. |
-| **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic.rs); no spans on AST yet. |
-| **Scopes & name resolution** | Bindings, shadowing, qualified names | **None** | Planned Phase 1. |
+| **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic/early.rs); no spans on AST yet. |
+| **Scopes & name resolution** | Bindings, shadowing, qualified names | **Partial** | Dotted roots: [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) + [`builtins`](crates/agentscript-compiler/src/semantic/builtins.rs); no lexical scope or user-type resolution yet. |
 | **User functions** | `f name(params) => …` / block body, params, defaults | **AST only** | No recursion/arity/type checking. |
 | **Variable qualifiers** | `var`, `varip`, `const`, `input`, `simple`, `series` | **AST only** | No Pine-style persistence or series/simple rules. |
 | **Assignments** | `=` first assign vs `:=` reassignment | **AST only** | No “assign before declare” or single-assignment checks. |
@@ -27,7 +27,7 @@
 | **Ternary** | `cond ? a : b` | **AST only** | No lazy/short-circuit semantics in IR. |
 | **Calls** | Positional / named args, `matrix.new<float>(…)` | **AST only** | No builtin resolution or signatures. |
 | **Member / method syntax** | `a.b`, `close.sma(20)` | **AST only** | Desugared to `Member` / `Call`; no method tables. |
-| **Control flow** | `if` / `else`, `for` … `to` [`by`], `switch`, `while`, blocks | **AST only** | No definite assignment, reachability, or Pine loop limits. |
+| **Control flow** | `if` / `else`, `for` … `to` [`by`], `switch`, `while`, `break`, `continue`, blocks | **Partial** | Parsed + `break`/`continue` must sit inside `for`/`while` ([`loops`](crates/agentscript-compiler/src/semantic/loops.rs)); no reachability or Pine loop limits. |
 | **Bar execution model** | Once per bar, `varip`, bar states | **None** | Requires IR + runtime + host. |
 | **`ta.*` builtins** | Indicators, `crossover`, etc. | **None** | Registry + host/intrinsics (Phase 1–2). |
 | **`strategy.*` builtins** | Orders, position, PnL, trade stats | **None** | Lowered to host imports; host implements semantics. |
@@ -46,14 +46,14 @@
 | **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **None** | Spec + Aether/MWVM alignment; contract tests. |
 | **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
 | **Runtime / host (Aether)** | Data feeds, fills, `request.*`, MCP | **None** | Outside this crate; semantics live here for execution. |
-| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette**. Analyze: plain [`AnalyzeError`](crates/agentscript-compiler/src/semantic.rs) until spans exist. |
+| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette**. Semantic: plain [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) until spans exist. |
 
 ## Current status
 
 **Done today**
 
 - [x] **Parse → AST** (Chumsky): headers (`//@version=` **5 or 6**, optional `// @agentscript=`), `import` / `export`, script declarations (`indicator` / `strategy` / `library`), **control flow** (`if` / `else`, `for` … `to` [`by`], `switch`, `while`), **blocks** `{ … }`, **user functions** Pine-style `name(…) =>` / `{ … }` or QAS `f name(…)`, **`method name(…) =>`**, **export** of Pine-style or `f` functions, **qualified and typed vars** (`var` / `varip` / `const` / `input` / `simple` / `series`, optional types), assignments `=` / `:=` / **`+=` / `-=` / `*=` / `/=` / `%=`**, **ternary** `? :`, **indexing** `expr[i]`, **array literals** `[a, b]`, **dotted calls** and **method-style** `base.field(…)` (e.g. `close.sma(20)`), generics on calls (e.g. `matrix.new<float>`), numeric literals with **scientific notation**, optional trailing **`;`**, expressions and comments. See `crates/agentscript-compiler/src/parser/script.rs` and `expr.rs`.
-- [x] **Lightweight semantic pass**: [`analyze_script`](crates/agentscript-compiler/src/semantic.rs) rejects duplicate top-level function names (including `export f`), duplicate `import` aliases, and duplicate parameters in one function; [`parse_and_analyze`](crates/agentscript-compiler/src/lib.rs) chains parse + analyze.
+- [x] **Lightweight semantic passes**: [`check_script`](crates/agentscript-compiler/src/semantic/mod.rs) runs [`analyze_script`](crates/agentscript-compiler/src/semantic/early.rs) (duplicates), [`check_break_continue`](crates/agentscript-compiler/src/semantic/loops.rs), and [`resolve_script`](crates/agentscript-compiler/src/semantic/resolve.rs) (dotted roots + `strategy.*` vs script kind). [`parse_and_analyze`](crates/agentscript-compiler/src/lib.rs) chains parse + `check_script`.
 - [x] **Diagnostics**: miette-backed `CompileError` with source spans (parse); analyze messages are textual until the AST carries spans.
 - [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), run parse + analyze, print debug `Script` on success.
 - [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`.
@@ -77,7 +77,7 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST (current)
 
-- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
+- [x] Chumsky grammar for a **core subset** of QAS (expressions, calls, indexing, **array literals**, `indicator` / `strategy` / `library`, `=` / `:=`, `//@version` 5 or 6, comments, **`break` / `continue`**). See `spec/agentscripts-v1.md` for the **full** EBNF — large parts are **not** implemented yet (below).
 - [x] AST types for what the parser accepts today; more variants will follow as syntax grows.
 - [ ] **Close the gap vs `spec/agentscripts-v1.md`:** matrix / **map literals** (and any remaining composite literal forms) and other Pine v6 expression or statement forms the spec lists that are not yet in the grammar (e.g. extra builtins-only syntax, enum / tuple forms if required, edge cases in `switch` / `for`, etc.—audit against `spec/agentscripts-v1.md` EBNF).
 - [ ] Expand tests: edge cases, larger fixtures, fuzz or corpus vs real `.qas` / Pine v6 samples, sharper errors for common mistakes.
@@ -101,7 +101,7 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 | **`footprint` type** | `request.footprint()` ([`reference/types.md`](pinescriptv6/reference/types.md) `footprint`) | — | **Missing:** type keyword + later `request.*` wiring. |
 | **Compiler annotations** | `//@description`, `//@function`, `//@param`, `//@field`, `//@enum`, `//@strategy_alert_message`, etc. ([`reference/annotations.md`](pinescriptv6/reference/annotations.md)) | — | **Parse:** treat as comments (ok today) or preserve for library docs / tooling. |
 | **Indentation-based blocks** | TV allows indent bodies for `while`/`if` in some styles; we use **`{ … }`** only | — | **Dialect:** many TV examples use braces in v6 docs; confirm against `limitations.md` / style. |
-| **`break` / `continue`** | Loop control ([`keywords.md`](pinescriptv6/reference/keywords.md) `while` remarks) | — | **Missing** in parser if not present. |
+| **`break` / `continue`** | Loop control ([`keywords.md`](pinescriptv6/reference/keywords.md) `while` remarks) | Control flow (partial) | **Parser:** `break` / `continue`; **semantic:** must appear inside `for` / `while` ([`loops.rs`](crates/agentscript-compiler/src/semantic/loops.rs)). |
 | **Built-in namespaces** | `ta`, `strategy`, `request` (+ `seed`, `currency_rate`, `footprint`, …), `math`, `str`, `array`, `matrix`, `map`, drawing APIs ([`LLM_MANIFEST.md`](pinescriptv6/LLM_MANIFEST.md), `reference/functions/*`) | Per-namespace rows (None) | **Semantics + ABI**, not parser-only; signatures live in `reference/functions/*.md`. |
 | **Visual / plot API** | `plot*`, `line`, `label`, `box`, `table`, fills, etc. ([`visuals/*.md`](pinescriptv6/visuals)) | plot.* / drawing row | Same: mostly **stdlib + host**, not syntax. |
 | **Execution model** | `barstate`, `var`, `varip`, history ([`concepts/execution_model.md`](pinescriptv6/concepts/execution_model.md), [`pine_script_execution_model.md`](pinescriptv6/pine_script_execution_model.md)) | Bar execution model | **IR + runtime**, Phase 2+. |
@@ -114,10 +114,12 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 
 ## Phase 1 — Semantic analysis
 
-- [x] **Early checks (no types yet):** duplicate top-level function names, duplicate `import` aliases, duplicate parameters per `f` — see [`semantic.rs`](crates/agentscript-compiler/src/semantic.rs).
-- [ ] Symbol tables and name resolution.
+- [x] **Early checks (no types yet):** duplicate top-level function names, duplicate `import` aliases, duplicate parameters per `f` — [`early.rs`](crates/agentscript-compiler/src/semantic/early.rs).
+- [x] **Path glue (no full symbol table):** known builtin namespace roots + import aliases; unknown dotted roots rejected; `strategy.*` only in `strategy()` — [`resolve.rs`](crates/agentscript-compiler/src/semantic/resolve.rs).
+- [x] **Loop control placement:** `break` / `continue` only inside `for` / `while` — [`loops.rs`](crates/agentscript-compiler/src/semantic/loops.rs).
+- [ ] Symbol tables and lexical name resolution (locals, params, shadowing).
 - [ ] Type system for core expressions (numbers, series, calls).
-- [ ] Script-kind rules (`strategy` vs `indicator` vs `library`).
+- [ ] Further script-kind rules (`library` exports-only, etc., as you align with Pine/QAS).
 - [ ] **`request.security`:** Pine v6-aligned signatures and parameter typing (symbol, timeframe, expression, `gaps`, `lookahead`, `ignore_invalid_symbol`, related overloads); result type as **series** aligned with the expression’s type; **dynamic** first-argument rules (where TV allows `request.*` inside loops/conditionals—match or document QAS deltas); errors for invalid combinations.
 - [ ] **`request.financial`:** Pine v6-aligned signatures and field typing (symbol, financial id, period, `ignore_invalid_symbol`, related forms); result typing consistent with TV’s financial series rules; same **dynamic** / scope constraints as other `request.*` where QAS aligns.
 - [ ] Rich diagnostics (second pass after typecheck).

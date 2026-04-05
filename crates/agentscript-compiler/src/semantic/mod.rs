@@ -7,6 +7,7 @@ use crate::Script;
 
 mod builtins;
 mod early;
+mod loops;
 mod resolve;
 
 pub use early::analyze_script;
@@ -22,6 +23,7 @@ pub struct AnalyzeError {
 /// Early checks + path / script-kind resolution.
 pub fn check_script(script: &Script) -> Result<(), AnalyzeError> {
     early::analyze_script(script)?;
+    loops::check_break_continue(script)?;
     resolve::resolve_script(script)?;
     Ok(())
 }

@@ -635,6 +635,31 @@ if a {
 }
 
 #[test]
+fn break_continue_in_loops() {
+    let src = r#"indicator("x")
+while true {
+  break
+}
+for i = 0 to 1 {
+  continue
+}
+"#;
+    parse_script("t.pine", src).expect("break/continue in loops should parse");
+    agentscript_compiler::parse_and_analyze("t.pine", src).expect("analyze should accept");
+}
+
+#[test]
+fn break_outside_loop_rejected_by_analyze() {
+    let src = "indicator(\"x\")\nbreak\n";
+    let e = agentscript_compiler::parse_and_analyze("t.pine", src).unwrap_err();
+    let msg = e.to_string();
+    assert!(
+        msg.contains("break") && (msg.contains("for") || msg.contains("while")),
+        "{msg}"
+    );
+}
+
+#[test]
 fn for_loop_by_step() {
     let src = r#"indicator("x")
 for i = 0 to 9 by 2 {

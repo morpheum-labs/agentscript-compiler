@@ -286,6 +286,9 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then(compound_vec())
             .map(|(cond, body)| Stmt::While { cond, body });
 
+        let break_stmt = text::keyword("break").to(Stmt::Break);
+        let continue_stmt = text::keyword("continue").to(Stmt::Continue);
+
         let block_stmt = compound_vec().map(Stmt::Block);
 
         let stmt_assign = text::ident()
@@ -303,6 +306,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             for_stmt,
             switch_stmt,
             while_stmt,
+            break_stmt,
+            continue_stmt,
             var_decl_qualified_stmt.clone(),
             var_decl_input_stmt.clone(),
             var_decl_typed_stmt.clone(),

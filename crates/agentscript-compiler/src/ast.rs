@@ -148,6 +148,10 @@ pub enum Stmt {
         cond: Expr,
         body: Vec<Stmt>,
     },
+    /// `break` — only valid inside `for` / `while` (enforced by semantic [`check_script`](crate::check_script)).
+    Break,
+    /// `continue` — only valid inside `for` / `while`.
+    Continue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
