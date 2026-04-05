@@ -1,6 +1,7 @@
 use std::env;
-use std::fs;
 use std::process::ExitCode;
+
+use agentscript_compiler::ParseFileError;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -16,12 +17,13 @@ fn main() -> ExitCode {
                 Ok(_) => agentscript_compiler::parse_script("<stdin>", &buf),
             }
         }
-        Some(path) => match fs::read_to_string(path) {
-            Err(e) => {
+        Some(path) => match agentscript_compiler::parse_script_file(path) {
+            Err(ParseFileError::Io(e)) => {
                 eprintln!("{e}");
                 return ExitCode::FAILURE;
             }
-            Ok(s) => agentscript_compiler::parse_script(path, &s),
+            Err(ParseFileError::Compile(e)) => Err(e),
+            Ok(s) => Ok(s),
         },
     };
 

@@ -1,6 +1,6 @@
 use agentscript_compiler::{
-    parse_script, AssignOp, BinOp, ElseBody, Expr, FnBody, Item, PrimitiveType, ScriptDeclaration,
-    ScriptKind, Stmt, Type, UnaryOp, VarQualifier,
+    parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, ImportDecl, Item,
+    PrimitiveType, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -90,7 +90,13 @@ fn qualified_ident_positional() {
 
 #[test]
 fn invalid_version_rejected() {
-    assert!(parse_script("t", "//@version=5").is_err());
+    assert!(parse_script("t", "//@version=7").is_err());
+}
+
+#[test]
+fn version_five_accepted() {
+    let s = parse_script("t", "//@version=5\nindicator(\"v5\")\n").unwrap();
+    assert_eq!(s.version, Some(5));
 }
 
 #[test]
@@ -150,10 +156,10 @@ z = close[1]
         panic!("expected y assign");
     };
     assert_eq!(name, "y");
-    let Expr::Call { path, args, .. } = value else {
+    let Expr::Call { callee, args, .. } = value else {
         panic!("expected call");
     };
-    assert_eq!(path, &vec!["ta".to_string(), "sma".to_string()]);
+    assert_eq!(**callee, Expr::IdentPath(vec!["ta".into(), "sma".into()]));
     assert_eq!(args.len(), 2);
     assert_eq!(args[0].0, None);
     assert_eq!(args[0].1, Expr::IdentPath(vec!["close".into()]));
@@ -180,10 +186,10 @@ plot(close)
     let Item::Stmt(Stmt::Expr(e)) = &s.items[1] else {
         panic!("expected expr stmt");
     };
-    let Expr::Call { path, args, .. } = e else {
+    let Expr::Call { callee, args, .. } = e else {
         panic!("expected plot call");
     };
-    assert_eq!(path, &vec!["plot".to_string()]);
+    assert_eq!(**callee, Expr::IdentPath(vec!["plot".into()]));
     assert_eq!(args.len(), 1);
     assert_eq!(args[0].1, Expr::IdentPath(vec!["close".into()]));
 }
@@ -271,10 +277,10 @@ var fast = ta.sma(close, 10)
     };
     assert_eq!(v.qualifier, Some(VarQualifier::Var));
     assert_eq!(v.name, "fast");
-    let Expr::Call { path, args, .. } = &v.value else {
+    let Expr::Call { callee, args, .. } = &v.value else {
         panic!("expected call");
     };
-    assert_eq!(path, &vec!["ta".to_string(), "sma".to_string()]);
+    assert_eq!(**callee, Expr::IdentPath(vec!["ta".into(), "sma".into()]));
     assert_eq!(args.len(), 2);
 }
 
@@ -360,10 +366,10 @@ x = input.int(9, "Lots")
         panic!("expected assign, not misparsed input decl");
     };
     assert_eq!(name, "x");
-    let Expr::Call { path, args, .. } = value else {
+    let Expr::Call { callee, args, .. } = value else {
         panic!("expected call: {value:#?}");
     };
-    assert_eq!(path, &vec!["input".to_string(), "int".to_string()]);
+    assert_eq!(**callee, Expr::IdentPath(vec!["input".into(), "int".into()]));
     assert_eq!(args.len(), 2);
 }
 
@@ -438,14 +444,14 @@ m = matrix.new<float>(2, 3)
         panic!("expected assign");
     };
     let Expr::Call {
-        path,
+        callee,
         type_args,
         args,
     } = value
     else {
         panic!("expected call");
     };
-    assert_eq!(path, &vec!["matrix".to_string(), "new".to_string()]);
+    assert_eq!(**callee, Expr::IdentPath(vec!["matrix".into(), "new".into()]));
     assert_eq!(
         type_args.as_deref(),
         Some(&[Type::Primitive(PrimitiveType::Float)][..])
@@ -474,6 +480,173 @@ if true {
 }
 
 #[test]
+fn else_if_chain() {
+    let src = r#"indicator("x")
+if a {
+  x = 1
+} else if b {
+  x = 2
+} else {
+  x = 3
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::If(outer)) = &s.items[1] else {
+        panic!("expected if");
+    };
+    let Some(ElseBody::If(inner)) = &outer.else_body else {
+        panic!("expected else if: {:?}", outer.else_body);
+    };
+    assert_eq!(inner.then_body.len(), 1);
+    assert!(matches!(
+        inner.else_body,
+        Some(ElseBody::Block(ref b)) if b.len() == 1
+    ));
+}
+
+#[test]
+fn for_loop_by_step() {
+    let src = r#"indicator("x")
+for i = 0 to 9 by 2 {
+  y = i
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::For {
+        var,
+        from,
+        to,
+        by,
+        body,
+    }) = &s.items[1]
+    else {
+        panic!("expected for");
+    };
+    assert_eq!(var, "i");
+    assert_eq!(*from, Expr::Int(0));
+    assert_eq!(*to, Expr::Int(9));
+    assert_eq!(*by, Some(Expr::Int(2)));
+    assert_eq!(body.len(), 1);
+}
+
+#[test]
+fn leading_dot_float() {
+    let src = r#"indicator("x")
+x = .25 + .5e0
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    let Expr::Binary { op: BinOp::Add, left, right } = value else {
+        panic!("expected add");
+    };
+    assert_eq!(**left, Expr::Float(0.25));
+    assert_eq!(**right, Expr::Float(0.5));
+}
+
+#[test]
+fn switch_default_only_braced() {
+    let src = r#"indicator("x")
+switch z {
+  => {
+    b = 2
+  }
+}
+"#;
+    parse_script("t.pine", src).expect("default-only switch should parse");
+}
+
+#[test]
+fn switch_case_int_literal() {
+    let src = r#"indicator("x")
+switch z {
+  1 => { a = 1 }
+}
+"#;
+    parse_script("t.pine", src).expect("int case label should parse");
+}
+
+#[test]
+fn switch_two_cases_no_default() {
+    let src = r#"indicator("x")
+switch z {
+  x => { a = 1 }
+  y => { b = 2 }
+}
+"#;
+    parse_script("t.pine", src).expect("two switch arms should parse");
+}
+
+#[test]
+fn switch_case_plus_default_minimal() {
+    let src = "switch z {\n  x => { a = 1 }\n  => { b = 2 }\n}\n";
+    let r = parse_script("t.pine", src);
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn switch_case_plus_default_after_indicator() {
+    let src = "indicator(\"x\")\nswitch z {\n  x => { a = 1 }\n  => { b = 2 }\n}\n";
+    let r = parse_script("t.pine", src);
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn switch_default_block_two_stmts() {
+    let src = "indicator(\"x\")\nswitch z {\n  x => { a = 1 }\n  => {\n    b = 2\n    c = 3\n  }\n}\n";
+    let r = parse_script("t.pine", src);
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn switch_default_multiline_block_one_stmt() {
+    let src = "indicator(\"x\")\nswitch z {\n  x => { a = 1 }\n  => {\n    b = 2\n  }\n}\n";
+    let r = parse_script("t.pine", src);
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn switch_default_braced_block() {
+    let src = r#"indicator("x")
+switch z {
+  x => { a = 1 }
+  => {
+    b = 2
+    c = 3
+  }
+}
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Switch { default, .. }) = &s.items[1] else {
+        panic!("expected switch");
+    };
+    let Some(d) = default else {
+        panic!("expected default");
+    };
+    let Stmt::Block(stmts) = d.as_ref() else {
+        panic!("expected block default: {d:#?}");
+    };
+    assert_eq!(stmts.len(), 2);
+}
+
+#[test]
+fn mcp_namespace_call() {
+    let src = r#"indicator("x")
+r = mcp.call("tool", syminfo.ticker)
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    let Expr::Call { callee, args, .. } = value else {
+        panic!("expected call");
+    };
+    assert_eq!(**callee, Expr::IdentPath(vec!["mcp".into(), "call".into()]));
+    assert_eq!(args.len(), 2);
+}
+
+#[test]
 fn fn_short_form() {
     let src = r#"indicator("x")
 f add(int a, int b) => a + b
@@ -487,4 +660,91 @@ y = 1
     assert_eq!(f.params.len(), 2);
     assert!(matches!(f.body, FnBody::Expr(Expr::Binary { .. })));
     assert!(matches!(&s.items[2], Item::Stmt(Stmt::Assign { .. })));
+}
+
+#[test]
+fn pine_import_line() {
+    let src = "import TradingView/ta/5 as ta\nindicator(\"x\")\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Import(ImportDecl { path, alias }) = &s.items[0] else {
+        panic!("expected import");
+    };
+    assert_eq!(
+        path,
+        &vec![
+            "TradingView".to_string(),
+            "ta".to_string(),
+            "5".to_string(),
+        ]
+    );
+    assert_eq!(alias, "ta");
+}
+
+#[test]
+fn pine_export_function() {
+    let src = "library(\"L\")\nexport f inc(float x) => x + 1\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Export(ExportDecl::Fn(f)) = &s.items[1] else {
+        panic!("expected export f");
+    };
+    assert_eq!(f.name, "inc");
+    assert_eq!(f.params.len(), 1);
+}
+
+#[test]
+fn pine_export_var() {
+    let src = "library(\"L\")\nexport var N = 42\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Export(ExportDecl::Var(v)) = &s.items[1] else {
+        panic!("expected export var");
+    };
+    assert_eq!(v.name, "N");
+    assert_eq!(v.value, Expr::Int(42));
+}
+
+#[test]
+fn while_loop_parses() {
+    let src = "indicator(\"x\")\nwhile i < 10 {\n  i := i + 1\n}\n";
+    parse_script("t.pine", src).expect("while loop");
+}
+
+#[test]
+fn hex_color_rrggbb() {
+    let src = "indicator(\"x\")\nc = #ff00Aa\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("assign");
+    };
+    assert_eq!(*value, Expr::HexColor("ff00Aa".into()));
+}
+
+#[test]
+fn postfix_call_on_grouped_expr() {
+    let src = "indicator(\"x\")\ny = (close + open).m()\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("assign");
+    };
+    let Expr::Call { callee, args, .. } = value else {
+        panic!("expected call, got {value:#?}");
+    };
+    assert!(args.is_empty());
+    let Expr::Member { base, field } = callee.as_ref() else {
+        panic!("member callee: {callee:#?}");
+    };
+    assert_eq!(field, "m");
+    assert!(matches!(base.as_ref(), Expr::Binary { .. }));
+}
+
+#[test]
+fn dotted_ident_stays_ident_path() {
+    let src = "indicator(\"x\")\ny = syminfo.ticker\n";
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt::Assign { value, .. }) = &s.items[1] else {
+        panic!("assign");
+    };
+    assert_eq!(
+        *value,
+        Expr::IdentPath(vec!["syminfo".into(), "ticker".into()])
+    );
 }

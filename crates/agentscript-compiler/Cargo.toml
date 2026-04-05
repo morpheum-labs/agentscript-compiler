@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Parser and compiler front-end for AgentScript (QAS / Pine v6–aligned syntax)."
+description = "Parser and compiler front-end for AgentScript (QAS / Pine v6–aligned syntax); `.pine` and `.qas` sources."
 
 [dependencies]
 chumsky = "0.9"

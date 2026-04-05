@@ -22,6 +22,15 @@ pub struct ParseLabel {
     pub message: String,
 }
 
+/// Reading a source file from disk failed, or the file parsed with errors.
+#[derive(Debug, Error)]
+pub enum ParseFileError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Compile(#[from] CompileError),
+}
+
 pub(crate) fn compile_error_from_parse_errors(
     src_name: impl AsRef<str>,
     source: String,

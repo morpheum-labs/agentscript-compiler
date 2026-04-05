@@ -1,8 +1,9 @@
 use chumsky::prelude::*;
 
 use crate::ast::{
-    AssignOp, BinOp, ElseBody, Expr, FnBody, FnDecl, FnParam, IfStmt, Item, PrimitiveType, Script,
-    ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarDecl, VarQualifier,
+    AssignOp, BinOp, ElseBody, ExportDecl, Expr, FnBody, FnDecl, FnParam, IfStmt, ImportDecl, Item,
+    PrimitiveType, Script, ScriptDeclaration, ScriptKind, Stmt, Type, UnaryOp, VarDecl,
+    VarQualifier,
 };
 
 fn version_directive_suffix() -> impl Parser<char, (), Error = Simple<char>> + Clone {
@@ -25,12 +26,12 @@ fn version_directive() -> impl Parser<char, u32, Error = Simple<char>> + Clone {
                 Ok(v) => v,
                 Err(_) => return Err(Simple::custom(span, "invalid version number")),
             };
-            if n == 1 || n == 6 {
+            if n == 1 || n == 5 || n == 6 {
                 Ok(n)
             } else {
                 Err(Simple::custom(
                     span,
-                    "unsupported //@version (QAS v1 allows only 1 or 6)",
+                    "unsupported //@version (QAS allows 1, 5, or 6)",
                 ))
             }
         })
@@ -81,6 +82,11 @@ fn optional_semicolon() -> impl Parser<char, (), Error = Simple<char>> + Clone {
     just(';').or_not().ignored()
 }
 
+/// Pine/QAS `=>` (two `Then` steps so a failed match does not leave a stray `=` like `just("=>")` can).
+fn fat_arrow() -> impl Parser<char, (), Error = Simple<char>> + Clone {
+    just('=').ignore_then(just('>')).ignored()
+}
+
 fn string_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
     just('"')
         .ignore_then(
@@ -111,7 +117,7 @@ fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
             out.push_str(&exp_digits);
             out
         });
-    text::int(10)
+    let with_int = text::int(10)
         .then(frac.or_not())
         .then(exp.or_not())
         .try_map(|((int_s, frac_o), exp_o), span: std::ops::Range<usize>| {
@@ -134,24 +140,68 @@ fn number_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
                     .map_err(|_| Simple::custom(span, "invalid float literal"))?;
                 Ok(Expr::Float(v))
             }
-        })
+        });
+    // `.5`, `.5e2` (common in Pine / math-heavy scripts)
+    let leading_dot = just('.')
+        .ignore_then(text::digits(10))
+        .then(exp.or_not())
+        .try_map(|(frac, exp_o), span: std::ops::Range<usize>| {
+            let mut s = String::from('.');
+            s.push_str(&frac);
+            if let Some(exp_s) = exp_o {
+                s.push_str(&exp_s);
+            }
+            let v: f64 = s
+                .parse()
+                .map_err(|_| Simple::custom(span, "invalid float literal"))?;
+            Ok(Expr::Float(v))
+        });
+    choice((with_int, leading_dot))
+}
+
+/// `#RRGGBB` or `#RRGGBBAA` (Pine-style hex color).
+fn hex_color_literal() -> impl Parser<char, Expr, Error = Simple<char>> + Clone {
+    just('#')
+        .ignore_then(
+            filter(|&c: &char| c.is_ascii_hexdigit())
+                .repeated()
+                .at_least(6)
+                .at_most(8)
+                .collect::<String>()
+                .try_map(|s, span| {
+                    if s.len() == 6 || s.len() == 8 {
+                        Ok(Expr::HexColor(s))
+                    } else {
+                        Err(Simple::custom(
+                            span,
+                            "hex color must be exactly 6 or 8 hex digits",
+                        ))
+                    }
+                }),
+        )
 }
 
 fn assign_op() -> impl Parser<char, AssignOp, Error = Simple<char>> + Clone {
     choice((
         just(':').ignore_then(just('=')).to(AssignOp::ColonEq),
+        // Single `=` assignment must not swallow the leading `=` of `==` or `=>` (Chumsky `Then` does not rewind).
         just('=')
-            .then(just('=').or_not())
-            .try_map(|(_, second_eq), span| {
-                if second_eq.is_some() {
+            .ignore_then(choice((
+                just('>').try_map(|_, span| {
                     Err(Simple::custom(
                         span,
-                        "expected `:=` or `=` for assignment",
+                        "found `=>` in an assignment position; use a single `=` or `:=`",
                     ))
-                } else {
-                    Ok(AssignOp::Eq)
-                }
-            }),
+                }),
+                just('=').try_map(|_, span| {
+                    Err(Simple::custom(
+                        span,
+                        "use `==` for equality, not two `=` signs in an assignment",
+                    ))
+                }),
+                empty().to(()),
+            )))
+            .map(|_| AssignOp::Eq),
     ))
 }
 
@@ -272,7 +322,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     "expected `(` after type arguments",
                 )),
                 (ta, Some(args)) => Ok(Expr::Call {
-                    path,
+                    callee: Box::new(Expr::IdentPath(path)),
                     type_args: ta,
                     args,
                 }),
@@ -292,6 +342,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
         let atom_base = choice((
             string_literal(),
             number_literal(),
+            hex_color_literal(),
             text::keyword("true").to(Expr::Bool(true)),
             text::keyword("false").to(Expr::Bool(false)),
             text::keyword("na").to(Expr::Na),
@@ -300,18 +351,64 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             call_or_ident,
         ));
 
-        let postfix = atom_base
+        #[derive(Clone)]
+        enum PostfixPiece {
+            Index(Expr),
+            Field {
+                name: String,
+                args: Option<Vec<(Option<String>, Expr)>>,
+            },
+        }
+
+        let dot_field_or_call = just('.')
+            .ignore_then(text::ident())
             .then(
-                just('[')
-                    .ignore_then(pad())
-                    .ignore_then(expr.clone())
+                pad()
+                    .ignore_then(just('('))
+                    .ignore_then(
+                        named_arg
+                            .clone()
+                            .separated_by(just(',').ignore_then(pad()))
+                            .allow_trailing(),
+                    )
                     .then_ignore(pad())
-                    .then_ignore(just(']'))
-                    .repeated(),
+                    .then_ignore(just(')'))
+                    .or_not(),
             )
-            .foldl(|e, idx| Expr::Index {
-                base: Box::new(e),
-                index: Box::new(idx),
+            .map(|(name, args)| PostfixPiece::Field { name, args });
+
+        let postfix_op = choice((
+            just('[')
+                .ignore_then(pad())
+                .ignore_then(expr.clone())
+                .then_ignore(pad())
+                .then_ignore(just(']'))
+                .map(PostfixPiece::Index),
+            dot_field_or_call,
+        ));
+
+        let postfix = atom_base
+            .then(postfix_op.repeated())
+            .foldl(|e, piece| match piece {
+                PostfixPiece::Index(idx) => Expr::Index {
+                    base: Box::new(e),
+                    index: Box::new(idx),
+                },
+                PostfixPiece::Field { name, args: None } => Expr::Member {
+                    base: Box::new(e),
+                    field: name,
+                },
+                PostfixPiece::Field {
+                    name,
+                    args: Some(args),
+                } => Expr::Call {
+                    callee: Box::new(Expr::Member {
+                        base: Box::new(e),
+                        field: name,
+                    }),
+                    type_args: None,
+                    args,
+                },
             });
 
         let unary_op = choice((
@@ -373,10 +470,10 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(
                 pad()
                     .ignore_then(choice((
-                        just("==").to(BinOp::Eq),
-                        just("!=").to(BinOp::Ne),
-                        just("<=").to(BinOp::Le),
-                        just(">=").to(BinOp::Ge),
+                        just('=').ignore_then(just('=')).to(BinOp::Eq),
+                        just('!').ignore_then(just('=')).to(BinOp::Ne),
+                        just('<').ignore_then(just('=')).to(BinOp::Le),
+                        just('>').ignore_then(just('=')).to(BinOp::Ge),
                         just('<').to(BinOp::Lt),
                         just('>').to(BinOp::Gt),
                     )))
@@ -480,6 +577,66 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     .boxed();
 
     let expr_for_stmt = expr.clone();
+
+    let var_decl_qualified = var_qualifier()
+        .then_ignore(pad())
+        .then(type_parser().or_not())
+        .then_ignore(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then(assign_op())
+        .then_ignore(pad())
+        .then(expr_for_stmt.clone())
+        .map(|((((qual, ty), name), _op), value)| {
+            Stmt::VarDecl(VarDecl {
+                qualifier: Some(qual),
+                ty,
+                name,
+                value,
+            })
+        })
+        .boxed();
+
+    let var_decl_input = text::keyword("input")
+        .ignore_then(pad())
+        .ignore_then(type_parser().or_not())
+        .then_ignore(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then(assign_op())
+        .then_ignore(pad())
+        .then(expr_for_stmt.clone())
+        .map(|(((ty, name), _op), value)| {
+            Stmt::VarDecl(VarDecl {
+                qualifier: Some(VarQualifier::Input),
+                ty,
+                name,
+                value,
+            })
+        })
+        .boxed();
+
+    let var_decl_typed = type_parser()
+        .then_ignore(pad())
+        .then(text::ident())
+        .then_ignore(pad())
+        .then(assign_op())
+        .then_ignore(pad())
+        .then(expr_for_stmt.clone())
+        .map(|(((ty, name), _op), value)| {
+            Stmt::VarDecl(VarDecl {
+                qualifier: None,
+                ty: Some(ty),
+                name,
+                value,
+            })
+        })
+        .boxed();
+
+    let var_decl_qualified_stmt = var_decl_qualified.clone();
+    let var_decl_input_stmt = var_decl_input.clone();
+    let var_decl_typed_stmt = var_decl_typed.clone();
+
     let stmt = recursive(move |stmt| {
         let stmt = stmt.boxed();
         let expr_if = expr_for_stmt.clone();
@@ -487,41 +644,37 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         let compound_vec = || {
             just('{')
                 .ignore_then(pad())
-                .ignore_then(stmt.clone().repeated())
+                .ignore_then(pad().ignore_then(stmt.clone()).repeated())
                 .then_ignore(pad())
                 .then_ignore(just('}'))
         };
 
-        let then_part = || {
-            just('{')
+        // `else if` via recursive [`IfStmt`]: `else` + (`if` + … | `{` … `}`).
+        let if_stmt_ast = recursive(|if_ast| {
+            text::keyword("if")
                 .ignore_then(pad())
-                .ignore_then(stmt.clone().repeated())
+                .ignore_then(expr_if.clone())
                 .then_ignore(pad())
-                .then_ignore(just('}'))
-        };
-
-        // `else if` chains are parsed as `else { if ... }` in a follow-up pass if needed; nested `recursive`
-        // here caused mutual-recursion stack overflows with chumsky 0.9.
-        let if_stmt = text::keyword("if")
-            .ignore_then(pad())
-            .ignore_then(expr_if.clone())
-            .then_ignore(pad())
-            .then(then_part())
-            .then(
-                pad()
-                    .ignore_then(text::keyword("else"))
-                    .ignore_then(pad())
-                    .ignore_then(then_part())
-                    .map(ElseBody::Block)
-                    .or_not(),
-            )
-            .map(|((cond, then_body), else_body)| {
-                Stmt::If(IfStmt {
+                .then(compound_vec())
+                .then(
+                    pad()
+                        .ignore_then(text::keyword("else"))
+                        .ignore_then(pad())
+                        .ignore_then(choice((
+                            if_ast
+                                .clone()
+                                .map(|inner| ElseBody::If(Box::new(inner))),
+                            compound_vec().map(ElseBody::Block),
+                        )))
+                        .or_not(),
+                )
+                .map(|((cond, then_body), else_body)| IfStmt {
                     cond,
                     then_body,
                     else_body,
                 })
-            });
+        });
+        let if_stmt = if_stmt_ast.map(Stmt::If);
 
         let for_stmt = text::keyword("for")
             .ignore_then(pad())
@@ -534,28 +687,86 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             .then_ignore(text::keyword("to"))
             .then_ignore(pad())
             .then(expr_for_stmt.clone())
+            .then(
+                pad()
+                    .ignore_then(text::keyword("by"))
+                    .ignore_then(pad())
+                    .ignore_then(expr_for_stmt.clone())
+                    .or_not(),
+            )
             .then_ignore(pad())
             .then(compound_vec())
-            .map(|(((var, from), to), body)| Stmt::For { var, from, to, body });
+            .map(|((((var, from), to), by), body)| Stmt::For {
+                var,
+                from,
+                to,
+                by,
+                body,
+            });
 
-        let switch_case = expr_for_stmt
-            .clone()
-            .then_ignore(pad())
-            .then_ignore(just("=>"))
-            .then_ignore(pad())
-            .then(stmt.clone());
+        let switch_arm = choice((
+            compound_vec().map(|mut v| match v.len() {
+                0 => Stmt::Block(vec![]),
+                1 => v.pop().expect("one stmt"),
+                _ => Stmt::Block(v),
+            }),
+            stmt.clone(),
+        ));
 
-        let switch_default = just("=>")
-            .ignore_then(pad())
-            .ignore_then(stmt.clone())
-            .map(Box::new);
+        // `=>` default must be tried before another `case =>`: otherwise `expr` may consume
+        // the leading `=` of `=>` while attempting `==`, leaving `>` and a bogus error.
+        #[derive(Clone)]
+        enum SwitchEl {
+            Case((Expr, Stmt)),
+            Default(Stmt),
+        }
+
+        let switch_el = pad().ignore_then(choice((
+            fat_arrow()
+                .ignore_then(pad())
+                .ignore_then(switch_arm.clone())
+                .map(SwitchEl::Default),
+            expr_for_stmt
+                .clone()
+                .then_ignore(pad())
+                .then_ignore(fat_arrow())
+                .then_ignore(pad())
+                .then(switch_arm.clone())
+                .map(|(e, s)| SwitchEl::Case((e, s))),
+        )));
 
         let switch_body = just('{')
             .ignore_then(pad())
-            .ignore_then(switch_case.repeated())
-            .then(switch_default.or_not())
+            .ignore_then(switch_el.repeated())
             .then_ignore(pad())
-            .then_ignore(just('}'));
+            .then_ignore(just('}'))
+            .try_map(|elements, span| {
+                let mut cases = Vec::new();
+                let mut default: Option<Stmt> = None;
+                for el in elements {
+                    match el {
+                        SwitchEl::Case(pair) => {
+                            if default.is_some() {
+                                return Err(Simple::custom(
+                                    span.clone(),
+                                    "switch cases may not follow the default (`=>`) arm",
+                                ));
+                            }
+                            cases.push(pair);
+                        }
+                        SwitchEl::Default(arm) => {
+                            if default.is_some() {
+                                return Err(Simple::custom(
+                                    span,
+                                    "duplicate default arm in switch",
+                                ));
+                            }
+                            default = Some(arm);
+                        }
+                    }
+                }
+                Ok((cases, default.map(Box::new)))
+            });
 
         let switch_stmt = text::keyword("switch")
             .ignore_then(pad())
@@ -568,59 +779,14 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                 default,
             });
 
-        let block_stmt = compound_vec().map(Stmt::Block);
-
-        let var_decl_qualified = var_qualifier()
-            .then_ignore(pad())
-            .then(type_parser().or_not())
-            .then_ignore(pad())
-            .then(text::ident())
-            .then_ignore(pad())
-            .then(assign_op())
-            .then_ignore(pad())
-            .then(expr_for_stmt.clone())
-            .map(|((((qual, ty), name), _op), value)| {
-                Stmt::VarDecl(VarDecl {
-                    qualifier: Some(qual),
-                    ty,
-                    name,
-                    value,
-                })
-            });
-
-        let var_decl_input = text::keyword("input")
+        let while_stmt = text::keyword("while")
             .ignore_then(pad())
-            .ignore_then(type_parser().or_not())
+            .ignore_then(expr_for_stmt.clone())
             .then_ignore(pad())
-            .then(text::ident())
-            .then_ignore(pad())
-            .then(assign_op())
-            .then_ignore(pad())
-            .then(expr_for_stmt.clone())
-            .map(|(((ty, name), _op), value)| {
-                Stmt::VarDecl(VarDecl {
-                    qualifier: Some(VarQualifier::Input),
-                    ty,
-                    name,
-                    value,
-                })
-            });
+            .then(compound_vec())
+            .map(|(cond, body)| Stmt::While { cond, body });
 
-        let var_decl_typed = type_parser()
-            .then_ignore(pad())
-            .then(text::ident())
-            .then_ignore(pad())
-            .then(assign_op())
-            .then_ignore(pad())
-            .then(expr_for_stmt.clone())
-            .map(|(((ty, name), _op), value)| {
-                Stmt::VarDecl(VarDecl {
-                    qualifier: None,
-                    ty: Some(ty),
-                    name,
-                    value,
-                })
-            });
+        let block_stmt = compound_vec().map(Stmt::Block);
 
         let stmt_assign = text::ident()
             .then_ignore(pad())
@@ -636,9 +802,10 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             if_stmt,
             for_stmt,
             switch_stmt,
-            var_decl_qualified,
-            var_decl_input,
-            var_decl_typed,
+            while_stmt,
+            var_decl_qualified_stmt.clone(),
+            var_decl_input_stmt.clone(),
+            var_decl_typed_stmt.clone(),
             stmt_assign,
             expr_stmt,
         ))
@@ -666,12 +833,12 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
 
     let fn_body_block = just('{')
         .ignore_then(pad())
-        .ignore_then(stmt.clone().repeated())
+        .ignore_then(pad().ignore_then(stmt.clone()).repeated())
         .then_ignore(pad())
         .then_ignore(just('}'))
         .map(FnBody::Block);
 
-    let fn_decl = text::keyword("f")
+    let fn_decl_core = text::keyword("f")
         .ignore_then(pad())
         .ignore_then(text::ident())
         .then_ignore(pad())
@@ -685,9 +852,54 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                 .map(FnBody::Expr),
             fn_body_block.clone(),
         )))
-        .map(|((name, params), body)| Item::FnDecl(FnDecl { name, params, body }));
+        .map(|((name, params), body)| FnDecl { name, params, body })
+        .boxed();
 
-    let item = choice((decl.clone(), fn_decl.clone(), stmt.clone().map(Item::Stmt))).boxed();
+    let fn_decl = fn_decl_core.clone().map(Item::FnDecl);
+
+    let import_decl = text::keyword("import")
+        .ignore_then(pad())
+        .ignore_then(
+            choice((text::ident(), text::int(10)))
+                .separated_by(just('/').ignore_then(pad()))
+                .at_least(1),
+        )
+        .then_ignore(pad())
+        .then_ignore(text::keyword("as"))
+        .then_ignore(pad())
+        .then(text::ident())
+        .map(|(path, alias)| Item::Import(ImportDecl { path, alias }))
+        .boxed();
+
+    let export_var_decl = choice((
+        var_decl_qualified.clone(),
+        var_decl_input.clone(),
+        var_decl_typed.clone(),
+    ))
+    .then_ignore(optional_semicolon())
+    .map(|stmt| match stmt {
+        Stmt::VarDecl(v) => ExportDecl::Var(v),
+        _ => unreachable!("export var parsers only yield VarDecl"),
+    })
+    .boxed();
+
+    let export_decl = text::keyword("export")
+        .ignore_then(pad())
+        .ignore_then(choice((
+            fn_decl_core.clone().map(ExportDecl::Fn),
+            export_var_decl.clone(),
+        )))
+        .map(Item::Export)
+        .boxed();
+
+    let item = choice((
+        import_decl.clone(),
+        export_decl.clone(),
+        decl.clone(),
+        fn_decl.clone(),
+        stmt.clone().map(Item::Stmt),
+    ))
+    .boxed();
 
     pad()
         .ignore_then(version_directive().then_ignore(pad()).or_not())

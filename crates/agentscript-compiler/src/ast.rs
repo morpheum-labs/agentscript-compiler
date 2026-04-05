@@ -3,7 +3,7 @@
 /// Parsed AgentScript / QAS compilation unit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Script {
-    /// `//@version=1` or `//@version=6` when present (QAS EBNF).
+    /// `//@version=1`, `5`, or `6` when present (QAS / Pine-shaped scripts).
     pub version: Option<u32>,
     /// Top-level declarations and statements.
     pub items: Vec<Item>,
@@ -18,8 +18,27 @@ impl Script {
     }
 }
 
+/// `import User/Lib/1 as alias` (Pine-style library path).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    /// Path segments, e.g. `["TradingView", "ta", "5"]`.
+    pub path: Vec<String>,
+    pub alias: String,
+}
+
+/// `export f ...` or `export var ...` in a `library()` script.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportDecl {
+    Fn(FnDecl),
+    Var(VarDecl),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
+    /// `import path as alias`.
+    Import(ImportDecl),
+    /// `export` declaration for libraries.
+    Export(ExportDecl),
     /// `indicator(...)`, `strategy(...)`, or `library(...)`.
     ScriptDecl(ScriptDeclaration),
     /// User function: `f name(...) => expr` or `f name(...) { ... }`.
@@ -110,12 +129,19 @@ pub enum Stmt {
         var: String,
         from: Expr,
         to: Expr,
+        /// `for i = a to b by step` — Pine-style step (optional).
+        by: Option<Expr>,
         body: Vec<Stmt>,
     },
     Switch {
         scrutinee: Expr,
         cases: Vec<(Expr, Stmt)>,
         default: Option<Box<Stmt>>,
+    },
+    /// `while cond { ... }`
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
     },
 }
 
@@ -186,11 +212,18 @@ pub enum Expr {
     Na,
     /// `color.red`, etc.
     Color(String),
+    /// `#RRGGBB` or `#RRGGBBAA` (Pine-style).
+    HexColor(String),
     /// Reference without a call suffix, e.g. `close`, `strategy.long`.
     IdentPath(Vec<String>),
-    /// Function / method call: `ta.sma(...)`, `matrix.new<float>(...)`.
+    /// Field access on an arbitrary expression, e.g. `(a + b).field`.
+    Member {
+        base: Box<Expr>,
+        field: String,
+    },
+    /// Call: `ta.sma(...)`, `(expr).m(...)`, or `matrix.new<float>(...)`.
     Call {
-        path: Vec<String>,
+        callee: Box<Expr>,
         /// Generic type arguments before `(` when present (e.g. `matrix.new<float>`).
         type_args: Option<Vec<Type>>,
         args: Vec<(Option<String>, Expr)>,
