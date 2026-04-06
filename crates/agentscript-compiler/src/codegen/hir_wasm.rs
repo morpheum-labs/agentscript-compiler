@@ -4,19 +4,15 @@ use std::collections::HashMap;
 
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
-    ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
+    FunctionSection, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 use crate::frontend::ast::BinOp;
 use crate::frontend::ast::PrimitiveType;
 use crate::frontend::ast::Type as AstType;
-use crate::hir::builtin::BuiltinKind;
-use crate::hir::expr::HirExpr;
-use crate::hir::ids::{HirId, SymbolId};
-use crate::hir::literal::HirLiteral;
-use crate::hir::script::HirScript;
-use crate::hir::stmt::HirStmt;
-use crate::hir::ty::HirType;
+use crate::hir::{
+    BuiltinKind, HirExpr, HirId, HirLiteral, HirScript, HirStmt, HirType, SymbolId,
+};
 
 /// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
 pub const IMPORT_SERIES_CLOSE: u32 = 0;
@@ -124,10 +120,8 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
     hir_ty_to_val(match ex {
         HirExpr::Literal(_, t) => t,
         HirExpr::Variable(_, t) => t,
-        HirExpr::Binary { ty, .. }
-        | HirExpr::BuiltinCall { ty, .. }
-        | HirExpr::SeriesAccess { ty, .. }
-        | HirExpr::Security(sec) => &sec.ty,
+        HirExpr::Binary { ty, .. } | HirExpr::BuiltinCall { ty, .. } | HirExpr::SeriesAccess { ty, .. } => ty,
+        HirExpr::Security(sec) => &sec.ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::unsupported(
                 "plot expression shape not supported as let value",
@@ -210,7 +204,7 @@ impl<'a> Ctx<'a> {
                 }
                 self.emit_expr(func, *lhs)?;
                 self.emit_expr(func, *rhs)?;
-                let ins = func.instructions();
+                let mut ins = func.instructions();
                 match op {
                     BinOp::Add => ins.f64_add(),
                     BinOp::Sub => ins.f64_sub(),
@@ -423,7 +417,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     module.section(&memory);
     module.section(&exports);
     module.section(&code);
-    if !data_bytes.is_empty() {
+    if !pool.bytes.is_empty() {
         module.section(&data);
     }
 

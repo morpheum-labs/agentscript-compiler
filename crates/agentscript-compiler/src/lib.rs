@@ -23,7 +23,7 @@ pub use frontend::ast::{
 };
 pub use error::{CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
-pub use codegen::emit_minimal_guest_wasm_v0;
+pub use codegen::{emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, HirWasmError};
 pub use semantic::{
     analyze_script, check_script, default_passes, default_passes_with_hir, lexical_resolve_script,
     lexical_resolve_script_in_session, resolve_script, resolve_script_in_session, typecheck_script,
