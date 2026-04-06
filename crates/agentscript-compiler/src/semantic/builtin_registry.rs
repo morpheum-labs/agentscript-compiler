@@ -1,7 +1,8 @@
 //! Declarative builtin metadata — **single source of truth** for “known” dotted calls.
 //!
-//! PineScriptV6-docs-crawler (or similar) can codegen this table later; until then, curated
-//! entries cover common `ta.*` / `math.*` / `str.*` shapes so typecheck and resolver stay aligned.
+//! **Follow-up:** replace [`BUILTIN_ENTRIES`] with generated output from `PinescriptV6-docs-crawler/`
+//! (or an equivalent doc scrape) once that pipeline emits Rust or JSON that the build can import.
+//! Until then, grow this curated slice only when new typecheck / HIR tests need real signatures.
 
 use crate::frontend::ast::{PrimitiveType, Type as AstType};
 use crate::hir::HirType;

@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ast::{
-    AssignOp, BinOp, Expr, ExprKind, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind,
-    Span, Stmt, StmtKind, Type, VarQualifier,
+    AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item,
+    PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind, Type, VarQualifier,
 };
 
 use super::builtin::BuiltinKind;
@@ -70,6 +70,8 @@ struct LowerCtx {
     names: HashMap<String, super::ids::SymbolId>,
     /// Names introduced by `input.int` / `input int` (typed as simple int in HIR).
     input_int_names: HashSet<String>,
+    /// User `f(...) =>` / Pine expr-body functions: name → arity (parameters).
+    user_fn_arity: HashMap<String, usize>,
 }
 
 impl LowerCtx {
@@ -79,7 +81,34 @@ impl LowerCtx {
             symbols: SymbolTable::new(),
             names: HashMap::new(),
             input_int_names: HashSet::new(),
+            user_fn_arity: HashMap::new(),
         }
+    }
+
+    fn register_user_fn(&mut self, f: &FnDecl) -> Result<(), HirLowerError> {
+        if f.is_method {
+            return Err(HirLowerError::at(
+                f.span,
+                "method functions are not supported in this HIR lowering pass",
+            ));
+        }
+        match &f.body {
+            FnBody::Expr(_) => {}
+            FnBody::Block(_) => {
+                return Err(HirLowerError::at(
+                    f.span,
+                    "user functions with a block body are not supported in HIR lowering (use `=>` expression form)",
+                ));
+            }
+        }
+        if self.user_fn_arity.insert(f.name.clone(), f.params.len()).is_some() {
+            return Err(HirLowerError::at(
+                f.span,
+                format!("duplicate function `{}` in HIR lowering", f.name),
+            ));
+        }
+        self.intern_name(&f.name);
+        Ok(())
     }
 
     fn register_input_int(&mut self, name: &str) {
@@ -107,6 +136,7 @@ impl LowerCtx {
             HirExpr::Variable(_, ty) => ty.clone(),
             HirExpr::Binary { ty, .. } => ty.clone(),
             HirExpr::BuiltinCall { ty, .. } => ty.clone(),
+            HirExpr::UserCall { ty, .. } => ty.clone(),
             HirExpr::SeriesAccess { ty, .. } => ty.clone(),
             HirExpr::Security(sec) => sec.ty.clone(),
             HirExpr::Plot { .. } => HirType::Series(Type::Primitive(PrimitiveType::Float)),
@@ -125,6 +155,15 @@ impl LowerCtx {
 
         for item in &script.items {
             match item {
+                Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
+                    self.register_user_fn(f)?;
+                }
+                _ => {}
+            }
+        }
+
+        for item in &script.items {
+            match item {
                 Item::ScriptDecl(decl) => {
                     declaration = self.script_declaration(decl)?;
                 }
@@ -137,7 +176,8 @@ impl LowerCtx {
                         "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
                     ));
                 }
-                Item::Export(_) | Item::FnDecl(_) | Item::Enum(_) | Item::TypeDef(_) => {
+                Item::FnDecl(_) | Item::Export(ExportDecl::Fn(_)) => {}
+                Item::Export(_) | Item::Enum(_) | Item::TypeDef(_) => {
                     return Err(HirLowerError::unsupported(
                         "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
                     ));
@@ -171,6 +211,15 @@ impl LowerCtx {
     }
 
     fn lower_top_stmt(
+        &mut self,
+        stmt: &Stmt,
+        inputs: &mut Vec<HirInputDecl>,
+        body: &mut Vec<HirStmt>,
+    ) -> Result<(), HirLowerError> {
+        self.lower_stmt_into(stmt, inputs, body)
+    }
+
+    fn lower_stmt_into(
         &mut self,
         stmt: &Stmt,
         inputs: &mut Vec<HirInputDecl>,
@@ -231,11 +280,54 @@ impl LowerCtx {
                     "only `plot(...)` expression statements are supported in this pass",
                 ))
             }
+            StmtKind::If(i) => self.lower_if_stmt(i, inputs, body),
+            StmtKind::Block(stmts) => {
+                let mut inner = Vec::new();
+                for s in stmts {
+                    self.lower_stmt_into(s, inputs, &mut inner)?;
+                }
+                body.push(HirStmt::Block(inner));
+                Ok(())
+            }
             _ => Err(HirLowerError::at(
                 stmt.span,
                 "statement kind not supported by this HIR lowering pass",
             )),
         }
+    }
+
+    fn lower_if_stmt(
+        &mut self,
+        i: &IfStmt,
+        inputs: &mut Vec<HirInputDecl>,
+        body: &mut Vec<HirStmt>,
+    ) -> Result<(), HirLowerError> {
+        let cond = self.lower_expr(&i.cond)?;
+        let mut then_branch = Vec::new();
+        for s in &i.then_body {
+            self.lower_stmt_into(s, inputs, &mut then_branch)?;
+        }
+        let else_branch = match &i.else_body {
+            None => None,
+            Some(ElseBody::Block(stmts)) => {
+                let mut v = Vec::new();
+                for s in stmts {
+                    self.lower_stmt_into(s, inputs, &mut v)?;
+                }
+                Some(v)
+            }
+            Some(ElseBody::If(inner)) => {
+                let mut v = Vec::new();
+                self.lower_if_stmt(inner, inputs, &mut v)?;
+                Some(v)
+            }
+        };
+        body.push(HirStmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        });
+        Ok(())
     }
 
     fn lower_expr(&mut self, e: &Expr) -> Result<HirId, HirLowerError> {
@@ -247,6 +339,10 @@ impl LowerCtx {
             ExprKind::Float(f) => Ok(self.alloc_expr(HirExpr::Literal(
                 HirLiteral::Float(*f),
                 HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+            ))),
+            ExprKind::Bool(b) => Ok(self.alloc_expr(HirExpr::Literal(
+                HirLiteral::Bool(*b),
+                HirType::Simple(Type::Primitive(PrimitiveType::Bool)),
             ))),
             ExprKind::String(s) => Ok(self.alloc_expr(HirExpr::Literal(
                 HirLiteral::String(s.clone()),
@@ -447,15 +543,48 @@ impl LowerCtx {
                     lookahead = lookahead_from_expr(ex);
                 }
             }
+            let inner_ty = self.expr_hir_type(inner);
+            let sec_ty = match inner_ty {
+                HirType::Simple(Type::Primitive(p)) => HirType::Series(Type::Primitive(p)),
+                HirType::Series(Type::Primitive(p)) => HirType::Series(Type::Primitive(p)),
+                _ => HirType::Series(Type::Primitive(PrimitiveType::Float)),
+            };
             let sec = SecurityCall {
                 symbol: sym,
                 timeframe: tf,
                 expression: inner,
                 gaps,
                 lookahead,
-                ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                ty: sec_ty,
             };
             return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec))));
+        }
+
+        if path.len() == 1 {
+            let name = &path[0];
+            if let Some(&arity) = self.user_fn_arity.get(name.as_str()) {
+                if args.len() != arity {
+                    return Err(HirLowerError::at(
+                        expr_span,
+                        format!(
+                            "`{name}` expects {arity} arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let sym = *self.names.get(name.as_str()).ok_or_else(|| {
+                    HirLowerError::at(expr_span, format!("unknown function `{name}`"))
+                })?;
+                let mut call_args = Vec::new();
+                for (_, e) in args {
+                    call_args.push(self.lower_expr(e)?);
+                }
+                return Ok(self.alloc_expr(HirExpr::UserCall {
+                    callee: sym,
+                    args: call_args,
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                }));
+            }
         }
 
         if path == ["plot"] {
@@ -590,7 +719,6 @@ fn try_input_int_default(e: &Expr) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::parse_script;
     use crate::semantic::check_script;
     use insta::assert_debug_snapshot;
@@ -608,8 +736,8 @@ plot(htf)
     fn golden_tiny_indicator_pipeline() {
         let script = parse_script("test", SAMPLE).expect("parse");
         check_script(&script).expect("semantic checks");
-        let hir = lower_script_to_hir(&script).expect("lower");
-        assert_debug_snapshot!(hir);
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
     }
 
     #[test]
@@ -635,8 +763,8 @@ plot(htf + prev)
     fn golden_series_access_and_security_options() {
         let script = parse_script("test", SAMPLE_SERIES_SECURITY).expect("parse");
         check_script(&script).expect("semantic checks");
-        let hir = lower_script_to_hir(&script).expect("lower");
-        assert_debug_snapshot!(hir);
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
     }
 
     const SAMPLE_EMA: &str = r#"//@version=6
@@ -650,7 +778,24 @@ plot(ema)
     fn golden_ta_ema_indicator() {
         let script = parse_script("test", SAMPLE_EMA).expect("parse");
         check_script(&script).expect("semantic checks");
-        let hir = lower_script_to_hir(&script).expect("lower");
-        assert_debug_snapshot!(hir);
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
+    }
+
+    const SAMPLE_USER_FN_IF: &str = r#"//@version=6
+indicator("UF")
+f(float x) => x * 2.0
+y = f(close)
+if true {
+  plot(y)
+}
+"#;
+
+    #[test]
+    fn golden_user_fn_and_conditional_plot() {
+        let script = parse_script("test", SAMPLE_USER_FN_IF).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
     }
 }

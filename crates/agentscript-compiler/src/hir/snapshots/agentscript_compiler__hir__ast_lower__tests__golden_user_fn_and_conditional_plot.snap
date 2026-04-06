@@ -1,0 +1,91 @@
+---
+source: crates/agentscript-compiler/src/hir/ast_lower.rs
+expression: "c.session.hir.as_ref().expect(\"hir\")"
+---
+HirScript {
+    version: 6,
+    declaration: Indicator {
+        title: Some(
+            "UF",
+        ),
+    },
+    inputs: [],
+    exprs: [
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        UserCall {
+            callee: SymbolId(
+                1,
+            ),
+            args: [
+                HirId(
+                    0,
+                ),
+            ],
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Literal(
+            Bool(
+                true,
+            ),
+            Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                2,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+    ],
+    body: [
+        Let {
+            symbol: SymbolId(
+                2,
+            ),
+            value: HirId(
+                1,
+            ),
+        },
+        If {
+            cond: HirId(
+                2,
+            ),
+            then_branch: [
+                Plot {
+                    expr: HirId(
+                        3,
+                    ),
+                    title: None,
+                },
+            ],
+            else_branch: None,
+        },
+    ],
+    symbols: SymbolTable {
+        names: [
+            "close",
+            "f",
+            "y",
+        ],
+    },
+}

@@ -25,6 +25,12 @@ pub enum HirExpr {
         args: Vec<HirId>,
         ty: HirType,
     },
+    /// Call to a user-defined function (symbol names the function in [`super::symbols::SymbolTable`]).
+    UserCall {
+        callee: SymbolId,
+        args: Vec<HirId>,
+        ty: HirType,
+    },
     /// `close[1]`-style history access (offset from current bar).
     SeriesAccess {
         base: HirId,

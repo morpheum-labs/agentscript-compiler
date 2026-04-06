@@ -17,23 +17,23 @@
 | **Array literals** | `[a, b]`, `[]` | **AST only** | [`ExprKind::Array`](crates/agentscript-compiler/src/frontend/ast/expr.rs); element types not checked. |
 | **Script-wide duplicate definitions** | Same function name twice, duplicate `import` alias, duplicate param in one `f` | **Partial** | [`analyze_script`](crates/agentscript-compiler/src/semantic/passes/early.rs). Many AST nodes carry [`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs); semantic errors are still mostly strings ([`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs)). |
 | **Scopes & name resolution** | Bindings, shadowing, qualified names | **Partial** | Dotted roots: [`resolve_script`](crates/agentscript-compiler/src/semantic/passes/resolver.rs) + [`builtins`](crates/agentscript-compiler/src/semantic/builtins.rs). Minimal typecheck maintains scopes for a growing subset ([`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs)); full lexical + UDT resolution still open. |
-| **User functions** | `f name(params) => …` / block body, params, defaults | **AST only** | No recursion/arity/type checking. |
-| **Variable qualifiers** | `var`, `varip`, `const`, `input`, `simple`, `series` | **AST only** | No Pine-style persistence or series/simple rules. |
+| **User functions** | `f name(params) => …` / block body, params, defaults | **Partial** | Typecheck: arity + arg types vs params. HIR: [`HirExpr::UserCall`](crates/agentscript-compiler/src/hir/expr.rs) for expression-body `=>` only; block bodies rejected at lowering. |
+| **Variable qualifiers** | `var`, `varip`, `const`, `input`, `simple`, `series` | **Partial** | Binding kinds from qualifiers in typecheck; `simple`/`const`/`input` cannot take a series initializer (clear diagnostic). No `var`/`varip` bar-state yet. |
 | **Assignments** | `=` first assign vs `:=` reassignment | **AST only** | No “assign before declare” or single-assignment checks. |
 | **Types (surface)** | `int` / `float` / `bool` / `string` / `color`, **`float[]`**-style arrays, `array<>` / `matrix<>` / `map<,>`, drawing types | **AST only** | Type syntax parsed; not checked or enforced. |
 | **Type inference & checking** | `series` vs `simple`, call compatibility, generics | **Partial** | [`typecheck_script`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs) + default pipeline [`TypecheckPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs). Covers a **minimal** surface (builtins like `close` / `ta.sma` / `plot` / `request.security`, inputs, top-level flow); not a full Pine type system. |
-| **Historical reference** | `expr[i]`, validity of offset, series history | **None** | Parsed as [`ExprKind::Index`](crates/agentscript-compiler/src/frontend/ast/expr.rs); no semantics. |
-| **Operators** | Unary/binary, precedence, `==` vs `=` | **AST only** | No bool strictness or Na/na propagation rules. |
-| **Ternary** | `cond ? a : b` | **AST only** | No lazy/short-circuit semantics in IR. |
+| **Historical reference** | `expr[i]`, validity of offset, series history | **Partial** | Typecheck: integral index + element type. HIR: [`HirExpr::SeriesAccess`](crates/agentscript-compiler/src/hir/expr.rs) with literal offset; WASM: `close[k]` via host `series_hist`. |
+| **Operators** | Unary/binary, precedence, `==` vs `=` | **Partial** | Numeric/bool promotion in [`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs). Na/na propagation still open. |
+| **Ternary** | `cond ? a : b` | **Partial** | Condition must be bool-like; branch types unified. Lazy IR semantics still open. |
 | **Calls** | Positional / named args, `matrix.new<float>(…)` | **AST only** | No builtin resolution or signatures. |
 | **Member / method syntax** | `a.b`, `close.sma(20)` | **AST only** | Desugared to `Member` / `Call`; no method tables. |
-| **Control flow** | `if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i,v] in`**, `switch` (with or **without** scrutinee), `while`, `break`, `continue`, blocks | **Partial** | Parsed; `break`/`continue` inside `for`/`for…in`/`while` ([`loops.rs`](crates/agentscript-compiler/src/semantic/passes/loops.rs)); no reachability or Pine loop limits. |
+| **Control flow** | `if` / `else`, `for` … `to` [`by`], **`for … in`** / **`for [i,v] in`**, `switch` (with or **without** scrutinee), `while`, `break`, `continue`, blocks | **Partial** | Parsed; `break`/`continue` ([`loops.rs`](crates/agentscript-compiler/src/semantic/passes/loops.rs)); `if` / `while` / `switch` condition typing in [`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs); top-level `if` lowers to [`HirStmt::If`](crates/agentscript-compiler/src/hir/stmt.rs). Reachability / Pine loop limits still open. |
 | **Bar execution model** | Once per bar, `varip`, bar states | **None** | Requires IR + runtime + host. |
 | **`ta.*` builtins** | Indicators, `crossover`, etc. | **Partial** | `ta.sma` recognized in minimal typecheck and lowered to HIR ([`BuiltinKind::TaSma`](crates/agentscript-compiler/src/hir/builtin.rs)). Rest of `ta.*` still **None** until registry + host. |
 | **`strategy.*` builtins** | Orders, position, PnL, trade stats | **None** | Lowered to host imports; host implements semantics. |
 | **`math.*` builtins** | Scalar math, rounding policy | **None** | |
 | **`syminfo.*` / `timeframe.*`** | Symbol / timeframe metadata | **None** | Host-fed constants/imports. |
-| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **Partial** | First-class HIR node [`SecurityCall`](crates/agentscript-compiler/src/hir/security.rs). [`ast_lower`](crates/agentscript-compiler/src/hir/ast_lower.rs) supports a **tiny** 3-arg literal subset; full signatures, `gaps` / `lookahead` / dynamic rules, and host ABI remain Phase 1–3. |
+| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **Partial** | HIR [`SecurityCall`](crates/agentscript-compiler/src/hir/security.rs) with `gaps` / `lookahead` from `barmerge.*` or booleans; typecheck validates optional args. Dynamic symbol / full overloads / host ABI still Phase 1–3. |
 | **`request.financial`** | Financial series by id/period | **None** | Roadmap Phase 1–3. |
 | **Other `request.*`** | e.g. economic, dividend, … | **None** | Same pattern as security/financial when prioritized. |
 | **`mcp.*` builtins** | `call`, `discover`, `emit`, quotas | **None** | QAS-specific; host MCP proxy. |
@@ -41,7 +41,7 @@
 | **`input.*` factory fns** | `input.int`, `input.float`, … | **Partial** | `input.int` literal default in assign / `input int` decl handled in HIR lowering + typecheck subset ([`BuiltinKind::InputInt`](crates/agentscript-compiler/src/hir/builtin.rs)). Other `input.*` factories not modeled. |
 | **Side effects & order** | Order of `strategy.*` / `mcp.*` vs pure exprs | **None** | Needs effect typing + schedule in IR. |
 | **Constant folding** | Compile-time evaluation of literals | **None** | Optional optimization after typecheck. |
-| **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** layout and spec: [`spec/hir.md`](spec/hir.md), [`crates/agentscript-compiler/src/hir/`](crates/agentscript-compiler/src/hir/). **AST → `HirScript`:** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) for indicator + `input.int` + `close` + `ta.sma` / **`ta.ema`** + `request.security` + `plot` + `close[k]` (golden `insta` snapshots). No bar scheduler yet. |
+| **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** + spec [`spec/hir.md`](spec/hir.md). **AST → `HirScript`:** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) / [`HirLowerPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs): indicator slice + **`HirExpr::UserCall`** + **`HirStmt::If`** + bool literals + `input.int` + `close` + `ta.sma` / `ta.ema` + `request.security` + `plot` + `close[k]`. No bar scheduler yet. |
 | **WASM codegen** | `wasm32` module shape | **Partial** | [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) (`wasm-encoder`): `aether` imports + dual exports (`init`/`on_bar` + `aether_strategy_*`). Coverage tracks the HIR subset; not full language. |
 | **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **Partial** | v0 preview: `() -> ()` exports + documented `aether` import table; [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). Host still stubs imports / does not call `step` in production paths. |
 | **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
@@ -64,8 +64,8 @@
 
 **Outstanding work (near term)**
 
-- [ ] **Widen HIR lowering** in step with typecheck: more statements/expressions, `request.security` args (gaps, lookahead, overloads), more builtins, user functions when typed.
-- [ ] **Wire HIR into the driver**: optional `CompilerPass` or session field so consumers get `HirScript` after the same pipeline (not only `lower_script_to_hir` by hand).
+- [x] **Widen HIR lowering** (incremental): `if` / `else if`, user `=>` calls, bool literals, `request.security` gaps/lookahead + typed inner result; still grow builtins / block user bodies / WASM in step.
+- [x] **Wire HIR into the driver**: [`HirLowerPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs) + [`analyze_to_hir_compiler`](crates/agentscript-compiler/src/lib.rs) / [`session_hir`](crates/agentscript-compiler/src/lib.rs); [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) remains for tests and direct tooling.
 - [x] **CLI semantic diagnostics** — [`AnalyzeCompileError`](crates/agentscript-compiler/src/error.rs) + miette for analysis failures with spans.
 - [ ] **Full span coverage** — ensure every semantic error path attaches a non-`DUMMY` [`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs) where the AST has one.
 - [ ] **Full** type system + symbol tables (Pine/QAS parity, generics, library linking).
@@ -145,7 +145,7 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 - [x] **Minimal typecheck (subset):** [`typecheck.rs`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs) + [`TypecheckPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs) (not full Pine typing).
 - [x] **First HIR lowering slice:** [`ast_lower.rs`](crates/agentscript-compiler/src/hir/ast_lower.rs) + golden test (indicator + inputs + `ta.sma` + `request.security` + `plot`).
 - [ ] Symbol tables and lexical name resolution (locals, params, shadowing) **to completion**.
-- [ ] Type system for **all** core expressions (numbers, series, calls) and script kinds.
+- [ ] Type system for **all** core expressions (numbers, series, calls) and script kinds. *(Progress: bool conditions for `if` / ternary / `while`; `switch` scrutinee vs arm types; `request.security` optional merge args; simple/const/input vs series initializers.)*
 - [ ] Further script-kind rules (`library` exports-only, etc., as you align with Pine/QAS).
 - [ ] **`request.security`:** Pine v6-aligned signatures and parameter typing (symbol, timeframe, expression, `gaps`, `lookahead`, `ignore_invalid_symbol`, related overloads); result type as **series** aligned with the expression’s type; **dynamic** first-argument rules (where TV allows `request.*` inside loops/conditionals—match or document QAS deltas); errors for invalid combinations.
 - [ ] **`request.financial`:** Pine v6-aligned signatures and field typing (symbol, financial id, period, `ignore_invalid_symbol`, related forms); result typing consistent with TV’s financial series rules; same **dynamic** / scope constraints as other `request.*` where QAS aligns.

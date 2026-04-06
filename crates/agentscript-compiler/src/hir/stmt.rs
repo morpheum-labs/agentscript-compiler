@@ -14,6 +14,11 @@ pub enum HirStmt {
         expr: HirId,
         title: Option<String>,
     },
+    /// Conditional execution (`if` / `else if` chains lower to nested [`HirStmt::If`] in `else_branch`).
+    If {
+        cond: HirId,
+        then_branch: Vec<HirStmt>,
+        else_branch: Option<Vec<HirStmt>>,
+    },
     Block(Vec<HirStmt>),
-    // If, While, StrategyOrder, …
 }

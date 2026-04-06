@@ -121,6 +121,11 @@ fn collect_lets(body: &[HirStmt], out: &mut Vec<(SymbolId, HirId)>) -> Result<()
         match s {
             HirStmt::Let { symbol, value } => out.push((*symbol, *value)),
             HirStmt::Block(inner) => collect_lets(inner, out)?,
+            HirStmt::If { .. } => {
+                return Err(HirWasmError::unsupported(
+                    "`if` in script body is not supported in wasm codegen v0",
+                ));
+            }
             HirStmt::Plot { .. } => {}
         }
     }
@@ -135,7 +140,10 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
     hir_ty_to_val(match ex {
         HirExpr::Literal(_, t) => t,
         HirExpr::Variable(_, t) => t,
-        HirExpr::Binary { ty, .. } | HirExpr::BuiltinCall { ty, .. } | HirExpr::SeriesAccess { ty, .. } => ty,
+        HirExpr::Binary { ty, .. }
+        | HirExpr::BuiltinCall { ty, .. }
+        | HirExpr::UserCall { ty, .. }
+        | HirExpr::SeriesAccess { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::unsupported(
@@ -311,6 +319,11 @@ impl<'a> Ctx<'a> {
                 self.emit_expr(func, sec.expression)?;
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
+            HirExpr::UserCall { .. } => {
+                return Err(HirWasmError::unsupported(
+                    "user function calls are not supported in wasm codegen v0",
+                ));
+            }
             HirExpr::Plot { .. } => {
                 return Err(HirWasmError::unsupported(
                     "nested plot expression not supported",
@@ -322,6 +335,9 @@ impl<'a> Ctx<'a> {
 
     fn emit_stmt(&self, func: &mut Function, stmt: &HirStmt) -> Result<(), HirWasmError> {
         match stmt {
+            HirStmt::If { .. } => Err(HirWasmError::unsupported(
+                "`if` statements are not supported in wasm codegen v0",
+            )),
             HirStmt::Let { symbol, value } => {
                 self.emit_expr(func, *value)?;
                 let li = *self
@@ -329,18 +345,20 @@ impl<'a> Ctx<'a> {
                     .get(symbol)
                     .ok_or_else(|| HirWasmError::unsupported("let without local slot"))?;
                 func.instructions().local_set(li);
+                Ok(())
             }
             HirStmt::Plot { expr, .. } => {
                 self.emit_expr(func, *expr)?;
                 func.instructions().call(IMPORT_PLOT);
+                Ok(())
             }
             HirStmt::Block(stmts) => {
                 for s in stmts {
                     self.emit_stmt(func, s)?;
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 }
 

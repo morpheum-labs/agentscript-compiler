@@ -110,6 +110,13 @@ pub fn analyze_to_hir_compiler(script: &Script) -> Result<Compiler, AnalyzeError
     Ok(c)
 }
 
+/// Borrow the lowered [`HirScript`] after a successful [`analyze_to_hir_compiler`] (or any
+/// [`Compiler::with_hir_lowering`] run that completed without error).
+#[must_use]
+pub fn session_hir(compiler: &Compiler) -> Option<&HirScript> {
+    compiler.session.hir.as_ref()
+}
+
 /// Lower + emit a guest `wasm32` module (`memory`, `init`, `on_bar`) using [`codegen::emit_hir_guest_wasm`].
 /// Requires the current HIR subset; wasm emit errors map to [`AnalyzeError`].
 pub fn compile_script_to_wasm_v0(script: &Script) -> Result<Vec<u8>, AnalyzeError> {
@@ -155,6 +162,29 @@ plot(htf)
         let script = parse_script("t", TINY_INDICATOR).expect("parse");
         let wasm = compile_script_to_wasm_v0(&script).expect("compile");
         wasmparser::validate(&wasm).expect("valid wasm module");
+    }
+
+    #[test]
+    fn session_hir_set_after_analyze_to_hir_compiler() {
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
+        let c = analyze_to_hir_compiler(&script).expect("hir");
+        assert!(session_hir(&c).is_some());
+    }
+
+    #[test]
+    fn compile_wasm_v0_rejects_user_call_in_hir() {
+        const SRC: &str = r#"//@version=6
+indicator("x")
+f(float x) => x
+plot(f(close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let e = compile_script_to_wasm_v0(&script).expect_err("wasm v0 has no user-call codegen");
+        assert!(
+            e.message().contains("user function") || e.message().contains("UserCall"),
+            "{}",
+            e.message()
+        );
     }
 
     /// Contract: imports (`aether`, …), dual exports (`init` + `aether_strategy_init`, etc.), and `series_hist` when HIR uses `close[k]`.

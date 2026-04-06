@@ -65,6 +65,7 @@ pub enum HirExpr {
     Variable(SymbolId, HirType),
     Binary { op: BinOp, lhs: HirId, rhs: HirId, ty: HirType },
     BuiltinCall { kind: BuiltinKind, args: Vec<HirId>, ty: HirType },
+    UserCall { callee: SymbolId, args: Vec<HirId>, ty: HirType },
     SeriesAccess { base: HirId, offset: i32, ty: HirType },
     Security(Box<SecurityCall>),
     Plot { expr: HirId, title: Option<String> },
@@ -76,11 +77,18 @@ pub struct SecurityCall {
     pub expression: HirId,
     pub gaps: GapMode,
     pub lookahead: Lookahead,
+    /// Element type follows the inner expression (e.g. `bar_index` → `series int`).
     pub ty: HirType,
 }
 
-pub enum HirStmt { /* Let, Plot, Block, … */ }
+pub enum HirStmt {
+    /* Let, Plot, Block, */
+    If { cond: HirId, then_branch: Vec<HirStmt>, else_branch: Option<Vec<HirStmt>> },
+    /* … */
+}
 ```
+
+**Lowering notes:** `SeriesAccess` requires a non-negative integer literal index in the current pass. WASM v0 rejects `HirStmt::If` and `HirExpr::UserCall` until codegen catches up; the HIR still records them for snapshots and future backends. See `hir/stmt.rs` / `hir/expr.rs` for the full `enum` definitions.
 
 Use the `bumpalo::Bump` arena in `CompilerSession` plus dense `Vec` storage keyed by `HirId` (rustc / rust-analyzer style) to avoid self-referential structs.
 

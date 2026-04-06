@@ -400,11 +400,25 @@ impl<'a> Checker<'a> {
                 cases,
                 default,
             } => {
-                if let Some(sc) = scrutinee {
-                    let _ = self.type_expr(sc);
-                }
+                let scrut_ty = scrutinee
+                    .as_ref()
+                    .and_then(|sc| self.type_expr(sc).ok());
                 for (e, st) in cases {
-                    let _ = self.type_expr(e);
+                    if let Ok(arm_ty) = self.type_expr(e) {
+                        if let Some(sty) = &scrut_ty {
+                            if !type_compatible_eq(&arm_ty, sty) {
+                                self.err(
+                                    e.span,
+                                    "switch arm expression type does not match scrutinee",
+                                );
+                            }
+                        } else if !is_bool_like(&arm_ty) {
+                            self.err(
+                                e.span,
+                                "switch without scrutinee: each arm condition must be boolean or series bool",
+                            );
+                        }
+                    }
                     self.push_scope();
                     self.check_stmt(st);
                     self.pop_scope();
@@ -416,7 +430,14 @@ impl<'a> Checker<'a> {
                 }
             }
             StmtKind::While { cond, body } => {
-                let _ = self.type_expr(cond);
+                if let Ok(c_ty) = self.type_expr(cond) {
+                    if !is_bool_like(&c_ty) {
+                        self.err(
+                            cond.span,
+                            "`while` condition must be boolean or series bool",
+                        );
+                    }
+                }
                 self.push_scope();
                 for x in body {
                     self.check_stmt(x);
@@ -428,7 +449,14 @@ impl<'a> Checker<'a> {
     }
 
     fn check_if_stmt(&mut self, i: &IfStmt) {
-        let _ = self.type_expr(&i.cond);
+        if let Ok(c_ty) = self.type_expr(&i.cond) {
+            if !is_bool_like(&c_ty) {
+                self.err(
+                    i.cond.span,
+                    "`if` condition must be boolean or series bool",
+                );
+            }
+        }
         self.push_scope();
         for s in &i.then_body {
             self.check_stmt(s);
@@ -458,13 +486,19 @@ impl<'a> Checker<'a> {
             }
         };
         if !assignable(&rhs, &binding) {
-            self.err(
-                decl_span,
-                format!(
-                    "variable `{}`: initializer type does not match binding",
-                    v.name
-                ),
-            );
+            let msg =
+                if matches!(binding, HirType::Simple(_)) && is_series_shape(&rhs) {
+                    format!(
+                        "variable `{}`: simple/const/input binding cannot hold a series value",
+                        v.name
+                    )
+                } else {
+                    format!(
+                        "variable `{}`: initializer type does not match binding",
+                        v.name
+                    )
+                };
+            self.err(decl_span, msg);
         }
         self.define(&v.name, binding);
     }
@@ -559,7 +593,14 @@ impl<'a> Checker<'a> {
                 then_b,
                 else_b,
             } => {
-                let _c = self.type_expr(cond)?;
+                if let Ok(c_ty) = self.type_expr(cond) {
+                    if !is_bool_like(&c_ty) {
+                        self.err(
+                            cond.span,
+                            "conditional expression: condition must be boolean or series bool",
+                        );
+                    }
+                }
                 let t = self.type_expr(then_b)?;
                 let u = self.type_expr(else_b)?;
                 match binary_meet(&t, &u) {
@@ -862,6 +903,19 @@ impl<'a> Checker<'a> {
                         "`request.security`: timeframe must be `string` or `series string`",
                     );
                 }
+                for (nm, ex) in args.iter().skip(3) {
+                    let need_check = match nm.as_deref() {
+                        Some("gaps") | Some("lookahead") => true,
+                        None => true,
+                        _ => false,
+                    };
+                    if need_check && !is_valid_security_gaps_lookahead_arg(ex) {
+                        self.err(
+                            ex.span,
+                            "`request.security`: `gaps` / `lookahead` (and positional merge args) must be `barmerge.*` or a boolean literal",
+                        );
+                    }
+                }
                 Ok(request_security_result_type(&arg_tys[2]))
             }
             "request.financial" => {
@@ -1069,6 +1123,32 @@ fn var_decl_binding_type(v: &VarDecl) -> HirType {
             }
         }
     }
+}
+
+fn dotted_member_path(ex: &Expr) -> Option<Vec<String>> {
+    match &ex.kind {
+        ExprKind::IdentPath(p) => Some(p.clone()),
+        ExprKind::Member { base, field } => {
+            let mut p = dotted_member_path(base.as_ref())?;
+            p.push(field.clone());
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// `request.security` optional `gaps` / `lookahead` (and legacy positional merge args): Pine-style
+/// `barmerge.*` or boolean literal in the minimal typechecker.
+fn is_valid_security_gaps_lookahead_arg(ex: &Expr) -> bool {
+    if let Some(p) = dotted_member_path(ex) {
+        if p.len() == 2 && p[0] == "barmerge" {
+            return matches!(
+                p[1].as_str(),
+                "gaps_on" | "gaps_off" | "lookahead_on" | "lookahead_off"
+            );
+        }
+    }
+    matches!(ex.kind, ExprKind::Bool(_))
 }
 
 fn builtin_ident(name: &str) -> Option<HirType> {
@@ -1369,6 +1449,72 @@ mod tests {
         )
         .unwrap();
         typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn conditional_expr_requires_bool_condition() {
+        let ok = parse_script(
+            "t",
+            "indicator(\"x\")\nx = true ? 1.0 : 2.0\n",
+        )
+        .unwrap();
+        typecheck_script(&ok).unwrap();
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\nx = 1.0 ? 2.0 : 3.0\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(
+            e.message().contains("boolean") || e.message().contains("bool"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn if_statement_requires_bool_condition() {
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\nif 1 {\n  x = 2\n}\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(
+            e.message().contains("if`") || e.message().contains("if"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn simple_binding_rejects_series_initializer() {
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\nsimple float x = close\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(
+            e.message().contains("simple") || e.message().contains("series"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn request_security_rejects_invalid_gaps_arg() {
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.security(\"A\", \"D\", close, 123)\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(
+            e.message().contains("gaps") || e.message().contains("barmerge"),
+            "{}",
+            e.message()
+        );
     }
 
     #[test]
