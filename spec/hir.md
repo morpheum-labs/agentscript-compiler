@@ -62,6 +62,8 @@ The monolithic sketch below is split into the modules above. `HirId` / `SymbolId
 // Conceptual shape (see `hir/script.rs`, `hir/expr.rs`, …)
 pub struct HirScript {
     pub version: u32,
+    /// Script header span for diagnostics when a per-expr span is missing (`hir/script.rs`).
+    pub source_span: Span,
     pub declaration: HirDeclaration,
     pub inputs: Vec<HirInputDecl>,
     pub body: Vec<HirStmt>,

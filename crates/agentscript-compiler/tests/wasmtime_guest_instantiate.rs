@@ -43,7 +43,17 @@ fn link_aether_guest_abi_v0<T>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
     linker.func_wrap(
         "aether",
         "request_financial",
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> f64 { 0.0 },
+        |_: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32|
+         -> f64 { 0.0 },
     )?;
     Ok(())
 }
@@ -108,6 +118,17 @@ fn wasmtime_instantiate_request_financial() {
     const SRC: &str = r#"//@version=6
 indicator("fin")
 plot(request.financial("NASDAQ:MSFT", "TOTAL_REVENUE", "FY"))
+"#;
+    let script = parse_script("t", SRC).expect("parse");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    instantiate_guest_wasm(&wasm);
+}
+
+#[test]
+fn wasmtime_instantiate_request_financial_gaps_currency() {
+    const SRC: &str = r#"//@version=6
+indicator("fin2")
+plot(request.financial("NASDAQ:MSFT", "TOTAL_REVENUE", "FY", barmerge.gaps_off, false, "USDT"))
 "#;
     let script = parse_script("t", SRC).expect("parse");
     let wasm = compile_script_to_wasm_v0(&script).expect("compile");

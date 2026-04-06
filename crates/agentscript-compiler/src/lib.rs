@@ -380,6 +380,18 @@ plot(request.financial("NASDAQ:MSFT", "ACCOUNTS_PAYABLE", "FY"))
         validate_guest_abi_v0(&wasm).expect("guest ABI");
     }
 
+    #[test]
+    fn compile_request_financial_gaps_currency_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("fin_gc")
+plot(request.financial("NASDAQ:MSFT", "TOTAL_REVENUE", "FY", barmerge.gaps_on, true, "USD"))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
     /// Regression: `ta.ema` lowering must emit a validating module (includes `ta_ema` import).
     #[test]
     fn compile_ta_ema_sample_to_wasm_validates() {

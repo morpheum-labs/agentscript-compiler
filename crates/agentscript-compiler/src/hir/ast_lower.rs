@@ -505,6 +505,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         let version = script.version.unwrap_or(5);
 
         let mut declaration = HirDeclaration::FromAst(ScriptKind::Indicator);
+        let mut source_span = Span::DUMMY;
         let mut inputs: Vec<HirInputDecl> = Vec::new();
         let mut body: Vec<HirStmt> = Vec::new();
 
@@ -524,6 +525,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         for item in &script.items {
             match item {
                 Item::ScriptDecl(decl) => {
+                    source_span = decl.span;
                     declaration = self.script_declaration(decl)?;
                 }
                 Item::Stmt(stmt) => {
@@ -573,6 +575,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
 
         Ok(HirScript {
             version,
+            source_span,
             declaration,
             inputs,
             exprs: std::mem::replace(&mut self.exprs, BumpVec::new_in(self.bump))
@@ -1489,21 +1492,61 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             let symbol = self.lower_expr(&args[0].1)?;
             let financial_id = self.lower_expr(&args[1].1)?;
             let period = self.lower_expr(&args[2].1)?;
+            let mut gaps = GapMode::NoGaps;
+            let mut gaps_set = false;
             let mut ignore_invalid_symbol: Option<HirId> = None;
+            let mut currency: Option<HirId> = None;
             for (nm, ex) in args.iter().skip(3) {
-                if nm.as_deref() == Some("ignore_invalid_symbol") {
-                    ignore_invalid_symbol = Some(self.lower_expr(ex)?);
+                match nm.as_deref() {
+                    Some("gaps") => {
+                        gaps = gap_mode_from_expr(ex);
+                        gaps_set = true;
+                    }
+                    Some("ignore_invalid_symbol") => {
+                        ignore_invalid_symbol = Some(self.lower_expr(ex)?);
+                    }
+                    Some("currency") => {
+                        currency = Some(self.lower_expr(ex)?);
+                    }
+                    _ => {}
                 }
             }
-            if ignore_invalid_symbol.is_none() && args.len() == 4 && args[3].0.is_none() {
-                ignore_invalid_symbol = Some(self.lower_expr(&args[3].1)?);
+            let positionals: Vec<&Expr> = args
+                .iter()
+                .skip(3)
+                .filter(|(n, _)| n.is_none())
+                .map(|(_, ex)| ex)
+                .collect();
+            let mut pi = 0usize;
+            if !gaps_set {
+                if let Some(ex) = positionals.get(pi) {
+                    if is_barmerge_financial_gaps_expr(ex) {
+                        gaps = gap_mode_from_expr(ex);
+                        pi += 1;
+                    }
+                }
+            }
+            if ignore_invalid_symbol.is_none() {
+                if let Some(ex) = positionals.get(pi) {
+                    if matches!(ex.kind, ExprKind::Bool(_)) {
+                        ignore_invalid_symbol = Some(self.lower_expr(ex)?);
+                        pi += 1;
+                    }
+                }
+            }
+            if currency.is_none() {
+                if let Some(ex) = positionals.get(pi) {
+                    currency = Some(self.lower_expr(ex)?);
+                }
             }
             let ty = self.expr_ty_from_session_or_float_series(call_expr);
             let fin = FinancialCall {
                 symbol,
                 financial_id,
                 period,
+                gaps,
                 ignore_invalid_symbol,
+                currency,
                 ty,
             };
             return Ok(self.alloc_expr(HirExpr::Financial(Box::new(fin)), expr_span));
@@ -1836,6 +1879,13 @@ fn path_tail_from_expr(e: &Expr) -> Option<Vec<String>> {
         }
         _ => None,
     }
+}
+
+fn is_barmerge_financial_gaps_expr(e: &Expr) -> bool {
+    let Some(p) = path_tail_from_expr(e) else {
+        return false;
+    };
+    p.len() == 2 && p[0] == "barmerge" && (p[1] == "gaps_on" || p[1] == "gaps_off")
 }
 
 fn gap_mode_from_expr(e: &Expr) -> GapMode {

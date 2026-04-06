@@ -54,6 +54,8 @@ pub struct HirUserFunction {
 #[derive(Clone, PartialEq)]
 pub struct HirScript {
     pub version: u32,
+    /// Script header span (`indicator` / `strategy` / `library` through closing `)`); used when an expression span is missing.
+    pub source_span: Span,
     pub declaration: HirDeclaration,
     pub inputs: Vec<HirInputDecl>,
     /// Expression arena: [`super::ids::HirId`] indexes into this vector.

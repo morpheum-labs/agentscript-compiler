@@ -42,7 +42,8 @@ Roughly ordered by dependency.
 
 ## 4. Shared / process gaps
 
-- **Cross-repo tests:** Same WASM bytes verified in **compiler** (emit + validate) and **Aether** (instantiate + export smoke). Ideally one **pinned** `.wasm` fixture in tests. **Today:** `agentscript-compiler` integration test [`tests/wasmtime_guest_instantiate.rs`](../crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) compiles minimal scripts and **instantiates** with a stub linker that must stay aligned with `aether-mwvm` `link_aether_guest_abi_v0` (an `aether-mwvm` dev-dependency on the compiler was avoided: some toolchains fail building the combined graph via `ar_archive_writer` / rustc features).
+- **Cross-repo tests:** Same WASM bytes verified in **compiler** (emit + validate) and **Aether** (instantiate + export smoke). Ideally one **pinned** `.wasm` fixture in tests. **Today:** `agentscript-compiler` integration test [`tests/wasmtime_guest_instantiate.rs`](../crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) compiles minimal scripts and **instantiates** with a stub linker that must stay aligned with `aether-mwvm` `link_aether_guest_abi_v0` (an `aether-mwvm` dev-dependency on the compiler was avoided: some toolchains fail building the combined graph via `ar_archive_writer` / rustc features). When `request_financial` or other import **signatures** change, update the duplicated stub closures in that test and in `aether-mwvm` (`10×i32` args as of 2026-04).
+- **Issue stubs:** [github-backlog.md](github-backlog.md) mirrors ROADMAP bullets for GitHub / PR checklists.
 - **Naming drift:** ABI doc lists `aether_strategy_init` / `aether_strategy_step`; compiler/codegen and `guest_abi` constants must stay in lockstep.
 
 ---

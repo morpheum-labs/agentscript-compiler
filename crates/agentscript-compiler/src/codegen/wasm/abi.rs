@@ -41,7 +41,7 @@ pub const IMPORT_MATH_LOG: u32 = 19;
 pub const IMPORT_MATH_EXP: u32 = 20;
 /// `(f64, f64) -> f64` — `math.pow`.
 pub const IMPORT_MATH_POW: u32 = 21;
-/// `(i32 sym_o, i32 sym_l, i32 id_o, i32 id_l, i32 per_o, i32 per_l, i32 ignore) -> f64` — strings in guest memory; `ignore` is `0`/`1`.
+/// `(i32×10) -> f64` — `sym`/`id`/`period`/`currency` string slices in guest memory; `gaps` `0`/`1` (`gaps_off`/`gaps_on`); `ignore` `0`/`1`; `currency` `-1`,`0` = default.
 pub const IMPORT_REQUEST_FINANCIAL: u32 = 22;
 
 /// First function index defined in the guest module (after all `aether` imports).

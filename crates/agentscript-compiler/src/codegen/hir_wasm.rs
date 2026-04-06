@@ -25,20 +25,21 @@ pub use crate::codegen::wasm::abi::{
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
 use crate::hir::{
-    BuiltinKind, HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType,
+    BuiltinKind, GapMode, HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType,
     HirUserFunction, SymbolId,
 };
 
 fn expr_span(hir: &HirScript, id: HirId) -> Span {
     let i = id.0 as usize;
+    let fallback = hir.source_span;
     if hir.expr_spans.len() == hir.exprs.len() {
-        return hir.expr_spans.get(i).copied().unwrap_or(Span::DUMMY);
+        return hir.expr_spans.get(i).copied().unwrap_or(fallback);
     }
     // Best-effort when arena lengths diverge (should not happen from [`ast_lower`]).
     if let Some(s) = hir.expr_spans.get(i) {
         return *s;
     }
-    hir.expr_spans.first().copied().unwrap_or(Span::DUMMY)
+    hir.expr_spans.first().copied().unwrap_or(fallback)
 }
 
 struct StringPool {
@@ -132,6 +133,10 @@ fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasm
                     (f.period, "period"),
                 ] {
                     let s = require_string_literal_for(hir, id, "request.financial", label)?;
+                    pool.intern(&s);
+                }
+                if let Some(cid) = f.currency {
+                    let s = require_string_literal_for(hir, cid, "request.financial", "currency")?;
                     pool.intern(&s);
                 }
             }
@@ -635,6 +640,10 @@ impl<'a> Ctx<'a> {
                         .copied()
                         .ok_or_else(|| HirWasmError::at(per_span, "missing string pool entry"))?
                 };
+                let gaps_i = match f.gaps {
+                    GapMode::NoGaps => 0i32,
+                    GapMode::WithGaps => 1i32,
+                };
                 let ignore = match f.ignore_invalid_symbol {
                     None => 0i32,
                     Some(iid) => {
@@ -655,13 +664,32 @@ impl<'a> Ctx<'a> {
                         }
                     }
                 };
+                let (cur_o, cur_l) = match f.currency {
+                    None => (-1i32, 0i32),
+                    Some(cid) => {
+                        let cspan = expr_span(self.hir, cid);
+                        let s = require_string_literal_for(
+                            self.hir,
+                            cid,
+                            "request.financial",
+                            "currency",
+                        )?;
+                        self.pool
+                            .get(&s)
+                            .copied()
+                            .ok_or_else(|| HirWasmError::at(cspan, "missing string pool entry"))?
+                    }
+                };
                 func.instructions().i32_const(so);
                 func.instructions().i32_const(sl);
                 func.instructions().i32_const(ido);
                 func.instructions().i32_const(idl);
                 func.instructions().i32_const(po);
                 func.instructions().i32_const(pl);
+                func.instructions().i32_const(gaps_i);
                 func.instructions().i32_const(ignore);
+                func.instructions().i32_const(cur_o);
+                func.instructions().i32_const(cur_l);
                 func.instructions().call(IMPORT_REQUEST_FINANCIAL);
             }
             HirExpr::UserCall { callee, args, .. } => {
@@ -874,7 +902,7 @@ fn encode_user_function_body(
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
 /// | `ta_ema` | `(i32 period) -> f64` | EMA of host close series |
 /// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
-/// | `request_financial` | `(i32 sym_o, i32 sym_l, i32 id_o, i32 id_l, i32 per_o, i32 per_l, i32 ignore) -> f64` | `ignore` is `0`/`1`; v0 requires string + bool literals |
+/// | `request_financial` | `(sym×2, id×2, period×2, gaps, ignore, cur×2) -> f64` | `gaps`: `0`/`1`; `ignore`: `0`/`1`; `cur`: string pool or `-1`,`0`; v0 string + ignore bool literals |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
 /// | `input_float` | `(i32 idx) -> f64` | `idx` = index of a float input in [`HirScript::inputs`] |
@@ -939,6 +967,9 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let t_financial = types.len();
     types.ty().function(
         [
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
             ValType::I32,
             ValType::I32,
             ValType::I32,

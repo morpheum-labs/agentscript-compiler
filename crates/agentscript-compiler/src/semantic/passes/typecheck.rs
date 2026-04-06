@@ -1150,14 +1150,71 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                     );
                 }
                 for (i, (nm, ex)) in args.iter().enumerate().skip(3) {
-                    if nm.as_deref() == Some("ignore_invalid_symbol") {
+                    match nm.as_deref() {
+                        Some("ignore_invalid_symbol") => {
+                            if let Some(t) = arg_tys.get(i) {
+                                if !is_bool_like(t) {
+                                    self.err(
+                                        ex.span,
+                                        "`request.financial`: `ignore_invalid_symbol` must be bool or series bool",
+                                    );
+                                }
+                            }
+                        }
+                        Some("gaps") => {
+                            if !is_financial_gaps_expr(ex) {
+                                self.err(
+                                    ex.span,
+                                    "`request.financial`: `gaps` must be `barmerge.gaps_on` or `barmerge.gaps_off`",
+                                );
+                            }
+                        }
+                        Some("currency") => {
+                            if let Some(t) = arg_tys.get(i) {
+                                if !is_stringish(t) {
+                                    self.err(
+                                        ex.span,
+                                        "`request.financial`: `currency` must be `string` or `series string`",
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let pos: Vec<(usize, &Expr)> = args
+                    .iter()
+                    .enumerate()
+                    .skip(3)
+                    .filter(|(_, (n, _))| n.is_none())
+                    .map(|(i, (_, e))| (i, e))
+                    .collect();
+                let mut pi = 0usize;
+                if let Some(&(_i, ex)) = pos.get(pi) {
+                    if is_financial_gaps_expr(ex) {
+                        pi += 1;
+                    }
+                }
+                if let Some(&(i, ex)) = pos.get(pi) {
+                    if matches!(ex.kind, ExprKind::Bool(_)) {
                         if let Some(t) = arg_tys.get(i) {
                             if !is_bool_like(t) {
                                 self.err(
                                     ex.span,
-                                    "`request.financial`: `ignore_invalid_symbol` must be bool or series bool",
+                                    "`request.financial`: ignore positional must be bool or series bool",
                                 );
                             }
+                        }
+                        pi += 1;
+                    }
+                }
+                if let Some(&(i, ex)) = pos.get(pi) {
+                    if let Some(t) = arg_tys.get(i) {
+                        if !is_stringish(t) {
+                            self.err(
+                                ex.span,
+                                "`request.financial`: currency positional must be `string` or `series string`",
+                            );
                         }
                     }
                 }
@@ -1401,6 +1458,14 @@ fn dotted_member_path(ex: &Expr) -> Option<Vec<String>> {
         }
         _ => None,
     }
+}
+
+/// `request.financial` `gaps=` / 4th positional: `barmerge.gaps_on` or `barmerge.gaps_off` only.
+fn is_financial_gaps_expr(ex: &Expr) -> bool {
+    if let Some(p) = dotted_member_path(ex) {
+        return p.len() == 2 && p[0] == "barmerge" && (p[1] == "gaps_on" || p[1] == "gaps_off");
+    }
+    false
 }
 
 /// `request.security` optional `gaps` / `lookahead` (and legacy positional merge args): Pine-style
