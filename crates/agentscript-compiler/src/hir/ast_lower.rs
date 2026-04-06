@@ -586,6 +586,21 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     }
                     return Ok(());
                 }
+                if let Some(kind) = try_input_plain_defval_for_decl(value) {
+                    match &kind {
+                        HirInputKind::Int(_) => self.register_input_int(name),
+                        HirInputKind::Float(_) => self.register_input_float(name),
+                    }
+                    inputs.push(HirInputDecl {
+                        name: name.clone(),
+                        kind,
+                    });
+                    let sym = self.intern_name(name);
+                    if let Some(sid) = self.next_def_sid(stmt.span)? {
+                        self.sid_to_hir.insert(sid, sym);
+                    }
+                    return Ok(());
+                }
                 if let Some(x) = try_input_float_default(value) {
                     inputs.push(HirInputDecl {
                         name: name.clone(),
@@ -930,6 +945,62 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
     ) -> Result<HirId, HirLowerError> {
         let (path, method_receiver) = callee_path_with_receiver(callee)?;
 
+        if path == ["input"] {
+            if let Some((_, ex)) = args.iter().find(|(nm, _)| nm.as_deref() == Some("defval")) {
+                return match &ex.kind {
+                    ExprKind::Int(n) => {
+                        let lit = self.alloc_expr(
+                            HirExpr::Literal(
+                                HirLiteral::Int(*n),
+                                HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+                            ),
+                            ex.span,
+                        );
+                        Ok(self.alloc_expr(
+                            HirExpr::BuiltinCall {
+                                kind: BuiltinKind::InputInt,
+                                args: vec![lit],
+                                ty: HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+                            },
+                            expr_span,
+                        ))
+                    }
+                    ExprKind::Float(f) => {
+                        let lit = self.alloc_expr(
+                            HirExpr::Literal(
+                                HirLiteral::Float(*f),
+                                HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                            ),
+                            ex.span,
+                        );
+                        Ok(self.alloc_expr(
+                            HirExpr::BuiltinCall {
+                                kind: BuiltinKind::InputFloat,
+                                args: vec![lit],
+                                ty: HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                            },
+                            expr_span,
+                        ))
+                    }
+                    ExprKind::Bool(b) => Ok(self.alloc_expr(
+                        HirExpr::Literal(
+                            HirLiteral::Bool(*b),
+                            HirType::Simple(Type::Primitive(PrimitiveType::Bool)),
+                        ),
+                        ex.span,
+                    )),
+                    _ => Err(HirLowerError::at(
+                        ex.span,
+                        "unsupported defval in `input()` for this lowering pass",
+                    )),
+                };
+            }
+            let (_, ex) = args.first().ok_or_else(|| {
+                HirLowerError::at(expr_span, "`input()` expects a source series or `defval=`")
+            })?;
+            return self.lower_expr(ex);
+        }
+
         if path == ["input", "int"] {
             if args.len() != 1 {
                 return Err(HirLowerError::at(
@@ -964,19 +1035,34 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         }
 
         if path == ["input", "float"] {
-            if args.len() != 1 {
-                return Err(HirLowerError::at(
-                    expr_span,
-                    "input.float expects one argument",
-                ));
-            }
-            let x = match &args[0].1.kind {
-                ExprKind::Float(f) => *f,
-                _ => {
-                    return Err(HirLowerError::at(
-                        args[0].1.span,
-                        "input.float default must be a float literal in this pass",
-                    ));
+            let x = if args.len() == 1 {
+                match &args[0].1.kind {
+                    ExprKind::Float(f) => *f,
+                    _ => {
+                        return Err(HirLowerError::at(
+                            args[0].1.span,
+                            "input.float default must be a float literal in this pass",
+                        ));
+                    }
+                }
+            } else {
+                let (_, ex) = args
+                    .iter()
+                    .find(|(nm, _)| nm.as_deref() == Some("defval"))
+                    .ok_or_else(|| {
+                        HirLowerError::at(
+                            expr_span,
+                            "input.float with keyword args needs defval=",
+                        )
+                    })?;
+                match &ex.kind {
+                    ExprKind::Float(f) => *f,
+                    _ => {
+                        return Err(HirLowerError::at(
+                            ex.span,
+                            "input.float defval must be a float literal in this pass",
+                        ));
+                    }
                 }
             };
             let lit = self.alloc_expr(
@@ -1437,7 +1523,7 @@ fn try_input_float_default(e: &Expr) -> Option<f64> {
     else {
         return None;
     };
-    if type_args.is_some() || args.len() != 1 {
+    if type_args.is_some() {
         return None;
     }
     let path = match &callee.kind {
@@ -1447,8 +1533,46 @@ fn try_input_float_default(e: &Expr) -> Option<f64> {
     if path != ["input", "float"] {
         return None;
     }
-    match &args[0].1.kind {
-        ExprKind::Float(f) => Some(*f),
+    if args.len() == 1 {
+        return match &args[0].1.kind {
+            ExprKind::Float(f) => Some(*f),
+            _ => None,
+        };
+    }
+    args.iter()
+        .find(|(nm, _)| nm.as_deref() == Some("defval"))
+        .and_then(|(_, ex)| match &ex.kind {
+            ExprKind::Float(f) => Some(*f),
+            _ => None,
+        })
+}
+
+/// `input(title=…, defval=…)` at top level (int / bool stored as 0/1 / float).
+fn try_input_plain_defval_for_decl(e: &Expr) -> Option<HirInputKind> {
+    let ExprKind::Call {
+        callee,
+        type_args,
+        args,
+    } = &e.kind
+    else {
+        return None;
+    };
+    if type_args.is_some() {
+        return None;
+    }
+    let ExprKind::IdentPath(p) = &callee.kind else {
+        return None;
+    };
+    if p.as_slice() != ["input"] {
+        return None;
+    }
+    let (_, ex) = args
+        .iter()
+        .find(|(nm, _)| nm.as_deref() == Some("defval"))?;
+    match &ex.kind {
+        ExprKind::Int(i) => Some(HirInputKind::Int(*i)),
+        ExprKind::Bool(b) => Some(HirInputKind::Int(if *b { 1 } else { 0 })),
+        ExprKind::Float(f) => Some(HirInputKind::Float(*f)),
         _ => None,
     }
 }
