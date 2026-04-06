@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 
 use wasm_encoder::{
-    CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
+    BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
     FunctionSection, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
 use crate::hir::{
-    BuiltinKind, HirExpr, HirId, HirLiteral, HirScript, HirStmt, HirType, SymbolId,
+    BuiltinKind, HirExpr, HirId, HirLiteral, HirScript, HirStmt, HirType, HirUserFunction,
+    SymbolId,
 };
 
 /// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
@@ -141,10 +142,15 @@ fn collect_lets(body: &[HirStmt], out: &mut Vec<(SymbolId, HirId)>) -> Result<()
         match s {
             HirStmt::Let { symbol, value } => out.push((*symbol, *value)),
             HirStmt::Block(inner) => collect_lets(inner, out)?,
-            HirStmt::If { .. } => {
-                return Err(HirWasmError::dummy(
-                    "`if` in script body is not supported in wasm codegen v0",
-                ));
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_lets(then_branch, out)?;
+                if let Some(e) = else_branch {
+                    collect_lets(e, out)?;
+                }
             }
             HirStmt::Plot { .. } => {}
         }
@@ -177,9 +183,10 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
 
 struct Ctx<'a> {
     hir: &'a HirScript,
-    /// Let-bound locals: symbol -> wasm local index (excluding params; on_bar has none).
+    /// Let-bound locals: symbol -> wasm local index (parameters use indices `0..params` in user fns).
     sym_to_local: HashMap<SymbolId, u32>,
     pool: &'a HashMap<String, (i32, i32)>,
+    user_fn_indices: &'a HashMap<SymbolId, u32>,
 }
 
 impl<'a> Ctx<'a> {
@@ -355,11 +362,14 @@ impl<'a> Ctx<'a> {
                 self.emit_expr(func, sec.expression)?;
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
-            HirExpr::UserCall { .. } => {
-                return Err(HirWasmError::at(
-                    span,
-                    "user function calls are not supported in wasm codegen v0",
-                ));
+            HirExpr::UserCall { callee, args, .. } => {
+                let fn_idx = self.user_fn_indices.get(callee).copied().ok_or_else(|| {
+                    HirWasmError::at(span, "internal: user function not registered for wasm")
+                })?;
+                for a in args {
+                    self.emit_expr(func, *a)?;
+                }
+                func.instructions().call(fn_idx);
             }
             HirExpr::Plot { .. } => {
                 return Err(HirWasmError::at(
@@ -371,11 +381,46 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
+    fn emit_cond_i32(&self, func: &mut Function, cond: HirId) -> Result<(), HirWasmError> {
+        let span = expr_span(self.hir, cond);
+        let ex = self
+            .hir
+            .exprs
+            .get(cond.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+        match ex {
+            HirExpr::Literal(HirLiteral::Bool(_), _) => {
+                self.emit_expr(func, cond)?;
+                Ok(())
+            }
+            _ => Err(HirWasmError::at(
+                span,
+                "wasm v0: `if` condition must be a boolean literal",
+            )),
+        }
+    }
+
     fn emit_stmt(&self, func: &mut Function, stmt: &HirStmt) -> Result<(), HirWasmError> {
         match stmt {
-            HirStmt::If { .. } => Err(HirWasmError::dummy(
-                "`if` statements are not supported in wasm codegen v0",
-            )),
+            HirStmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.emit_cond_i32(func, *cond)?;
+                func.instructions().if_(BlockType::Empty);
+                for s in then_branch {
+                    self.emit_stmt(func, s)?;
+                }
+                if let Some(else_stmts) = else_branch {
+                    func.instructions().else_();
+                    for s in else_stmts {
+                        self.emit_stmt(func, s)?;
+                    }
+                }
+                func.instructions().end();
+                Ok(())
+            }
             HirStmt::Let { symbol, value } => {
                 let vspan = expr_span(self.hir, *value);
                 self.emit_expr(func, *value)?;
@@ -399,6 +444,42 @@ impl<'a> Ctx<'a> {
             }
         }
     }
+}
+
+fn encode_user_function_body(
+    hir: &HirScript,
+    uf: &HirUserFunction,
+    pool: &HashMap<String, (i32, i32)>,
+    user_fn_indices: &HashMap<SymbolId, u32>,
+) -> Result<Function, HirWasmError> {
+    let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
+    collect_lets(&uf.body_stmts, &mut let_pairs)?;
+    let mut sym_to_local: HashMap<SymbolId, u32> = HashMap::new();
+    let mut next_local: u32 = 0;
+    for p in &uf.params {
+        sym_to_local.insert(*p, next_local);
+        next_local += 1;
+    }
+    let mut local_defs: Vec<(u32, ValType)> = Vec::new();
+    for (sym, val) in &let_pairs {
+        let vt = local_type_for_let(hir, *val)?;
+        local_defs.push((1, vt));
+        sym_to_local.insert(*sym, next_local);
+        next_local += 1;
+    }
+    let ctx = Ctx {
+        hir,
+        sym_to_local,
+        pool,
+        user_fn_indices,
+    };
+    let mut f = Function::new(local_defs);
+    for s in &uf.body_stmts {
+        ctx.emit_stmt(&mut f, s)?;
+    }
+    ctx.emit_expr(&mut f, uf.result)?;
+    f.instructions().end();
+    Ok(f)
 }
 
 /// Emit a `wasm32` module: imports from module **`aether`**, exported **`memory`**, **`init`**, **`on_bar`**.
@@ -454,6 +535,16 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let t_void = types.len();
     types.ty().function([], []);
 
+    let mut user_fn_type_indices: Vec<u32> = Vec::new();
+    for uf in &hir.user_functions {
+        let params_ty: Vec<ValType> = (0..uf.params.len())
+            .map(|_| ValType::F64)
+            .collect();
+        let ti = types.len();
+        types.ty().function(params_ty, [ValType::F64]);
+        user_fn_type_indices.push(ti);
+    }
+
     let mut imports = ImportSection::new();
     imports.import(
         "aether",
@@ -476,9 +567,21 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     // Append new imports after existing v0 indices so [`IMPORT_*`] constants stay stable.
     imports.import("aether", "ta_ema", EntityType::Function(t_sma));
 
+    let fn_init = GUEST_FUNC_BASE;
+    let fn_on_bar = fn_init + 1;
+    let mut user_fn_indices: HashMap<SymbolId, u32> = HashMap::new();
+    let mut next_user_fn = fn_on_bar + 1;
+    for uf in &hir.user_functions {
+        user_fn_indices.insert(uf.symbol, next_user_fn);
+        next_user_fn += 1;
+    }
+
     let mut functions = FunctionSection::new();
     functions.function(t_void);
     functions.function(t_void);
+    for ti in &user_fn_type_indices {
+        functions.function(*ti);
+    }
 
     let mut memory = MemorySection::new();
     memory.memory(MemoryType {
@@ -488,9 +591,6 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         shared: false,
         page_size_log2: None,
     });
-
-    let fn_init = GUEST_FUNC_BASE;
-    let fn_on_bar = fn_init + 1;
 
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -512,12 +612,17 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             hir,
             sym_to_local,
             pool: &pool.map,
+            user_fn_indices: &user_fn_indices,
         };
         let mut f = Function::new(local_defs);
         for stmt in &hir.body {
             ctx.emit_stmt(&mut f, stmt)?;
         }
         f.instructions().end();
+        code.function(&f);
+    }
+    for uf in &hir.user_functions {
+        let f = encode_user_function_body(hir, uf, &pool.map, &user_fn_indices)?;
         code.function(&f);
     }
 

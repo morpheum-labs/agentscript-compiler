@@ -10,7 +10,11 @@ use crate::frontend::ast::{
     VarQualifier,
 };
 use crate::frontend::ast::PrimitiveType;
-use crate::hir::HirType;
+use crate::hir::{
+    assignable, binary_numeric_result, coerce_simple_to_series, index_result_type, is_bool_like,
+    is_integral, is_numeric, is_series_shape, is_stringish, promote_numeric_series,
+    request_security_result_type, type_compatible_eq, unify_branch_types, HirType,
+};
 use crate::semantic::builtin_registry;
 use crate::semantic::{AnalyzeError, SemanticDiagnostic};
 use crate::session::CompilerSession;
@@ -223,7 +227,7 @@ impl<'a> Checker<'a> {
                         Some(lhs) => {
                             if !assignable(&rhs, &lhs) {
                                 self.err(
-                                    s.span,
+                                    value.span,
                                     format!(
                                         "assignment to `{name}`: value type does not match binding"
                                     ),
@@ -244,7 +248,7 @@ impl<'a> Checker<'a> {
                         Some(lhs) => {
                             if !assignable(&rhs, &lhs) {
                                 self.err(
-                                    s.span,
+                                    value.span,
                                     format!(
                                         "`:=` reassignment to `{name}`: value type does not match binding"
                                     ),
@@ -277,7 +281,7 @@ impl<'a> Checker<'a> {
                     };
                     if !is_numeric(&lhs) || !is_numeric(&rhs) {
                         self.err(
-                            s.span,
+                            value.span,
                             "compound assignment requires numeric variable and value",
                         );
                         return;
@@ -286,14 +290,14 @@ impl<'a> Checker<'a> {
                         Ok(out) => {
                             if !assignable(&out, &lhs) {
                                 self.err(
-                                    s.span,
+                                    value.span,
                                     format!(
                                         "compound assignment to `{name}`: result type is not assignable"
                                     ),
                                 );
                             }
                         }
-                        Err(m) => self.err(s.span, m),
+                        Err(m) => self.err(value.span, m),
                     }
                 }
             },
@@ -309,7 +313,7 @@ impl<'a> Checker<'a> {
                                 Some(lhs) => {
                                     if !assignable(&rhs, &lhs) {
                                         self.err(
-                                            s.span,
+                                            value.span,
                                             format!(
                                                 "tuple assignment: value type does not match `{n}`"
                                             ),
@@ -326,7 +330,7 @@ impl<'a> Checker<'a> {
                                 Some(lhs) => {
                                     if !assignable(&rhs, &lhs) {
                                         self.err(
-                                            s.span,
+                                            value.span,
                                             format!(
                                                 "tuple `:=`: value type does not match `{n}`"
                                             ),
@@ -592,7 +596,7 @@ impl<'a> Checker<'a> {
                     }
                     let mut first = tys[0].clone();
                     for u in tys.into_iter().skip(1) {
-                        first = match binary_meet(&first, &u) {
+                        first = match unify_branch_types(&first, &u) {
                             Some(t) => t,
                             None => {
                                 self.err(e.span, "array literal elements have incompatible types");
@@ -667,7 +671,7 @@ impl<'a> Checker<'a> {
                 if t_failed || u_failed {
                     return Err(());
                 }
-                match binary_meet(&t, &u) {
+                match unify_branch_types(&t, &u) {
                     Some(ty) => ty,
                     None => {
                         self.err(e.span, "branches of conditional have incompatible types");
@@ -844,17 +848,22 @@ impl<'a> Checker<'a> {
                     HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
                 });
             }
-            if entry.dotted_name == "ta.macd" {
-                for (i, t) in arg_tys.iter().enumerate().take(4) {
+            if entry.numeric_args_prefix > 0 {
+                let n = entry.numeric_args_prefix.min(arg_tys.len());
+                for (i, t) in arg_tys.iter().enumerate().take(n) {
                     if !is_numeric(t) {
                         self.err(
                             cspan,
-                            format!("`ta.macd`: argument {} must be numeric", i + 1),
+                            format!(
+                                "`{}`: argument {} must be numeric",
+                                entry.dotted_name,
+                                i + 1
+                            ),
                         );
                         return Err(());
                     }
                 }
-                return Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+                return Ok(builtin_result_with_series_promotion(entry, &arg_tys));
             }
             for t in &arg_tys {
                 if !is_numeric(t) {
@@ -899,31 +908,6 @@ impl<'a> Checker<'a> {
         }
 
         match name.as_str() {
-            "math.abs" | "math.sqrt" | "math.log" | "math.exp" => {
-                if arg_tys.len() != 1 {
-                    self.err(cspan, format!("`{name}` expects one argument"));
-                    return Err(());
-                }
-                let a = arg_tys[0].clone();
-                if !is_numeric(&a) {
-                    self.err(cspan, format!("`{name}` expects a numeric argument"));
-                    return Err(());
-                }
-                Ok(a)
-            }
-            "math.max" | "math.min" => {
-                if arg_tys.len() != 2 {
-                    self.err(cspan, format!("`{name}` expects two arguments"));
-                    return Err(());
-                }
-                match binary_numeric_result(&arg_tys[0], &arg_tys[1]) {
-                    Ok(t) => Ok(t),
-                    Err(m) => {
-                        self.err(cspan, m);
-                        Err(())
-                    }
-                }
-            }
             "input.int" => {
                 if arg_tys.len() != 1 {
                     self.err(cspan, "`input.int` expects one default argument");
@@ -1181,26 +1165,6 @@ fn builtin_result_with_series_promotion(
     t
 }
 
-fn is_stringish(t: &HirType) -> bool {
-    matches!(
-        t,
-        HirType::Simple(AstType::Primitive(PrimitiveType::String))
-            | HirType::Series(AstType::Primitive(PrimitiveType::String))
-    )
-}
-
-/// Pine `request.security`: result is a series whose element type follows the expression argument.
-fn request_security_result_type(expr_ty: &HirType) -> HirType {
-    match expr_ty {
-        HirType::Simple(AstType::Primitive(p)) => HirType::Series(AstType::Primitive(*p)),
-        HirType::Series(AstType::Primitive(p)) => HirType::Series(AstType::Primitive(*p)),
-        HirType::Array(_) | HirType::Matrix(_) => {
-            HirType::Series(AstType::Primitive(PrimitiveType::Float))
-        }
-        _ => HirType::Series(AstType::Primitive(PrimitiveType::Float)),
-    }
-}
-
 fn param_hir_type(p: &FnParam) -> HirType {
     match &p.ty {
         Some(AstType::Primitive(pr)) => HirType::Series(AstType::Primitive(*pr)),
@@ -1315,139 +1279,6 @@ fn dotted_name(e: &Expr) -> Option<String> {
             dotted_name(base).map(|s| format!("{s}.{field}"))
         }
         _ => None,
-    }
-}
-
-fn is_numeric(t: &HirType) -> bool {
-    matches!(
-        t,
-        HirType::Simple(AstType::Primitive(PrimitiveType::Int | PrimitiveType::Float))
-            | HirType::Series(AstType::Primitive(PrimitiveType::Int | PrimitiveType::Float))
-    )
-}
-
-fn is_integral(t: &HirType) -> bool {
-    matches!(
-        t,
-        HirType::Simple(AstType::Primitive(PrimitiveType::Int))
-            | HirType::Series(AstType::Primitive(PrimitiveType::Int))
-    )
-}
-
-fn is_bool_like(t: &HirType) -> bool {
-    matches!(
-        t,
-        HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
-            | HirType::Series(AstType::Primitive(PrimitiveType::Bool))
-    )
-}
-
-fn is_series_shape(t: &HirType) -> bool {
-    matches!(t, HirType::Series(_))
-}
-
-fn coerce_simple_to_series(t: HirType) -> HirType {
-    match t {
-        HirType::Simple(AstType::Primitive(p)) => HirType::Series(AstType::Primitive(p)),
-        o => o,
-    }
-}
-
-fn promote_numeric_series(t: HirType) -> HirType {
-    match t {
-        HirType::Simple(AstType::Primitive(PrimitiveType::Int)) => {
-            HirType::Series(AstType::Primitive(PrimitiveType::Float))
-        }
-        HirType::Series(AstType::Primitive(PrimitiveType::Int)) => {
-            HirType::Series(AstType::Primitive(PrimitiveType::Float))
-        }
-        o => o,
-    }
-}
-
-fn numeric_prim(t: &HirType) -> Option<PrimitiveType> {
-    match t {
-        HirType::Simple(AstType::Primitive(p)) | HirType::Series(AstType::Primitive(p)) => {
-            Some(*p)
-        }
-        _ => None,
-    }
-}
-
-fn binary_numeric_result(l: &HirType, r: &HirType) -> Result<HirType, String> {
-    if !is_numeric(l) || !is_numeric(r) {
-        return Err("numeric operator expects numeric operands".into());
-    }
-    let series = is_series_shape(l) || is_series_shape(r);
-    let pl = numeric_prim(l).unwrap();
-    let pr = numeric_prim(r).unwrap();
-    let prim = match (pl, pr) {
-        (PrimitiveType::Float, _) | (_, PrimitiveType::Float) => PrimitiveType::Float,
-        _ => PrimitiveType::Int,
-    };
-    Ok(if series {
-        HirType::Series(AstType::Primitive(prim))
-    } else {
-        HirType::Simple(AstType::Primitive(prim))
-    })
-}
-
-fn binary_meet(a: &HirType, b: &HirType) -> Option<HirType> {
-    if assignable(a, b) {
-        return Some(b.clone());
-    }
-    if assignable(b, a) {
-        return Some(a.clone());
-    }
-    if let (HirType::Array(ea), HirType::Array(eb)) = (a, b) {
-        return binary_meet(ea, eb).map(|e| HirType::Array(Box::new(e)));
-    }
-    if let (HirType::Matrix(ea), HirType::Matrix(eb)) = (a, b) {
-        return binary_meet(ea, eb).map(|e| HirType::Matrix(Box::new(e)));
-    }
-    binary_numeric_result(a, b).ok()
-}
-
-fn index_result_type(base: &HirType) -> Result<HirType, ()> {
-    match base {
-        HirType::Series(a) => Ok(HirType::Series(a.clone())),
-        HirType::Simple(AstType::Primitive(p)) => Ok(HirType::Simple(AstType::Primitive(*p))),
-        HirType::Array(elem) | HirType::Matrix(elem) => Ok((**elem).clone()),
-        _ => Err(()),
-    }
-}
-
-// Equality operand compatibility; see spec `spec/hir.md` ("Typing notes: equality and `na`").
-fn type_compatible_eq(a: &HirType, b: &HirType) -> bool {
-    assignable(a, b)
-        || assignable(b, a)
-        || (is_numeric(a) && is_numeric(b))
-}
-
-fn assignable(from: &HirType, to: &HirType) -> bool {
-    if from == to {
-        return true;
-    }
-    match (from, to) {
-        (
-            HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
-            HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
-        ) => true,
-        (
-            HirType::Series(AstType::Primitive(PrimitiveType::Int)),
-            HirType::Series(AstType::Primitive(PrimitiveType::Float)),
-        ) => true,
-        (
-            HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
-            HirType::Series(AstType::Primitive(PrimitiveType::Int | PrimitiveType::Float)),
-        ) => true,
-        (
-            HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
-            HirType::Series(AstType::Primitive(PrimitiveType::Float)),
-        ) => true,
-        (HirType::Array(f), HirType::Array(t)) => assignable(f, t),
-        (HirType::Matrix(f), HirType::Matrix(t)) => assignable(f, t),
-        _ => false,
     }
 }
 
@@ -1709,5 +1540,42 @@ mod tests {
             session.expr_types.get(i).and_then(|t| t.as_ref()),
             Some(&HirType::Simple(AstType::Primitive(PrimitiveType::Float))),
         );
+    }
+
+    #[test]
+    fn registry_math_abs_on_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = math.abs(close)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn ternary_unifies_int_and_float_to_float_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nx = true ? close : 1\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn ta_macd_first_four_args_must_be_numeric() {
+        let ok = parse_script(
+            "t",
+            "indicator(\"x\")\ny = ta.macd(close, 12, 26, 9)\n",
+        )
+        .unwrap();
+        typecheck_script(&ok).unwrap();
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\ny = ta.macd(close, \"no\", 26, 9)\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(e.message().contains("ta.macd"), "{}", e.message());
     }
 }

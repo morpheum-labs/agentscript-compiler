@@ -63,7 +63,8 @@
     "unary_numeric": false,
     "unary_string_to_float": false,
     "bool_binary": false,
-    "series_from_args": false
+    "series_from_args": false,
+    "numeric_args_prefix": 4
   },
   {
     "dotted_name": "ta.crossover",
@@ -117,6 +118,72 @@
     "binary_numeric": false,
     "unary_numeric": false,
     "unary_string_to_float": true,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "math.abs",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.sqrt",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.log",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.exp",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.max",
+    "min_args": 2,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": true,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "math.min",
+    "min_args": 2,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": true,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
     "bool_binary": false,
     "series_from_args": false
   }

@@ -1,21 +1,15 @@
 ---
 source: crates/agentscript-compiler/src/hir/ast_lower.rs
-assertion_line: 885
 expression: "c.session.hir.as_ref().expect(\"hir\")"
 ---
 HirScript {
     version: 6,
     declaration: Indicator {
         title: Some(
-            "Test Agent",
+            "block fn",
         ),
     },
-    inputs: [
-        HirInputDecl {
-            name: "len",
-            default_int: 14,
-        },
-    ],
+    inputs: [],
     exprs: [
         Variable(
             SymbolId(
@@ -27,24 +21,13 @@ HirScript {
                 ),
             ),
         ),
-        Variable(
-            SymbolId(
+        UserCall {
+            callee: SymbolId(
                 1,
             ),
-            Simple(
-                Primitive(
-                    Int,
-                ),
-            ),
-        ),
-        BuiltinCall {
-            kind: TaSma,
             args: [
                 HirId(
                     0,
-                ),
-                HirId(
-                    1,
                 ),
             ],
             ty: Series(
@@ -53,26 +36,6 @@ HirScript {
                 ),
             ),
         },
-        Literal(
-            String(
-                "AAPL",
-            ),
-            Simple(
-                Primitive(
-                    String,
-                ),
-            ),
-        ),
-        Literal(
-            String(
-                "D",
-            ),
-            Simple(
-                Primitive(
-                    String,
-                ),
-            ),
-        ),
         Variable(
             SymbolId(
                 2,
@@ -83,29 +46,43 @@ HirScript {
                 ),
             ),
         ),
-        Security(
-            SecurityCall {
-                symbol: HirId(
-                    3,
-                ),
-                timeframe: HirId(
-                    4,
-                ),
-                expression: HirId(
-                    5,
-                ),
-                gaps: NoGaps,
-                lookahead: Off,
-                ty: Series(
-                    Primitive(
-                        Float,
-                    ),
-                ),
-            },
-        ),
         Variable(
             SymbolId(
                 3,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                3.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Mul,
+            lhs: HirId(
+                3,
+            ),
+            rhs: HirId(
+                4,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                4,
             ),
             Series(
                 Primitive(
@@ -120,31 +97,48 @@ HirScript {
                 2,
             ),
             value: HirId(
-                2,
-            ),
-        },
-        Let {
-            symbol: SymbolId(
-                3,
-            ),
-            value: HirId(
-                6,
+                1,
             ),
         },
         Plot {
             expr: HirId(
-                7,
+                2,
             ),
             title: None,
         },
     ],
-    user_functions: [],
+    user_functions: [
+        HirUserFunction {
+            symbol: SymbolId(
+                1,
+            ),
+            params: [
+                SymbolId(
+                    3,
+                ),
+            ],
+            body_stmts: [
+                Let {
+                    symbol: SymbolId(
+                        4,
+                    ),
+                    value: HirId(
+                        5,
+                    ),
+                },
+            ],
+            result: HirId(
+                6,
+            ),
+        },
+    ],
     symbols: SymbolTable {
         names: [
             "close",
-            "len",
-            "sma",
-            "htf",
+            "g",
+            "z",
+            "a",
+            "t",
         ],
     },
 }

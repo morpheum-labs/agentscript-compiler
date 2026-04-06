@@ -417,4 +417,14 @@ mod tests {
             c.session.name_bindings
         );
     }
+
+    #[test]
+    fn qualified_math_max_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\ny = math.max(close, 1.0)\n",
+        )
+        .unwrap();
+        resolve_script(&s).unwrap();
+    }
 }

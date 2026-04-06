@@ -30,9 +30,13 @@ fn main() {
             .expect("unary_string_to_float");
         let bb = v["bool_binary"].as_bool().expect("bool_binary");
         let sfa = v["series_from_args"].as_bool().expect("series_from_args");
+        let nap = v["numeric_args_prefix"]
+            .as_u64()
+            .map(|n| n as usize)
+            .unwrap_or(0);
         out.push_str(&format!(
-            "    super::BuiltinEntry {{\n        dotted_name: {:?},\n        min_args: {},\n        result: super::BuiltinResultKind::{},\n        moving_average: {},\n        binary_numeric: {},\n        unary_numeric: {},\n        unary_string_to_float: {},\n        bool_binary: {},\n        series_from_args: {},\n    }},\n",
-            dotted, min_args, result, ma, bn, un, usf, bb, sfa
+            "    super::BuiltinEntry {{\n        dotted_name: {:?},\n        min_args: {},\n        result: super::BuiltinResultKind::{},\n        moving_average: {},\n        binary_numeric: {},\n        unary_numeric: {},\n        unary_string_to_float: {},\n        bool_binary: {},\n        series_from_args: {},\n        numeric_args_prefix: {},\n    }},\n",
+            dotted, min_args, result, ma, bn, un, usf, bb, sfa, nap
         ));
     }
     out.push_str("];\n");

@@ -31,7 +31,11 @@ Your language is Pine Script-inspired for trading agents, so it has several doma
 
 #### Typing notes: equality and `na`
 
-Semantic typing for **`==` / `!=`** (before HIR lowering) lives in the typechecker: `type_compatible_eq` in [`crates/agentscript-compiler/src/semantic/passes/typecheck.rs`](../crates/agentscript-compiler/src/semantic/passes/typecheck.rs). Two operands type-check together if either side is assignable to the other **or** both are **numeric** (so comparisons like `close == na` work when `na` is modeled as a float special and `close` is series float). This is an explicit **QAS / compiler policy**; TradingView Pine has additional dynamic rules—if we tighten behavior later, update this paragraph and the helper in `typecheck.rs` together.
+Semantic typing for **`==` / `!=`** (before HIR lowering) uses `type_compatible_eq` in [`crates/agentscript-compiler/src/hir/ty.rs`](../crates/agentscript-compiler/src/hir/ty.rs) (invoked from the typechecker). Two operands type-check together if either side is assignable to the other **or** both are **numeric** (so comparisons like `close == na` work when `na` is modeled as a float special and `close` is series float). This is an explicit **QAS / compiler policy**; TradingView Pine has additional dynamic rules—if we tighten behavior later, update this paragraph and `hir/ty.rs` together.
+
+#### User function bodies (`HirUserFunction`)
+
+User-defined functions lower to [`HirUserFunction`](../crates/agentscript-compiler/src/hir/script.rs): `symbol` matches [`HirExpr::UserCall`](../crates/agentscript-compiler/src/hir/expr.rs)’s `callee`, `params` are fresh [`SymbolId`]s per parameter (no cross-function interning), `body_stmts` holds the block prefix, and `result` is the final expression (`=>` bodies use an empty `body_stmts` and lower the tail into `result`). Block bodies without a trailing expression statement use a `0.0` float placeholder aligned with the typechecker’s default return inference.
 
 3. **Builtins** (`ta.*`, `strategy.*`, `plot`, `alert`, `input.*`)  
    → Many should become intrinsics or special nodes so codegen can map them directly to optimized WASM instructions.
@@ -61,6 +65,7 @@ pub struct HirScript {
     pub declaration: HirDeclaration,
     pub inputs: Vec<HirInputDecl>,
     pub body: Vec<HirStmt>,
+    pub user_functions: Vec<HirUserFunction>,
     pub symbols: SymbolTable,
 }
 
@@ -162,7 +167,8 @@ HirScript {
             })
         },
         HirStmt::Plot { expr: Variable(SymbolId(7)), title: None }
-    ]
+    ],
+    user_functions: [],
 }
 ```
 

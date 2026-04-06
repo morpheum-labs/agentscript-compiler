@@ -60,6 +60,9 @@ pub struct BuiltinEntry {
     pub bool_binary: bool,
     /// If result is [`BuiltinResultKind`] simple primitive and any argument is series-shaped, lift to series.
     pub series_from_args: bool,
+    /// When > 0, only the first N arguments are checked as numeric, then the entry result is returned
+    /// (skips the generic “all args numeric” fallback). Used for `ta.macd`-style overloads.
+    pub numeric_args_prefix: usize,
 }
 
 /// Generated from [`data/builtins.json`](../../data/builtins.json) by `build.rs`. Edit JSON and rebuild.

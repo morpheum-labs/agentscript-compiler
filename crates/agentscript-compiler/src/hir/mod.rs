@@ -37,7 +37,11 @@ pub use ids::{HirId, SymbolId};
 pub use literal::HirLiteral;
 pub use lowering::LowerToHir;
 pub use security::{GapMode, Lookahead, SecurityCall};
-pub use script::{HirDeclaration, HirInputDecl, HirScript};
+pub use script::{HirDeclaration, HirInputDecl, HirScript, HirUserFunction};
 pub use stmt::HirStmt;
 pub use symbols::SymbolTable;
-pub use ty::HirType;
+pub use ty::{
+    assignable, binary_numeric_result, coerce_simple_to_series, index_result_type, is_bool_like,
+    is_integral, is_numeric, is_series_shape, is_stringish, promote_numeric_series,
+    request_security_result_type, type_compatible_eq, unify_branch_types, HirType,
+};

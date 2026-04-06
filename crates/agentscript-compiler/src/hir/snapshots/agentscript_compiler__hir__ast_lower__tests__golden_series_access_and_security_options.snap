@@ -1,6 +1,7 @@
 ---
 source: crates/agentscript-compiler/src/hir/ast_lower.rs
-expression: hir
+assertion_line: 912
+expression: "c.session.hir.as_ref().expect(\"hir\")"
 ---
 HirScript {
     version: 6,
@@ -190,6 +191,7 @@ HirScript {
             title: None,
         },
     ],
+    user_functions: [],
     symbols: SymbolTable {
         names: [
             "close",

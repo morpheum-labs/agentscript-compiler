@@ -19,7 +19,7 @@ use super::expr::HirExpr;
 use super::ids::HirId;
 use super::literal::HirLiteral;
 use super::lowering::LowerToHir;
-use super::script::{HirDeclaration, HirInputDecl, HirScript};
+use super::script::{HirDeclaration, HirInputDecl, HirScript, HirUserFunction};
 use super::security::{GapMode, Lookahead, SecurityCall};
 use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
@@ -108,15 +108,6 @@ impl<'a> LowerCtx<'a> {
                 "method functions are not supported in this HIR lowering pass",
             ));
         }
-        match &f.body {
-            FnBody::Expr(_) => {}
-            FnBody::Block(_) => {
-                return Err(HirLowerError::at(
-                    f.span,
-                    "user functions with a block body are not supported in HIR lowering (use `=>` expression form)",
-                ));
-            }
-        }
         if self.user_fn_arity.insert(f.name.clone(), f.params.len()).is_some() {
             return Err(HirLowerError::at(
                 f.span,
@@ -138,6 +129,11 @@ impl<'a> LowerCtx<'a> {
         let id = self.symbols.push(name);
         self.names.insert(name.to_string(), id);
         id
+    }
+
+    /// Per-scope symbol (e.g. function parameter) without deduplicating names across functions.
+    fn alloc_fresh_symbol(&mut self, name: &str) -> super::ids::SymbolId {
+        self.symbols.push(name)
     }
 
     fn alloc_expr(&mut self, e: HirExpr, span: Span) -> HirId {
@@ -170,10 +166,12 @@ impl<'a> LowerCtx<'a> {
         // Builtin series names used by the tiny subset (Pine `close`, …).
         self.intern_name("close");
 
+        let mut user_fn_order: Vec<&FnDecl> = Vec::new();
         for item in &script.items {
             match item {
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
                     self.register_user_fn(f)?;
+                    user_fn_order.push(f);
                 }
                 _ => {}
             }
@@ -227,6 +225,11 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
+        let mut user_functions = Vec::with_capacity(user_fn_order.len());
+        for f in &user_fn_order {
+            user_functions.push(self.lower_user_function(f)?);
+        }
+
         Ok(HirScript {
             version,
             declaration,
@@ -238,8 +241,69 @@ impl<'a> LowerCtx<'a> {
                 .into_iter()
                 .collect(),
             body,
+            user_functions,
             symbols: std::mem::take(&mut self.symbols),
         })
+    }
+
+    fn lower_user_function(&mut self, f: &FnDecl) -> Result<HirUserFunction, HirLowerError> {
+        let sym = *self.names.get(f.name.as_str()).ok_or_else(|| {
+            HirLowerError::at(
+                f.span,
+                format!("internal: function `{}` missing from HIR symbol map", f.name),
+            )
+        })?;
+        let saved_names = self.names.clone();
+        let mut params = Vec::with_capacity(f.params.len());
+        for p in &f.params {
+            let sid = self.alloc_fresh_symbol(&p.name);
+            self.names.insert(p.name.clone(), sid);
+            params.push(sid);
+        }
+        let (body_stmts, result) = match &f.body {
+            FnBody::Expr(e) => (Vec::new(), self.lower_expr(e)?),
+            FnBody::Block(stmts) => self.lower_fn_block_stmts(f.span, stmts)?,
+        };
+        self.names = saved_names;
+        Ok(HirUserFunction {
+            symbol: sym,
+            params,
+            body_stmts,
+            result,
+        })
+    }
+
+    fn lower_fn_block_stmts(
+        &mut self,
+        span: Span,
+        stmts: &[Stmt],
+    ) -> Result<(Vec<HirStmt>, HirId), HirLowerError> {
+        if stmts.is_empty() {
+            return Err(HirLowerError::at(
+                span,
+                "user function block body must not be empty",
+            ));
+        }
+        let mut body = Vec::new();
+        let mut inputs_stub: Vec<HirInputDecl> = Vec::new();
+        let last = stmts.len() - 1;
+        for (i, s) in stmts.iter().enumerate() {
+            if i == last {
+                if let StmtKind::Expr(e) = &s.kind {
+                    let hir = self.lower_expr(e)?;
+                    return Ok((body, hir));
+                }
+            }
+            self.lower_stmt_into(s, &mut inputs_stub, &mut body)?;
+        }
+        let z = self.alloc_expr(
+            HirExpr::Literal(
+                HirLiteral::Float(0.0),
+                HirType::Series(Type::Primitive(PrimitiveType::Float)),
+            ),
+            span,
+        );
+        Ok((body, z))
     }
 
     fn script_declaration(&self, decl: &ScriptDeclaration) -> Result<HirDeclaration, HirLowerError> {
@@ -872,9 +936,27 @@ if true {
 }
 "#;
 
+    const SAMPLE_BLOCK_USER_FN: &str = r#"//@version=6
+indicator("block fn")
+g(float a) {
+  t = a * 3.0
+  t
+}
+z = g(close)
+plot(z)
+"#;
+
     #[test]
     fn golden_user_fn_and_conditional_plot() {
         let script = parse_script("test", SAMPLE_USER_FN_IF).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
+    }
+
+    #[test]
+    fn golden_block_user_function_body() {
+        let script = parse_script("test", SAMPLE_BLOCK_USER_FN).expect("parse");
         check_script(&script).expect("semantic checks");
         let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
         assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));

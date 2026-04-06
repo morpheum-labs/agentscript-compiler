@@ -54,6 +54,7 @@ Working backlog — track progress here (markdown checkboxes only).
 - [ ] Finalize **step** calling convention in `agentscript-guest-abi.md` (memory + types).
 - [x] Compiler: **emit** WASM with **exports** matching reserved ABI names (v0 preview signatures `() -> ()`; see ABI doc).
 - [x] Compiler: **integration test** — emit → `wasmparser` validate → import/export name checks ([`lib.rs` tests](../crates/agentscript-compiler/src/lib.rs)).
+- [x] Compiler: **wasmtime smoke** — `wasmtime::Module::new` accepts emitted bytes (same [`lib.rs`](../crates/agentscript-compiler/src/lib.rs); no host imports linked).
 - [ ] Aether: **integration test** — pinned WASM → instantiate → **call `init` / `step`** (stub memory if needed).
 - [ ] Define **import** module names and function signatures for `request.*` / `strategy.*` in ABI doc.
 - [ ] Compiler: lower at least one **`request.security`** path to an **import call**; Aether: stub host implementation for backtest.

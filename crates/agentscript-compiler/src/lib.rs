@@ -173,19 +173,40 @@ plot(htf)
     }
 
     #[test]
-    fn compile_wasm_v0_rejects_user_call_in_hir() {
+    fn wasmtime_accepts_compiled_tiny_indicator_module() {
+        use wasmtime::{Engine, Module};
+
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        let engine = Engine::default();
+        Module::new(&engine, &wasm).expect("wasmtime parses and compiles module");
+    }
+
+    #[test]
+    fn compile_wasm_v0_user_call_smoke() {
         const SRC: &str = r#"//@version=6
 indicator("x")
 f(float x) => x
 plot(f(close))
 "#;
         let script = parse_script("t", SRC).expect("parse");
-        let e = compile_script_to_wasm_v0(&script).expect_err("wasm v0 has no user-call codegen");
-        assert!(
-            e.message().contains("user function") || e.message().contains("UserCall"),
-            "{}",
-            e.message()
-        );
+        let wasm = compile_script_to_wasm_v0(&script).expect("user-call wasm");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+    }
+
+    #[test]
+    fn compile_wasm_v0_block_user_fn_smoke() {
+        const SRC: &str = r#"//@version=6
+indicator("x")
+g(float a) {
+  t = a * 2.0
+  t
+}
+plot(g(close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("block user-fn wasm");
+        wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
     /// Contract: imports (`aether`, …), dual exports (`init` + `aether_strategy_init`, etc.), and `series_hist` when HIR uses `close[k]`.

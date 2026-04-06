@@ -7,6 +7,7 @@ use std::fmt;
 use crate::frontend::ast::{ScriptKind, Span};
 
 use super::expr::HirExpr;
+use super::ids::{HirId, SymbolId};
 use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
 
@@ -30,6 +31,17 @@ pub enum HirDeclaration {
     FromAst(ScriptKind),
 }
 
+/// Lowered user-defined function (`f name(...) =>` or block body). [`SymbolId`] matches [`super::expr::HirExpr::UserCall`] callee.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirUserFunction {
+    pub symbol: SymbolId,
+    pub params: Vec<SymbolId>,
+    /// Statements before the returned expression (block body); empty for `=>` expr bodies.
+    pub body_stmts: Vec<HirStmt>,
+    /// Result value (Pine-style last expression or inferred default).
+    pub result: HirId,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct HirScript {
     pub version: u32,
@@ -40,6 +52,7 @@ pub struct HirScript {
     /// Source span per expression (same order/length as [`Self::exprs`]); codegen errors attach these.
     pub expr_spans: Vec<Span>,
     pub body: Vec<HirStmt>,
+    pub user_functions: Vec<HirUserFunction>,
     pub symbols: SymbolTable,
 }
 
@@ -52,6 +65,7 @@ impl fmt::Debug for HirScript {
             .field("inputs", &self.inputs)
             .field("exprs", &self.exprs)
             .field("body", &self.body)
+            .field("user_functions", &self.user_functions)
             .field("symbols", &self.symbols)
             .finish()
     }
