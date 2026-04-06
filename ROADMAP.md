@@ -82,6 +82,8 @@
 | **Aether** | Stable ABI + `.wasm` bytes + deterministic build story so jobs can pin `wasm_sha256`. |
 | **MWVM** | WASM that matches the same ABI and host expectations as other agent guests, where applicable. |
 
+**Integration gap (compiler ↔ Aether):** tracked in [`docs/aether-integration-gap.md`](docs/aether-integration-gap.md) (checklist + references).
+
 Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 
 ## Phase 0 — Parser & AST
