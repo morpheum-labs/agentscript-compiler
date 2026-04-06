@@ -19,4 +19,10 @@ pub enum BuiltinKind {
     MathMax,
     MathMin,
     MathAbs,
+    /// True range series (`ta.tr`).
+    TaTr,
+    /// Average true range (`ta.atr(length)`).
+    TaAtr,
+    /// `nz(x, y)` — replacement value when `x` is na (host NaN policy).
+    Nz,
 }

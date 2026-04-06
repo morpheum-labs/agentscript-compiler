@@ -14,14 +14,17 @@ use crate::codegen::wasm::error::HirWasmError;
 #[allow(unused_imports)] // Re-export for API / rustdoc; builtin emission uses `builtin_wasm_emit`.
 pub use crate::codegen::wasm::abi::{
     GUEST_EXPORT_INIT_ABI, GUEST_EXPORT_INIT_LEGACY, GUEST_EXPORT_STEP_ABI,
-    GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_PLOT,
-    IMPORT_REQUEST_SECURITY, IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIST, IMPORT_TA_CROSSOVER,
-    IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA,
+    GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_NZ,
+    IMPORT_PLOT, IMPORT_REQUEST_SECURITY, IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIGH, IMPORT_SERIES_HIST,
+    IMPORT_SERIES_HIST_AT, IMPORT_SERIES_LOW, IMPORT_SERIES_OPEN, IMPORT_SERIES_TIME,
+    IMPORT_SERIES_VOLUME, IMPORT_TA_ATR, IMPORT_TA_CROSSOVER, IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA,
+    IMPORT_TA_SMA, IMPORT_TA_TR, MA_SRC_CLOSE, MA_SRC_TRUE_RANGE, series_hist_kind,
 };
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
 use crate::hir::{
-    HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType, HirUserFunction, SymbolId,
+    BuiltinKind, HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType,
+    HirUserFunction, SymbolId,
 };
 
 fn expr_span(hir: &HirScript, id: HirId) -> Span {
@@ -59,6 +62,31 @@ impl StringPool {
         self.map.insert(s.to_string(), (off, len));
         (off, len)
     }
+}
+
+fn hir_expr_ty<'a>(hir: &'a HirScript, id: HirId) -> Result<&'a HirType, HirWasmError> {
+    let span = expr_span(hir, id);
+    let ex = hir
+        .exprs
+        .get(id.0 as usize)
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+    Ok(match ex {
+        HirExpr::Literal(_, t) => t,
+        HirExpr::Variable(_, t) => t,
+        HirExpr::Binary { ty, .. } => ty,
+        HirExpr::BuiltinCall { ty, .. } => ty,
+        HirExpr::UserCall { ty, .. } => ty,
+        HirExpr::SeriesAccess { ty, .. } => ty,
+        HirExpr::Select { ty, .. } => ty,
+        HirExpr::Not { ty, .. } => ty,
+        HirExpr::Security(sec) => &sec.ty,
+        HirExpr::Plot { .. } => {
+            return Err(HirWasmError::at(
+                span,
+                "internal: unexpected plot expr in ta period operand",
+            ));
+        }
+    })
 }
 
 fn hir_ty_to_val(ty: &HirType) -> Result<ValType, HirWasmError> {
@@ -301,6 +329,16 @@ impl<'a> Ctx<'a> {
                     .ok_or_else(|| HirWasmError::at(span, "unknown symbol"))?;
                 if name == "close" {
                     func.instructions().call(IMPORT_SERIES_CLOSE);
+                } else if name == "open" {
+                    func.instructions().call(IMPORT_SERIES_OPEN);
+                } else if name == "high" {
+                    func.instructions().call(IMPORT_SERIES_HIGH);
+                } else if name == "low" {
+                    func.instructions().call(IMPORT_SERIES_LOW);
+                } else if name == "volume" {
+                    func.instructions().call(IMPORT_SERIES_VOLUME);
+                } else if name == "time" {
+                    func.instructions().call(IMPORT_SERIES_TIME);
                 } else if let Some(&(_gi, gv)) = self.persist_globals.get(sym) {
                     func.instructions().global_get(gv);
                 } else if let Some((idx, import_fn)) = self.input_import_for_name(name) {
@@ -486,16 +524,20 @@ impl<'a> Ctx<'a> {
                 let name = self
                     .symbol_name(*sym)
                     .ok_or_else(|| HirWasmError::at(base_span, "unknown symbol in SeriesAccess"))?;
-                if name != "close" {
-                    return Err(HirWasmError::at(
+                let kind = series_hist_kind(name).ok_or_else(|| {
+                    HirWasmError::at(
                         span,
-                        format!(
-                            "series history for `{name}` is not supported in wasm codegen yet (only `close`)"
-                        ),
-                    ));
+                        format!("series history for `{name}` is not supported in wasm codegen yet"),
+                    )
+                })?;
+                if kind == 0 {
+                    func.instructions().i32_const(*offset);
+                    func.instructions().call(IMPORT_SERIES_HIST);
+                } else {
+                    func.instructions().i32_const(kind);
+                    func.instructions().i32_const(*offset);
+                    func.instructions().call(IMPORT_SERIES_HIST_AT);
                 }
-                func.instructions().i32_const(*offset);
-                func.instructions().call(IMPORT_SERIES_HIST);
             }
             HirExpr::Security(sec) => {
                 let sym_span = expr_span(self.hir, sec.symbol);
@@ -641,6 +683,34 @@ impl<'a> HirWasmEmitContext for Ctx<'a> {
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
         Ctx::emit_expr(self, func, id)
     }
+
+    fn ma_source_kind(&self, first_arg: HirId) -> i32 {
+        let Some(ex) = self.hir.exprs.get(first_arg.0 as usize) else {
+            return MA_SRC_CLOSE;
+        };
+        match ex {
+            HirExpr::BuiltinCall {
+                kind: BuiltinKind::TaTr,
+                ..
+            } => MA_SRC_TRUE_RANGE,
+            _ => MA_SRC_CLOSE,
+        }
+    }
+
+    fn emit_ta_period_i32(
+        &self,
+        func: &mut Function,
+        period: HirId,
+        span: Span,
+    ) -> Result<(), HirWasmError> {
+        self.emit_expr(func, period)?;
+        let ty = hir_expr_ty(self.hir, period)?;
+        let vt = hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))?;
+        if vt == ValType::F64 {
+            func.instructions().i32_trunc_sat_f64_s();
+        }
+        Ok(())
+    }
 }
 
 fn encode_user_function_body(
@@ -739,7 +809,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let t_in_float = types.len();
     types.ty().function([ValType::I32], [ValType::F64]);
     let t_sma = types.len();
-    types.ty().function([ValType::I32], [ValType::F64]);
+    types.ty().function([ValType::I32, ValType::I32], [ValType::F64]);
     let t_sec = types.len();
     types.ty().function(
         [ValType::I32, ValType::I32, ValType::I32, ValType::I32, ValType::F64],
@@ -749,6 +819,10 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     types.ty().function([ValType::F64], []);
     let t_series_hist = types.len();
     types.ty().function([ValType::I32], [ValType::F64]);
+    let t_hist_at = types.len();
+    types.ty().function([ValType::I32, ValType::I32], [ValType::F64]);
+    let t_nz = types.len();
+    types.ty().function([ValType::F64, ValType::F64], [ValType::F64]);
     let t_cross = types.len();
     types.ty().function([ValType::F64, ValType::F64], [ValType::F64]);
     let t_void = types.len();
@@ -800,6 +874,19 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         "ta_crossunder",
         EntityType::Function(t_cross),
     );
+    imports.import("aether", "series_open", EntityType::Function(t_close));
+    imports.import("aether", "series_high", EntityType::Function(t_close));
+    imports.import("aether", "series_low", EntityType::Function(t_close));
+    imports.import("aether", "series_volume", EntityType::Function(t_close));
+    imports.import("aether", "series_time", EntityType::Function(t_close));
+    imports.import(
+        "aether",
+        "series_hist_at",
+        EntityType::Function(t_hist_at),
+    );
+    imports.import("aether", "ta_tr", EntityType::Function(t_close));
+    imports.import("aether", "ta_atr", EntityType::Function(t_series_hist));
+    imports.import("aether", "nz", EntityType::Function(t_nz));
 
     let fn_init = GUEST_FUNC_BASE;
     let fn_on_bar = fn_init + 1;

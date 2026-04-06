@@ -821,6 +821,14 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         let cspan = callee.span;
         let arg_tys = self.collect_call_arg_types(args)?;
 
+        if name == "ta.tr" {
+            if !args.is_empty() {
+                self.err(cspan, "`ta.tr` does not take arguments");
+                return Err(());
+            }
+            return Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+        }
+
         if let Some(entry) = builtin_registry::lookup_dotted(name.as_str()) {
             if arg_tys.len() < entry.min_args {
                 self.err(
@@ -1427,6 +1435,9 @@ fn builtin_global(path: &[String]) -> Option<HirType> {
     match path {
         [a, b] if a == "syminfo" && (b == "ticker" || b == "prefix") => {
             Some(HirType::Series(AstType::Primitive(PrimitiveType::String)))
+        }
+        [a, b] if a == "ta" && b == "tr" => {
+            Some(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
         }
         _ => None,
     }

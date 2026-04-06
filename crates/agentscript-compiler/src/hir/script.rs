@@ -28,9 +28,12 @@ pub struct HirInputDecl {
 pub enum HirDeclaration {
     Indicator {
         title: Option<String>,
+        /// Pine `indicator(..., timeframe=...)` (empty string allowed).
+        timeframe: Option<String>,
     },
     Strategy {
         title: Option<String>,
+        timeframe: Option<String>,
     },
     Library,
     /// Raw kind until lowering normalizes title extraction.

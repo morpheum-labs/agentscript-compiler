@@ -194,6 +194,208 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         }
     }
 
+    /// Pine built-ins `hl2` / `hlc3` / `ohlc4` / `hlcc4` as arithmetic on OHLC(V) series.
+    fn lower_derived_price_alias(&mut self, name: &str, span: Span) -> Result<HirId, HirLowerError> {
+        let sf = HirType::Series(Type::Primitive(PrimitiveType::Float));
+        let simple_f = HirType::Simple(Type::Primitive(PrimitiveType::Float));
+        match name {
+            "hl2" => {
+                let h_sym = self.resolve_var_symbol("high").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `high` missing for hl2")
+                })?;
+                let l_sym = self.resolve_var_symbol("low").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `low` missing for hl2")
+                })?;
+                let h = self.alloc_expr(HirExpr::Variable(h_sym, sf.clone()), span);
+                let l = self.alloc_expr(HirExpr::Variable(l_sym, sf.clone()), span);
+                let sum = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: h,
+                        rhs: l,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let two = self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Float(2.0), simple_f),
+                    span,
+                );
+                Ok(self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Div,
+                        lhs: sum,
+                        rhs: two,
+                        ty: sf,
+                    },
+                    span,
+                ))
+            }
+            "hlc3" => {
+                let h_sym = self.resolve_var_symbol("high").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `high` missing for hlc3")
+                })?;
+                let l_sym = self.resolve_var_symbol("low").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `low` missing for hlc3")
+                })?;
+                let c_sym = self.resolve_var_symbol("close").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `close` missing for hlc3")
+                })?;
+                let h = self.alloc_expr(HirExpr::Variable(h_sym, sf.clone()), span);
+                let l = self.alloc_expr(HirExpr::Variable(l_sym, sf.clone()), span);
+                let c = self.alloc_expr(HirExpr::Variable(c_sym, sf.clone()), span);
+                let s1 = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: h,
+                        rhs: l,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let sum = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: s1,
+                        rhs: c,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let three = self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Float(3.0), simple_f),
+                    span,
+                );
+                Ok(self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Div,
+                        lhs: sum,
+                        rhs: three,
+                        ty: sf,
+                    },
+                    span,
+                ))
+            }
+            "ohlc4" => {
+                let o_sym = self.resolve_var_symbol("open").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `open` missing for ohlc4")
+                })?;
+                let h_sym = self.resolve_var_symbol("high").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `high` missing for ohlc4")
+                })?;
+                let l_sym = self.resolve_var_symbol("low").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `low` missing for ohlc4")
+                })?;
+                let c_sym = self.resolve_var_symbol("close").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `close` missing for ohlc4")
+                })?;
+                let o = self.alloc_expr(HirExpr::Variable(o_sym, sf.clone()), span);
+                let h = self.alloc_expr(HirExpr::Variable(h_sym, sf.clone()), span);
+                let l = self.alloc_expr(HirExpr::Variable(l_sym, sf.clone()), span);
+                let c = self.alloc_expr(HirExpr::Variable(c_sym, sf.clone()), span);
+                let s1 = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: o,
+                        rhs: h,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let s2 = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: l,
+                        rhs: c,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let sum = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: s1,
+                        rhs: s2,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let four = self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Float(4.0), simple_f),
+                    span,
+                );
+                Ok(self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Div,
+                        lhs: sum,
+                        rhs: four,
+                        ty: sf,
+                    },
+                    span,
+                ))
+            }
+            "hlcc4" => {
+                let h_sym = self.resolve_var_symbol("high").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `high` missing for hlcc4")
+                })?;
+                let l_sym = self.resolve_var_symbol("low").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `low` missing for hlcc4")
+                })?;
+                let c_sym = self.resolve_var_symbol("close").ok_or_else(|| {
+                    HirLowerError::at(span, "internal: builtin `close` missing for hlcc4")
+                })?;
+                let h = self.alloc_expr(HirExpr::Variable(h_sym, sf.clone()), span);
+                let l = self.alloc_expr(HirExpr::Variable(l_sym, sf.clone()), span);
+                let c1 = self.alloc_expr(HirExpr::Variable(c_sym, sf.clone()), span);
+                let c2 = self.alloc_expr(HirExpr::Variable(c_sym, sf.clone()), span);
+                let s1 = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: h,
+                        rhs: l,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let s2 = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: c1,
+                        rhs: c2,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let sum = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Add,
+                        lhs: s1,
+                        rhs: s2,
+                        ty: sf.clone(),
+                    },
+                    span,
+                );
+                let four = self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Float(4.0), simple_f),
+                    span,
+                );
+                Ok(self.alloc_expr(
+                    HirExpr::Binary {
+                        op: BinOp::Div,
+                        lhs: sum,
+                        rhs: four,
+                        ty: sf,
+                    },
+                    span,
+                ))
+            }
+            _ => Err(HirLowerError::at(
+                span,
+                format!("unknown derived price alias `{name}`"),
+            )),
+        }
+    }
+
     fn expr_ty_from_session_or_float_series(&self, e: &Expr) -> HirType {
         self.session
             .and_then(|s| {
@@ -217,7 +419,10 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 }
             }
         }
-        if name == "close" {
+        if matches!(
+            name,
+            "close" | "open" | "high" | "low" | "volume" | "time" | "hl2" | "hlc3" | "ohlc4" | "hlcc4"
+        ) {
             return HirType::Series(Type::Primitive(PrimitiveType::Float));
         }
         if self.input_int_names.contains(name) {
@@ -300,8 +505,10 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         let mut inputs: Vec<HirInputDecl> = Vec::new();
         let mut body: Vec<HirStmt> = Vec::new();
 
-        // Builtin series names used by the tiny subset (Pine `close`, …).
-        self.intern_name("close");
+        // Builtin series names (Pine OHLCV / time).
+        for n in ["close", "open", "high", "low", "volume", "time"] {
+            self.intern_name(n);
+        }
 
         for item in &script.items {
             if let Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) = item {
@@ -467,10 +674,12 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         match decl.kind {
             ScriptKind::Indicator => {
                 let title = first_string_arg(&decl.args);
-                Ok(HirDeclaration::Indicator { title })
+                let timeframe = string_kw_first_string(&decl.args, "timeframe");
+                Ok(HirDeclaration::Indicator { title, timeframe })
             }
             ScriptKind::Strategy => Ok(HirDeclaration::Strategy {
                 title: first_string_arg(&decl.args),
+                timeframe: string_kw_first_string(&decl.args, "timeframe"),
             }),
             ScriptKind::Library => Err(HirLowerError::at(
                 script_declaration_span(decl),
@@ -887,8 +1096,21 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         span: Span,
         expr: &Expr,
     ) -> Result<HirId, HirLowerError> {
+        if path == ["ta", "tr"] {
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaTr,
+                    args: vec![],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                span,
+            ));
+        }
         if path.len() == 1 {
             let name = &path[0];
+            if matches!(name.as_str(), "hl2" | "hlc3" | "ohlc4" | "hlcc4") {
+                return self.lower_derived_price_alias(name.as_str(), span);
+            }
             if let Some(sess) = self.session {
                 if expr.id != NodeId::UNASSIGNED {
                     if let Some(b) = sess
@@ -1238,6 +1460,41 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             ));
         }
 
+        if path == ["ta", "atr"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "ta.atr expects one argument (length)",
+                ));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaAtr,
+                    args: vec![a0],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["nz"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(expr_span, "nz expects two arguments"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::Nz,
+                    args: vec![a0, a1],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
         if path == ["ta", "crossunder"] {
             if args.len() != 2 {
                 return Err(HirLowerError::at(
@@ -1443,10 +1700,19 @@ fn try_plot_stmt(lower: &mut LowerCtx, e: &Expr) -> Result<Option<HirStmt>, HirL
         ));
     }
     let expr = lower.lower_expr(&args[0].1)?;
-    let title = args.get(1).and_then(|(_, ex)| match &ex.kind {
-        ExprKind::String(s) => Some(s.clone()),
-        _ => None,
-    });
+    let title = args
+        .iter()
+        .find(|(n, _)| n.as_deref() == Some("title"))
+        .and_then(|(_, ex)| match &ex.kind {
+            ExprKind::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            args.get(1).and_then(|(_, ex)| match &ex.kind {
+                ExprKind::String(s) => Some(s.clone()),
+                _ => None,
+            })
+        });
     Ok(Some(HirStmt::Plot { expr, title }))
 }
 
@@ -1457,6 +1723,16 @@ fn first_string_arg(args: &[(Option<String>, Expr)]) -> Option<String> {
         }
     }
     None
+}
+
+fn string_kw_first_string(args: &[(Option<String>, Expr)], key: &str) -> Option<String> {
+    args
+        .iter()
+        .find(|(n, _)| n.as_deref() == Some(key))
+        .and_then(|(_, ex)| match &ex.kind {
+            ExprKind::String(s) => Some(s.clone()),
+            _ => None,
+        })
 }
 
 fn int_default_from_expr(e: &Expr) -> Result<i64, HirLowerError> {

@@ -10,20 +10,52 @@ use wasmparser::{Parser, Payload};
 /// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
 pub const IMPORT_SERIES_CLOSE: u32 = 0;
 pub const IMPORT_INPUT_INT: u32 = 1;
+/// `(i32 src_kind, i32 period) -> f64` — `src_kind` 0 = close, 1 = true range (`ta.tr`).
 pub const IMPORT_TA_SMA: u32 = 2;
 pub const IMPORT_REQUEST_SECURITY: u32 = 3;
 pub const IMPORT_PLOT: u32 = 4;
-/// Primary series value `offset` bars ago (`close[offset]`); v0 supports `close` only in HIR.
+/// `close[offset]` — same as [`IMPORT_SERIES_HIST_AT`] with kind `0` (legacy import).
 pub const IMPORT_SERIES_HIST: u32 = 5;
-/// EMA on host close stream, same signature as [`IMPORT_TA_SMA`]: `(i32 period) -> f64`.
+/// Same signature as [`IMPORT_TA_SMA`]: `(i32 src_kind, i32 period) -> f64`.
 pub const IMPORT_TA_EMA: u32 = 6;
 pub const IMPORT_INPUT_FLOAT: u32 = 7;
 /// Stateful host: compares `(a,b)` to previous bar; returns bool as f64 (`0`/`1`).
 pub const IMPORT_TA_CROSSOVER: u32 = 8;
 pub const IMPORT_TA_CROSSUNDER: u32 = 9;
+pub const IMPORT_SERIES_OPEN: u32 = 10;
+pub const IMPORT_SERIES_HIGH: u32 = 11;
+pub const IMPORT_SERIES_LOW: u32 = 12;
+pub const IMPORT_SERIES_VOLUME: u32 = 13;
+pub const IMPORT_SERIES_TIME: u32 = 14;
+/// `(i32 series_kind, i32 offset) -> f64` — see [`series_kind_for_hist`].
+pub const IMPORT_SERIES_HIST_AT: u32 = 15;
+/// `() -> f64` — current bar true range (matches Pine `ta.tr` series).
+pub const IMPORT_TA_TR: u32 = 16;
+/// `(i32 period) -> f64` — ATR on host stream.
+pub const IMPORT_TA_ATR: u32 = 17;
+/// `(f64 a, f64 y) -> f64` — Pine `nz`-style replacement when `a` is na.
+pub const IMPORT_NZ: u32 = 18;
 
 /// First function index defined in the guest module (after all `aether` imports).
-pub const GUEST_FUNC_BASE: u32 = IMPORT_TA_CROSSUNDER + 1;
+pub const GUEST_FUNC_BASE: u32 = IMPORT_NZ + 1;
+
+/// `ta_sma` / `ta_ema` first argument: host moving-average source stream.
+pub const MA_SRC_CLOSE: i32 = 0;
+pub const MA_SRC_TRUE_RANGE: i32 = 1;
+
+/// `series_hist_at(series_kind, offset)` — must match guest emission order.
+#[must_use]
+pub fn series_hist_kind(name: &str) -> Option<i32> {
+    match name {
+        "close" => Some(0),
+        "open" => Some(1),
+        "high" => Some(2),
+        "low" => Some(3),
+        "volume" => Some(4),
+        "time" => Some(5),
+        _ => None,
+    }
+}
 
 /// Legacy / CLI-friendly export names (same function indices as [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`]).
 pub const GUEST_EXPORT_INIT_LEGACY: &str = "init";
@@ -45,6 +77,15 @@ pub static GUEST_ABI_V0_IMPORTS: &[(&str, &str)] = &[
     ("aether", "input_float"),
     ("aether", "ta_crossover"),
     ("aether", "ta_crossunder"),
+    ("aether", "series_open"),
+    ("aether", "series_high"),
+    ("aether", "series_low"),
+    ("aether", "series_volume"),
+    ("aether", "series_time"),
+    ("aether", "series_hist_at"),
+    ("aether", "ta_tr"),
+    ("aether", "ta_atr"),
+    ("aether", "nz"),
 ];
 
 /// Required export names for a full guest strategy module from [`crate::codegen::emit_hir_guest_wasm`].
