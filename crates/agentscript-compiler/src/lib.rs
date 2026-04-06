@@ -29,9 +29,9 @@ pub use frontend::ast::{
 pub use error::{AnalyzeCompileError, CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
 pub use codegen::{
-    emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, AbiValidationError, GuestAbiV0,
+    emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, AbiValidationError, GuestAbiV0, GuestAbiV1,
     GuestWasmV0, HirCodegenBackend, HirWasmError, GUEST_ABI_V0_EXPORTS, GUEST_ABI_V0_IMPORTS,
-    validate_guest_abi_v0,
+    validate_guest_abi_v0, validate_guest_abi_v1,
 };
 pub use semantic::{
     analyze_script, check_script, default_passes, default_passes_with_hir, lexical_resolve_script,
@@ -132,7 +132,7 @@ pub fn session_hir(compiler: &Compiler) -> Option<&HirScript> {
     compiler.session.hir.as_ref()
 }
 
-/// Lower + emit a guest `wasm32` module (`memory`, `init`, `on_bar`) using [`GuestWasmV0`].
+/// Lower + emit a guest `wasm32` module (`memory`, `init` **`() -> i32`**, `on_bar` **`(i32) -> i32`**) using [`GuestWasmV0`].
 /// Requires the current HIR subset; wasm emit errors map to [`AnalyzeError`].
 pub fn compile_script_to_wasm_v0(script: &Script) -> Result<Vec<u8>, AnalyzeError> {
     compile_script_with_backend(script, &GuestWasmV0)

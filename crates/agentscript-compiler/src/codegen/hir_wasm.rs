@@ -893,7 +893,7 @@ fn encode_user_function_body(
 
 /// Emit a `wasm32` module: imports from module **`aether`**, exported **`memory`**, **`init`**, **`on_bar`**.
 ///
-/// # Host ABI (v0)
+/// # Host ABI (imports — stable indices in `wasm::abi`)
 ///
 /// | Import | Signature | Role |
 /// |--------|-----------|------|
@@ -914,6 +914,11 @@ fn encode_user_function_body(
 ///
 /// Exports: `memory`, legacy [`GUEST_EXPORT_INIT_LEGACY`] / [`GUEST_EXPORT_STEP_LEGACY`], and
 /// [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`] (same func indices as `init` / `on_bar`).
+///
+/// **Guest ABI v1 exports:** `init` / `aether_strategy_init` are **`() -> i32`** (`0` = success).
+/// `on_bar` / `aether_strategy_step` are **`(i32 bar_index) -> i32`** (`0` = ok; non-zero reserved).
+/// The `bar_index` argument is the host’s zero-based bar ordinal; the lowered body may ignore it
+/// until the guest reads OHLCV from imports keyed by host state.
 #[must_use]
 pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let mut pool = StringPool::new();
@@ -927,16 +932,6 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
 
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
     collect_lets_unique_symbols(&hir.body, &hir.persist_symbols, &mut let_pairs)?;
-
-    let mut local_defs: Vec<(u32, ValType)> = Vec::new();
-    let mut sym_to_local: HashMap<SymbolId, u32> = HashMap::new();
-    let mut next_local: u32 = 0;
-    for (sym, val) in &let_pairs {
-        let vt = local_type_for_let(hir, *val)?;
-        local_defs.push((1, vt));
-        sym_to_local.insert(*sym, next_local);
-        next_local += 1;
-    }
 
     let mut types = TypeSection::new();
     let t_close = types.len();
@@ -980,8 +975,10 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         ],
         [ValType::F64],
     );
-    let t_void = types.len();
-    types.ty().function([], []);
+    let t_init_export = types.len();
+    types.ty().function([], [ValType::I32]);
+    let t_step_export = types.len();
+    types.ty().function([ValType::I32], [ValType::I32]);
 
     let mut user_fn_type_indices: Vec<u32> = Vec::new();
     for uf in &hir.user_functions {
@@ -1061,8 +1058,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     }
 
     let mut functions = FunctionSection::new();
-    functions.function(t_void);
-    functions.function(t_void);
+    functions.function(t_init_export);
+    functions.function(t_step_export);
     for ti in &user_fn_type_indices {
         functions.function(*ti);
     }
@@ -1104,17 +1101,27 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     exports.export(GUEST_EXPORT_STEP_ABI, ExportKind::Func, fn_on_bar);
 
     let mut code = CodeSection::new();
-    // init
+    // init — () -> i32
     {
         let mut f = Function::new([]);
         for (_s, g_inited, _gv) in &persist_pairs {
             f.instructions().i32_const(0).global_set(*g_inited);
         }
+        f.instructions().i32_const(0);
         f.instructions().end();
         code.function(&f);
     }
-    // on_bar
+    // on_bar / step — (i32 bar_index) -> i32; param is local 0, user locals start at 1
     {
+        let mut local_defs: Vec<(u32, ValType)> = Vec::new();
+        let mut next_local = 1u32;
+        let mut sym_to_local_step: HashMap<SymbolId, u32> = HashMap::new();
+        for (sym, val) in &let_pairs {
+            let vt = local_type_for_let(hir, *val)?;
+            local_defs.push((1, vt));
+            sym_to_local_step.insert(*sym, next_local);
+            next_local += 1;
+        }
         let scratch_l = next_local;
         local_defs.push((1, ValType::F64));
         let scratch_r = scratch_l + 1;
@@ -1122,7 +1129,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
 
         let ctx = Ctx {
             hir,
-            sym_to_local,
+            sym_to_local: sym_to_local_step,
             pool: &pool.map,
             user_fn_indices: &user_fn_indices,
             scratch_l,
@@ -1133,6 +1140,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         for stmt in &hir.body {
             ctx.emit_stmt(&mut f, stmt)?;
         }
+        f.instructions().i32_const(0);
         f.instructions().end();
         code.function(&f);
     }

@@ -11,7 +11,7 @@ pub trait HirCodegenBackend {
     fn emit(&self, hir: &HirScript) -> Result<Vec<u8>, HirWasmError>;
 }
 
-/// Aether guest strategy module: imports + `init` / `on_bar` (v0 ABI).
+/// Aether guest strategy module: `aether` imports + `init` **`() -> i32`** / `on_bar` **`(i32) -> i32`** (guest ABI v1 exports).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GuestWasmV0;
 

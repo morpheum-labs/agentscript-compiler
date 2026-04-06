@@ -1,13 +1,16 @@
-//! Aether guest ABI v0: stable import indices, export names, and module validation.
+//! Aether guest strategy module: stable **`aether` import** indices and **export** names/types.
 //!
-//! **SRP:** constants and [`validate_guest_abi_v0`] live here; emission uses the same indices in
-//! [`crate::codegen::hir_wasm`].
+//! **Import table:** `GUEST_ABI_V0_IMPORTS` keeps the historical v0 label for **index stability**
+//! in [`crate::codegen::hir_wasm`]; the list is the current required import set.
+//!
+//! **Exports (guest ABI v1):** `init` / `aether_strategy_init` are **`() -> i32`**; `on_bar` /
+//! `aether_strategy_step` are **`(i32 bar_index) -> i32`**. Validated by [`validate_guest_abi_v1`].
 
 use std::fmt;
 
-use wasmparser::{Parser, Payload};
+use wasmparser::{ExternalKind, FuncType, Parser, Payload, TypeRef, ValType};
 
-/// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
+/// Host import indices (stable; must match Aether / MWVM stubs).
 pub const IMPORT_SERIES_CLOSE: u32 = 0;
 pub const IMPORT_INPUT_INT: u32 = 1;
 /// `(i32 src_kind, i32 period) -> f64` — `src_kind` 0 = close, 1 = true range (`ta.tr`).
@@ -73,7 +76,7 @@ pub const GUEST_EXPORT_STEP_LEGACY: &str = "on_bar";
 pub const GUEST_EXPORT_INIT_ABI: &str = "aether_strategy_init";
 pub const GUEST_EXPORT_STEP_ABI: &str = "aether_strategy_step";
 
-/// Specification of the v0 guest contract: required `aether` imports (presence; order matches emission).
+/// Specification of the required `aether` imports (presence; order matches emission).
 pub static GUEST_ABI_V0_IMPORTS: &[(&str, &str)] = &[
     ("aether", "series_close"),
     ("aether", "input_int"),
@@ -109,9 +112,12 @@ pub static GUEST_ABI_V0_EXPORTS: &[&str] = &[
     GUEST_EXPORT_STEP_ABI,
 ];
 
-/// Marker type linking docs to [`GUEST_ABI_V0_IMPORTS`] / [`GUEST_ABI_V0_EXPORTS`].
+/// Marker linking docs to [`GUEST_ABI_V0_IMPORTS`] / [`GUEST_ABI_V0_EXPORTS`].
 #[derive(Debug, Clone, Copy)]
-pub struct GuestAbiV0;
+pub struct GuestAbiV1;
+
+/// Back-compat alias (same contract as [`GuestAbiV1`]).
+pub type GuestAbiV0 = GuestAbiV1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiValidationError {
@@ -132,25 +138,77 @@ fn abi_err(msg: impl Into<String>) -> AbiValidationError {
     }
 }
 
-/// Validate WASM bytes and check required v0 imports/exports (presence, any order within the section).
-pub fn validate_guest_abi_v0(wasm: &[u8]) -> Result<(), AbiValidationError> {
+fn func_type_for_index(
+    func_idx: u32,
+    import_func_type_idx: &[u32],
+    local_func_type_idx: &[u32],
+    types: &[FuncType],
+) -> Result<FuncType, AbiValidationError> {
+    let n_imp = import_func_type_idx.len() as u32;
+    let ty_idx = if func_idx < n_imp {
+        import_func_type_idx
+            .get(func_idx as usize)
+            .copied()
+            .ok_or_else(|| abi_err("import func index out of range"))?
+    } else {
+        let li = (func_idx - n_imp) as usize;
+        *local_func_type_idx
+            .get(li)
+            .ok_or_else(|| abi_err("local func index out of range"))?
+    };
+    types
+        .get(ty_idx as usize)
+        .cloned()
+        .ok_or_else(|| abi_err(format!("type index {ty_idx} out of range")))
+}
+
+/// Validate WASM bytes: **imports** (names), **exports** (names), and **guest ABI v1** export signatures.
+pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
     wasmparser::validate(wasm).map_err(|e| abi_err(format!("wasm validate: {e}")))?;
 
+    let mut func_types: Vec<FuncType> = Vec::new();
+    let mut import_func_type_idx: Vec<u32> = Vec::new();
+    let mut local_func_type_idx: Vec<u32> = Vec::new();
     let mut imports: Vec<(String, String)> = Vec::new();
-    let mut exports: Vec<String> = Vec::new();
+    let mut export_funcs: Vec<(String, u32)> = Vec::new();
+    let mut export_memory_names: Vec<String> = Vec::new();
+
     for payload in Parser::new(0).parse_all(wasm) {
         let Ok(p) = payload else { continue };
         match p {
+            Payload::TypeSection(reader) => {
+                for ft in reader.into_iter_err_on_gc_types() {
+                    let ft = ft.map_err(|e| abi_err(format!("type section: {e}")))?;
+                    func_types.push(ft);
+                }
+            }
             Payload::ImportSection(reader) => {
                 for imp in reader {
-                    let Ok(i) = imp else { continue };
-                    imports.push((i.module.to_string(), i.name.to_string()));
+                    let imp = imp.map_err(|e| abi_err(format!("import section: {e}")))?;
+                    imports.push((imp.module.to_string(), imp.name.to_string()));
+                    if let TypeRef::Func(ti) = imp.ty {
+                        import_func_type_idx.push(ti);
+                    }
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                for ty in reader {
+                    let ty = ty.map_err(|e| abi_err(format!("function section: {e}")))?;
+                    local_func_type_idx.push(ty);
                 }
             }
             Payload::ExportSection(reader) => {
                 for exp in reader {
-                    let Ok(e) = exp else { continue };
-                    exports.push(e.name.to_string());
+                    let exp = exp.map_err(|e| abi_err(format!("export section: {e}")))?;
+                    match exp.kind {
+                        ExternalKind::Func => {
+                            export_funcs.push((exp.name.to_string(), exp.index));
+                        }
+                        ExternalKind::Memory => {
+                            export_memory_names.push(exp.name.to_string());
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -168,13 +226,64 @@ pub fn validate_guest_abi_v0(wasm: &[u8]) -> Result<(), AbiValidationError> {
         }
     }
 
+    let mut export_names: Vec<String> = export_funcs.iter().map(|(n, _)| n.clone()).collect();
+    export_names.extend(export_memory_names.iter().cloned());
+
     for &name in GUEST_ABI_V0_EXPORTS {
-        if !exports.iter().any(|e| e == name) {
-            return Err(abi_err(format!(
-                "missing export `{name}`, have {exports:?}"
-            )));
+        if name == "memory" {
+            if !export_memory_names.iter().any(|e| e == name) {
+                return Err(abi_err(format!(
+                    "missing export `{name}`, have func exports {:?} and memory exports {:?}",
+                    export_funcs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                    export_memory_names
+                )));
+            }
+            continue;
+        }
+        let func_idx = export_funcs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, i)| *i)
+            .ok_or_else(|| {
+                abi_err(format!("missing export `{name}`, have {export_names:?}"))
+            })?;
+        let ft = func_type_for_index(
+            func_idx,
+            &import_func_type_idx,
+            &local_func_type_idx,
+            &func_types,
+        )?;
+        let is_init = name == GUEST_EXPORT_INIT_LEGACY || name == GUEST_EXPORT_INIT_ABI;
+        let is_step = name == GUEST_EXPORT_STEP_LEGACY || name == GUEST_EXPORT_STEP_ABI;
+        if is_init {
+            if !ft.params().is_empty() || ft.results() != [ValType::I32] {
+                return Err(abi_err(format!(
+                    "export `{name}` must be () -> i32, got {}",
+                    FuncTypeDisplay(&ft)
+                )));
+            }
+        } else if is_step {
+            if ft.params() != [ValType::I32] || ft.results() != [ValType::I32] {
+                return Err(abi_err(format!(
+                    "export `{name}` must be (i32) -> i32, got {}",
+                    FuncTypeDisplay(&ft)
+                )));
+            }
         }
     }
 
     Ok(())
+}
+
+struct FuncTypeDisplay<'a>(&'a FuncType);
+
+impl fmt::Display for FuncTypeDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Back-compat: same as [`validate_guest_abi_v1`].
+pub fn validate_guest_abi_v0(wasm: &[u8]) -> Result<(), AbiValidationError> {
+    validate_guest_abi_v1(wasm)
 }

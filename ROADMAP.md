@@ -43,7 +43,7 @@
 | **Constant folding** | Compile-time evaluation of literals | **None** | Optional optimization after typecheck. |
 | **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** + spec [`spec/hir.md`](spec/hir.md). **AST → `HirScript`:** [`lower_script_to_hir_in_bump_with_session`](crates/agentscript-compiler/src/hir/ast_lower.rs) / [`HirLowerPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs) uses [`CompilerSession`](crates/agentscript-compiler/src/session.rs) (`def_semantic_ids`, `name_bindings`, `expr_types`) + lexical scoping for blocks/`if`. Surface: **`HirExpr::UserCall`** (non-`method` user fns), **`HirExpr::Select`**, **`HirExpr::Array`**, unary `-` (desugared), full **numeric/compare** binaries (typed from session), compound assign, **`HirStmt::If`**, `input.int` / `input.float` / plain `input` defvals, `close` (pre-interned; other OHLC series names not in WASM path yet), `ta.sma` / `ta.ema` / `ta.crossover` / `ta.crossunder`, `math.*` (`max`…`pow`, `ceil`/`floor`/`trunc`), `request.security`, **`request.financial`**, `plot`, `close[k]`, **`var` / `varip`** persist symbols. No explicit bar scheduler IR yet. |
 | **WASM codegen** | `wasm32` module shape | **Partial** | [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) (`wasm-encoder`): `aether` imports + dual exports (`init`/`on_bar` + `aether_strategy_*`). Includes **`request_financial`** (v0 literal strings). Compare / logic / `select` on **f64 0/1** bool encoding; **`%`** via trunc/div/mul remainder pattern. User-function bodies and top-level **`if`** emit when in the supported HIR subset; **nested `plot`**, non-`close` series history, and **UDT `method`** defs still error or skip. Not full language. |
-| **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **Partial** | v0 preview: `() -> ()` exports + documented `aether` import table; [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). Host still stubs imports / does not call `step` in production paths. **Compiler tests:** [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) links the full v0 import set (mirrors `aether-mwvm` `link_aether_guest_abi_v0`) and **instantiates** emitted WASM (plot + `request.financial` smoke); a guard test keeps stub names aligned with [`GUEST_ABI_V0_IMPORTS`](crates/agentscript-compiler/src/codegen/wasm/abi.rs). |
+| **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **Partial** | **v1 exports:** `() -> i32` init, `(i32 bar_index) -> i32` step + documented `aether` import table; [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md), [`docs/agentscript-guest-abi.md`](docs/agentscript-guest-abi.md). `guest_abi::VERSION` **2**. Host still stubs imports / production engine does not drive guest `step` yet. **Compiler tests:** [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) links imports, **instantiates**, calls **`init` + `step` loop**; guard on [`GUEST_ABI_V0_IMPORTS`](crates/agentscript-compiler/src/codegen/wasm/abi.rs). |
 | **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
 | **Runtime / host (Aether)** | Data feeds, fills, `request.*`, MCP | **None** | Outside this crate; semantics live here for execution. |
 | **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette** with spans. Semantic: [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) + [`SemanticDiagnostic`](crates/agentscript-compiler/src/semantic/mod.rs) carry `Span`; CLI maps analysis failures through [`AnalyzeCompileError`](crates/agentscript-compiler/src/error.rs) for miette output. **Codegen:** [`HirScript::source_span`](crates/agentscript-compiler/src/hir/script.rs) (script header) backs [`expr_span`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) fallbacks instead of `Span::DUMMY` when possible. |
@@ -85,7 +85,7 @@ Parallel larger items: **full-language** HIR+WASM, **guest ABI** finalization + 
 **Not started / still open**
 
 - [ ] **Full-language** WASM + HIR (strategy bodies, full `request.*`, library/module linking, UDT methods, etc.).
-- [ ] **Guest ABI** finalized (`init` → `i32`, `step` memory layout) and **invoked** by Aether with contract tests across repos. *(Compiler-only progress: wasmtime **instantiate** smoke + import-name guard in [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs).)*
+- [ ] **Guest ABI** production-hardened: optional **`step` linear-memory OHLCV layout**, **`strategy.*` imports**, and **Aether production** invocation + cross-repo contract tests. *(Compiler progress: **`init`/`step` v1 signatures**, wasmtime **`init`+`step` loop** + import-name guard in [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs).)*
 
 ## Downstream alignment
 
@@ -97,6 +97,30 @@ Parallel larger items: **full-language** HIR+WASM, **guest ABI** finalization + 
 **Integration gap (compiler ↔ Aether):** tracked in [`docs/aether-integration-gap.md`](docs/aether-integration-gap.md) (checklist + references).
 
 Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
+
+## Next chapter — Language & ABI surface extension
+
+**Purpose:** Living tracker for the active parallel track: **what scripts may express** (parse → semantics → HIR → WASM) and **what the guest may call** (import/export contract, versioning, docs). Check items off as slices land; the big inventory stays in the **Semantics** table and **Phases 0–3** above and below.
+
+### Language surface (compiler)
+
+- [ ] **HIR + WASM:** widen lowering/codegen for the next real scripts (e.g. more OHLC series on the guest path, additional `ta.*` from the registry, nested `plot` / let-values where the HIR subset still errors).
+- [ ] **Builtins:** grow [`builtin_registry`](crates/agentscript-compiler/src/semantic/builtin_registry.rs) (`BUILTIN_ENTRIES`) + typecheck + emit for prioritized namespaces (`ta.*`, `syminfo.*` / `timeframe.*`, …) as product priorities dictate.
+- [ ] **Types & modules:** enforce surface `array<>` / `matrix<>` / `map<>`; real **import/export linking** when library graphs matter.
+- [ ] **`strategy.*` / side effects:** when strategies are in scope, specify host imports and ordering before deep codegen (see Semantics table — **None** today).
+
+### Guest ABI (compiler ↔ Aether)
+
+- [x] **ABI v1 (2026-04):** `aether_strategy_init` **`() -> i32`**; `aether_strategy_step` **`(i32 bar_index) -> i32`**; `guest_abi::VERSION` **2**; docs + [`validate_guest_abi_v1`](crates/agentscript-compiler/src/codegen/wasm/abi.rs); wasmtime **`init`/`step`** smoke.
+- [ ] **Next ABI bump (optional):** `step` gains pointer/length or struct for OHLCV/context in linear memory per [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md); increment `guest_abi::VERSION` when shipped.
+- [ ] **Import table discipline:** any new/changed `aether` import updates [`codegen/wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) (`GUEST_ABI_V0_IMPORTS`), **Aether/MWVM** linker stubs, [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs), and the guest ABI doc in lockstep.
+- [ ] **`request.security` / `request.financial`:** dynamic symbol/args, prefetch/determinism notes, and Wasm signatures documented before relying on production hosts.
+
+### Slice definition of done
+
+A slice counts as **done** when: emitted WASM validates; the import table matches stubs + written ABI; there is at least one **compiler** test for the new surface, and a **cross-repo** smoke test when the host can run it.
+
+**Last reviewed:** 2026-04-07
 
 ## Phase 0 — Parser & AST
 
@@ -169,7 +193,7 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 - [x] **`request.security` lowering (v0):** WASM `request_security` + MWVM stub (identity on inner `f64`). **Still open:** real MTF merge / feed policy, dynamic symbol rules, determinism, optional static request graph for prefetch.
 - [x] **`request.financial` lowering (v0):** HIR + WASM import `request_financial` + MWVM stub; string pool + 10×`i32` args (`gaps`, `ignore`, optional `currency`). **Still open:** non-literal / dynamic args, determinism / prefetch aligned with `request.security`.
 - [x] **WASM emission (HIR subset v0):** [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) + [`compile_script_to_wasm_v0`](crates/agentscript-compiler/src/lib.rs) using `wasm-encoder` / `wasmparser` in tests. Emits `aether` imports, `memory`, and dual exports (`init`/`on_bar` + `aether_strategy_*`). **Still not** full-language codegen: e.g. non-`close` series history, nested `plot` as let-values, UDT **`method`** defs in HIR, and scripts outside the lowered subset still fail with [`HirWasmError`](crates/agentscript-compiler/src/codegen/hir_wasm.rs).
-- [x] **Guest module ABI v0 (partial):** import indices and export names are defined in [`wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) / [`hir_wasm.rs`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) and described in [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). **Compiler instantiate smoke:** [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs). **Still open for Phase 2 “done”:** full `request.*` / strategy surfaces in HIR+WASM, complete user-fn + library coverage, richer `init`/`step` signatures, and **Aether-invoked** contract tests (single-crate MWVM↔compiler dev-dep blocked on some rustc/toolchain builds; duplicated stub table in the integration test until that is resolved).
+- [x] **Guest module ABI v1 (partial):** import indices and export names/types in [`wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) / [`hir_wasm.rs`](crates/agentscript-compiler/src/codegen/hir_wasm.rs); [`validate_guest_abi_v1`](crates/agentscript-compiler/src/codegen/wasm/abi.rs); docs [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md) + [`docs/agentscript-guest-abi.md`](docs/agentscript-guest-abi.md). **Compiler wasmtime smoke:** [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) calls **`init` + `step`**. **Still open for Phase 2 “done”:** full `request.*` / strategy surfaces in HIR+WASM, complete user-fn + library coverage, optional linear-memory `step` context + **Aether production** contract tests (MWVM↔compiler dev-dep still blocked on some toolchains; duplicated stub table in the integration test until resolved).
 
 ## Phase 3 — Tooling & integration
 
@@ -195,7 +219,7 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 |-------|----------|
 | Library API | `crates/agentscript-compiler` (`parse_script`, AST, `check_script`, `lower_script_to_hir`, `HirScript`, errors) |
 | CLI | `crates/agentscript-compiler/src/main.rs` |
-| Guest ABI v0 constants + validation | [`codegen/wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) (`GUEST_ABI_V0_IMPORTS`, `validate_guest_abi_v0`) |
+| Guest ABI constants + validation | [`codegen/wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) (`GUEST_ABI_V0_IMPORTS`, `validate_guest_abi_v1` / `validate_guest_abi_v0` alias) |
 | wasmtime instantiate smoke (v0 imports) | [`crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) |
 | GitHub issue / PR stubs from ROADMAP | [`docs/github-backlog.md`](docs/github-backlog.md) |
 | Example `.pine` sources (manual / integration-test fixtures) | `examples/` (e.g. [`examples/uptrend.pine`](examples/uptrend.pine)) |

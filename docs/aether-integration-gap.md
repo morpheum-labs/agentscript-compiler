@@ -11,7 +11,7 @@ This document tracks **what is missing** to go from **QAS source** to **Aether b
 | Milestone | Compiler | Aether |
 |-----------|----------|--------|
 | **Stable `.wasm` bytes** | Production `wasm32-unknown-unknown` (or agreed triple) emission; deterministic builds for `wasm_sha256` pins | Consumes `JobSpec::wasm_sha256` + bytes; preflight today |
-| **Guest exports** | Emit `aether_strategy_init` / `aether_strategy_step` (names per ABI doc; finalize **step** signature) | **Does not call exports yet** — `VectorBacktestEngine` still drives results |
+| **Guest exports** | Emit `aether_strategy_init` **`() -> i32`** / `aether_strategy_step` **`(i32) -> i32`** (names per ABI doc) | **Does not call exports in production** — `VectorBacktestEngine` still drives results; compiler wasmtime test calls `init`/`step` |
 | **Guest imports** | Lower `request.*`, `strategy.*`, etc. to WASM **import** declarations matching host | wasmtime path accepts import-less modules; **MWVM imports** need `mwvm-full` / linker story |
 
 **Gap:** No **single** pipeline is “done” until: compiler emits modules that **instantiate under the same rules** Aether uses, **and** the host **invokes** exports and **links** imports (or documents stubs).
@@ -24,7 +24,7 @@ Roughly ordered by dependency.
 
 1. **HIR coverage** — Today: indicator slice (`input.int`, `close`, `ta.sma`, **`ta.ema`**, `request.security`, **`request.financial`** (v0 literals), `plot`, `close[k]`). **Gap:** rest of typed surface, user functions in HIR, full `request.*` shapes (gaps, currency, …), strategy bodies.
 2. **WASM codegen** — **Progress:** `wasm-encoder` emission in [`hir_wasm.rs`](../crates/agentscript-compiler/src/codegen/hir_wasm.rs) for that slice. **Gap:** extend with language coverage; MWVM linker story for all `aether` imports.
-3. **Guest ABI in emitted code** — **Progress:** dual exports + `aether` import table documented in [`agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). **Gap:** evolve `init`/`step` signatures (today v0 preview is `() -> ()`); finalize memory/buffer convention for `step`.
+3. **Guest ABI in emitted code** — **Progress:** dual exports + `aether` import table documented in [`agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md) and mirrored in [`agentscript-guest-abi.md`](agentscript-guest-abi.md). **Done (v1):** `init` **`() -> i32`**, `step` **`(i32 bar_index) -> i32`**; [`validate_guest_abi_v1`](../crates/agentscript-compiler/src/codegen/wasm/abi.rs). **Still open:** optional linear-memory OHLCV layout for a future ABI bump.
 4. **Determinism story** — **Gap:** FP rules, fixed codegen options, optional `cargo_lock_hash` / toolchain metadata for job pins (see Aether ROADMAP optional item).
 5. **Semantics vs Pine v6** — **Gap:** bar model, `var`/`varip`, full builtin registry; see ROADMAP semantics table and `pinescriptv6/` checklist.
 6. **Tooling** — **Progress:** `--emit=wasm` / `hir` / `ast`. **Gap:** `-o`, JSON diagnostics (ROADMAP Phase 3).
@@ -36,7 +36,7 @@ Roughly ordered by dependency.
 1. **Invoke guest exports** after preflight — **Gap:** call `init` / `step` (or agreed batch export) and feed OHLCV / bar index per finalized ABI.
 2. **Contract tests** — **Gap:** CI test: load compiler-emitted (or pinned fixture) WASM → assert exports exist → optional hash match → **call sequence** smoke.
 3. **Host imports** — **Progress:** `aether-mwvm` stubs **`request.security`** (identity on inner) and **`request.financial`** (`0.0`). **Gap:** real oracle / vector engine wiring; `strategy.*` and remaining `request.*`.
-4. **ABI doc completion** — **Gap:** finalize `aether_strategy_step` signature (linear memory layout, ptr/len, or fixed struct).
+4. **ABI doc completion** — **Progress:** v1 `step(bar_index: i32) -> i32` documented. **Gap:** optional ptr/len / struct layout for batched OHLCV (next bump).
 
 ---
 
@@ -52,12 +52,12 @@ Roughly ordered by dependency.
 
 Working backlog — track progress here (markdown checkboxes only).
 
-- [ ] Finalize **step** calling convention in `agentscript-guest-abi.md` (memory + types).
-- [x] Compiler: **emit** WASM with **exports** matching reserved ABI names (v0 preview signatures `() -> ()`; see ABI doc).
+- [x] Finalize **step** calling convention in `agentscript-guest-abi.md` — **v1:** `(i32 bar_index) -> i32`; memory OHLCV deferred.
+- [x] Compiler: **emit** WASM with **exports** matching reserved ABI names (**v1:** `() -> i32` init, `(i32) -> i32` step; see ABI doc).
 - [x] Compiler: **integration test** — emit → `wasmparser` validate → import/export name checks ([`lib.rs` tests](../crates/agentscript-compiler/src/lib.rs)).
 - [x] Compiler: **wasmtime smoke** — `wasmtime::Module::new` accepts emitted bytes (same [`lib.rs`](../crates/agentscript-compiler/src/lib.rs); no host imports linked).
 - [ ] Aether: **integration test** — pinned WASM → instantiate → **call `init` / `step`** (stub memory if needed).
-- [ ] Define **import** module names and function signatures for `request.*` / `strategy.*` in ABI doc.
+- [x] Define **`aether` import** names and signatures for current lowered surface (`request_security`, `request_financial`, …) in ABI doc; **`strategy.*`** still open when codegen lands.
 - [x] Compiler: lower **`request.security`** to **`request_security`** import; Aether MWVM: stub (pass-through inner `f64`).
 - [x] Compiler: lower **`request.financial`** v0 to **`request_financial`** import; Aether MWVM: stub (`0.0`).
 - [ ] Document **one** end-to-end command sequence: `.qas` → `agentscriptc` → `.wasm` → `aether-cli --wasm` (when CLI flags exist).

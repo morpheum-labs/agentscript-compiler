@@ -1,6 +1,7 @@
-//! wasmtime **instantiate** smoke: guest WASM must link against the full v0 `aether` import set.
+//! wasmtime smoke: link full `aether` import set, **instantiate**, call **`aether_strategy_init`** then
+//! **`aether_strategy_step`** in a short loop (guest ABI **v1** export signatures).
 //!
-//! **Sync:** registrations must match `aether-mwvm` `link_aether_guest_abi_v0`
+//! **Sync:** import registrations must match `aether-mwvm` `link_aether_guest_abi_v0`
 //! (`aether/crates/aether-mwvm/src/aether_guest_stubs.rs`) and `GUEST_ABI_V0_IMPORTS` (names + signatures).
 
 use agentscript_compiler::{compile_script_to_wasm_v0, parse_script, GUEST_ABI_V0_IMPORTS};
@@ -64,9 +65,21 @@ fn instantiate_guest_wasm(wasm: &[u8]) {
     let mut linker: Linker<()> = Linker::new(&engine);
     link_aether_guest_abi_v0(&mut linker).expect("link stubs");
     let mut store = Store::new(&engine, ());
-    linker
+    let instance = linker
         .instantiate(&mut store, &module)
         .expect("instantiate with aether imports");
+
+    let init = instance
+        .get_typed_func::<(), i32>(&mut store, "aether_strategy_init")
+        .expect("aether_strategy_init export");
+    let step = instance
+        .get_typed_func::<(i32,), i32>(&mut store, "aether_strategy_step")
+        .expect("aether_strategy_step export");
+
+    assert_eq!(init.call(&mut store, ()).expect("init"), 0);
+    for bar in 0..3 {
+        assert_eq!(step.call(&mut store, (bar,)).expect("step"), 0);
+    }
 }
 
 #[test]

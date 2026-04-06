@@ -1,38 +1,41 @@
-//! Minimal `wasm32` module shape (guest ABI v0 stub).
+//! Minimal `wasm32` module shape (guest ABI scaffold for tests).
 
 use wasm_encoder::{
     CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
-    TypeSection,
+    TypeSection, ValType,
 };
 
-/// Emit a valid WebAssembly module with guest exports `init` and `on_bar` (both `( ) -> ()`).
-///
-/// This is the Phase 2 **scaffold**: same bytes for any successfully lowered script until
-/// `HirScript` drives real codegen.
+/// Emit a valid WebAssembly module with `init` **`() -> i32`** and `on_bar` **`(i32) -> i32`**
+/// (guest ABI v1 export shapes; no `aether` imports — not a full strategy module).
 #[must_use]
 pub fn emit_minimal_guest_wasm_v0() -> Vec<u8> {
     let mut module = Module::new();
 
     let mut types = TypeSection::new();
-    let ty_idx = types.len();
-    types.ty().function([], []);
+    let ty_init = types.len();
+    types.ty().function([], [ValType::I32]);
+    let ty_step = types.len();
+    types.ty().function([ValType::I32], [ValType::I32]);
 
     let mut functions = FunctionSection::new();
-    functions.function(ty_idx);
-    functions.function(ty_idx);
+    functions.function(ty_init);
+    functions.function(ty_step);
 
     let mut exports = ExportSection::new();
     exports.export("init", ExportKind::Func, 0);
     exports.export("on_bar", ExportKind::Func, 1);
 
     let mut code = CodeSection::new();
-    let empty = || {
-        let mut f = Function::new([]);
-        f.instruction(&Instruction::End);
-        f
-    };
-    code.function(&empty());
-    code.function(&empty());
+    let mut init = Function::new([]);
+    init.instruction(&Instruction::I32Const(0));
+    init.instruction(&Instruction::End);
+    code.function(&init);
+
+    // `(i32 bar_index) -> i32`: parameter is local 0; operand stack starts empty.
+    let mut step = Function::new([]);
+    step.instruction(&Instruction::I32Const(0));
+    step.instruction(&Instruction::End);
+    code.function(&step);
 
     module.section(&types);
     module.section(&functions);
