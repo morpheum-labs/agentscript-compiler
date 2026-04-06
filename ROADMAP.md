@@ -61,9 +61,18 @@
 - [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), parse + analyze; `--emit=ast` | `hir` | `wasm` (see [`main.rs`](crates/agentscript-compiler/src/main.rs)).
 - [x] **WASM (HIR subset):** [`compile_script_to_wasm_v0`](crates/agentscript-compiler/src/lib.rs), [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs); `cargo test` validates module + import/export names. Includes **`%`**, **`ta.crossover` / `ta.crossunder`**, **`input.float`**, user-fn bodies where lowered, and **`var` / `varip`** persist globals for supported scripts.
 - [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`; HIR golden in-crate.
-- [x] **Example script coverage:** [`examples/uptrend.pine`](examples/uptrend.pine) (Pine v6–style source) is exercised by **`parse_and_analyze`** in [`parse_smoke.rs`](crates/agentscript-compiler/tests/parse_smoke.rs) (`examples_uptrend_pine_parse_and_analyze`). WASM unit tests still use a **minimal indicator** string because full real-world scripts need additional `ta.*` / series host surface (e.g. `ta.tr`, `ta.atr`, non-`close` series in guest ABI) before `compile_script_to_wasm_v0` can succeed end-to-end.
+- [x] **Example script coverage:** [`examples/uptrend.pine`](examples/uptrend.pine) (Pine v6–style source) is exercised by **`parse_and_analyze`** in [`parse_smoke.rs`](crates/agentscript-compiler/tests/parse_smoke.rs) (`examples_uptrend_pine_parse_and_analyze`). [`examples/weighted_strategy.pine`](examples/weighted_strategy.pine) is a larger manual fixture (not required to parse/analyze in CI yet). WASM unit tests still use a **minimal indicator** string because full real-world scripts need additional `ta.*` / series host surface (e.g. `ta.tr`, `ta.atr`, non-`close` series in guest ABI) before `compile_script_to_wasm_v0` can succeed end-to-end.
 
 **Outstanding work (near term)**
+
+**Latest prioritized backlog** *(confirmed 2026-04-06 against this repo)*
+
+1. **Full span coverage** — replace `Span::DUMMY` on semantic/codegen error paths where the AST or HIR has a real range (starting points: [`early.rs`](crates/agentscript-compiler/src/semantic/passes/early.rs), [`hir_wasm.rs`](crates/agentscript-compiler/src/codegen/hir_wasm.rs), [`wasm/error.rs`](crates/agentscript-compiler/src/codegen/wasm/error.rs); grep `Span::DUMMY` under `crates/agentscript-compiler`).
+2. **Full type system + symbol tables** — imports/exports remain **AST-only** (no module graph); surface `array<>` / `matrix<>` / `map<>` types parsed but not enforced (semantics table).
+3. **`request.security` / `request.financial` end-to-end** — security: partial typecheck + HIR node; financial: **None** in semantics table; both need WASM/host imports + Aether/MWVM fixtures.
+4. **Codegen** — current path is [`GuestWasmV0`](crates/agentscript-compiler/src/codegen/backend.rs) → [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) (`wasm-encoder` bytes). **Not** yet a rustc **`wasm32-unknown-unknown`** (or agreed) artifact unified with **`aether-common`** beyond the written guest ABI doc.
+
+Parallel larger items: **full-language** HIR+WASM, **guest ABI** finalization + Aether invocation + cross-repo contract tests (see “Not started” below and Phase 1–3).
 
 - [x] **Widen HIR lowering** (incremental): `if` / `else if`, user `=>` calls, bool literals, `request.security` gaps/lookahead + typed inner result; still grow builtins / block user bodies / WASM in step.
 - [x] **Wire HIR into the driver**: [`HirLowerPass`](crates/agentscript-compiler/src/semantic/passes/mod.rs) + [`analyze_to_hir_compiler`](crates/agentscript-compiler/src/lib.rs) / [`session_hir`](crates/agentscript-compiler/src/lib.rs); [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) remains for tests and direct tooling.
