@@ -17,6 +17,7 @@ mod visitor;
 
 pub use compiler::WasmCompiler;
 pub use driver::Compiler;
+pub use pipeline::CompilerPipeline;
 pub use pipeline::compile_to_wasm;
 pub use bindings::{NameBinding, SemanticSymbolId};
 pub use frontend::ast::{
@@ -28,13 +29,15 @@ pub use frontend::ast::{
 pub use error::{AnalyzeCompileError, CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
 pub use codegen::{
-    emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, GuestWasmV0, HirCodegenBackend, HirWasmError,
+    emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, AbiValidationError, GuestAbiV0,
+    GuestWasmV0, HirCodegenBackend, HirWasmError, GUEST_ABI_V0_EXPORTS, GUEST_ABI_V0_IMPORTS,
+    validate_guest_abi_v0,
 };
 pub use semantic::{
     analyze_script, check_script, default_passes, default_passes_with_hir, lexical_resolve_script,
     lexical_resolve_script_in_session, resolve_script, resolve_script_in_session, typecheck_script,
     typecheck_script_in_session, AnalyzeError, BreakContinuePass, CompilerPass, EarlyAnalyzePass,
-    HirLowerPass, LexicalResolvePass, ResolverPass, SemanticDiagnostic, TypecheckPass,
+    HirLowerPass, LexicalResolvePass, ResolverPass, SemanticDiagnostic, SemanticPass, TypecheckPass,
 };
 pub use hir::{
     lower_script_to_hir, lower_script_to_hir_in_bump, lower_script_to_hir_in_bump_with_session,
@@ -272,8 +275,6 @@ plot(cmp ? close : 0.0)
     /// Contract: imports (`aether`, …), dual exports (`init` + `aether_strategy_init`, etc.), and `series_hist` when HIR uses `close[k]`.
     #[test]
     fn compile_script_to_wasm_v0_guest_abi_contract() {
-        use wasmparser::{Parser, Payload};
-
         const WITH_CLOSE_HIST: &str = r#"//@version=6
 indicator("t")
 plot(close[1])
@@ -281,59 +282,7 @@ plot(close[1])
 
         let script = parse_script("t", WITH_CLOSE_HIST).expect("parse");
         let wasm = compile_script_to_wasm_v0(&script).expect("compile");
-        wasmparser::validate(&wasm).expect("valid wasm module");
-
-        let mut imports: Vec<(String, String)> = Vec::new();
-        let mut exports: Vec<String> = Vec::new();
-        for payload in Parser::new(0).parse_all(&wasm) {
-            let Ok(p) = payload else { continue };
-            match p {
-                Payload::ImportSection(reader) => {
-                    for imp in reader {
-                        let Ok(i) = imp else { continue };
-                        imports.push((i.module.to_string(), i.name.to_string()));
-                    }
-                }
-                Payload::ExportSection(reader) => {
-                    for exp in reader {
-                        let Ok(e) = exp else { continue };
-                        exports.push(e.name.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        for (module, name) in [
-            ("aether", "series_close"),
-            ("aether", "input_int"),
-            ("aether", "ta_sma"),
-            ("aether", "request_security"),
-            ("aether", "plot"),
-            ("aether", "series_hist"),
-            ("aether", "ta_ema"),
-            ("aether", "input_float"),
-            ("aether", "ta_crossover"),
-            ("aether", "ta_crossunder"),
-        ] {
-            assert!(
-                imports.iter().any(|(m, n)| m == module && n == name),
-                "missing import `{module}::{name}`, have {imports:?}"
-            );
-        }
-
-        for name in [
-            "memory",
-            "init",
-            "on_bar",
-            "aether_strategy_init",
-            "aether_strategy_step",
-        ] {
-            assert!(
-                exports.iter().any(|e| e == name),
-                "missing export `{name}`, have {exports:?}"
-            );
-        }
+        validate_guest_abi_v0(&wasm).expect("guest ABI v0 contract");
     }
 
     #[test]

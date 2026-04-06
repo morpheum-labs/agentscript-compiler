@@ -8,58 +8,21 @@ use wasm_encoder::{
     TypeSection, ValType,
 };
 
-use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
-use crate::hir::{
-    BuiltinKind, HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType,
-    HirUserFunction, SymbolId,
+use crate::codegen::builtin_wasm_emit::{emit_builtin_call, HirWasmEmitContext};
+use crate::codegen::wasm::error::HirWasmError;
+
+#[allow(unused_imports)] // Re-export for API / rustdoc; builtin emission uses `builtin_wasm_emit`.
+pub use crate::codegen::wasm::abi::{
+    GUEST_EXPORT_INIT_ABI, GUEST_EXPORT_INIT_LEGACY, GUEST_EXPORT_STEP_ABI,
+    GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_PLOT,
+    IMPORT_REQUEST_SECURITY, IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIST, IMPORT_TA_CROSSOVER,
+    IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA,
 };
 
-/// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
-pub const IMPORT_SERIES_CLOSE: u32 = 0;
-pub const IMPORT_INPUT_INT: u32 = 1;
-pub const IMPORT_TA_SMA: u32 = 2;
-pub const IMPORT_REQUEST_SECURITY: u32 = 3;
-pub const IMPORT_PLOT: u32 = 4;
-/// Primary series value `offset` bars ago (`close[offset]`); v0 supports [`close`] only in HIR.
-pub const IMPORT_SERIES_HIST: u32 = 5;
-/// EMA on host close stream, same signature as [`IMPORT_TA_SMA`]: `(i32 period) -> f64`.
-pub const IMPORT_TA_EMA: u32 = 6;
-pub const IMPORT_INPUT_FLOAT: u32 = 7;
-/// Stateful host: compares `(a,b)` to previous bar; returns bool as f64 (`0`/`1`).
-pub const IMPORT_TA_CROSSOVER: u32 = 8;
-pub const IMPORT_TA_CROSSUNDER: u32 = 9;
-
-/// First function index defined in the guest module (after all `aether` imports).
-pub const GUEST_FUNC_BASE: u32 = IMPORT_TA_CROSSUNDER + 1;
-
-/// Legacy / CLI-friendly export names (same function indices as [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`]).
-pub const GUEST_EXPORT_INIT_LEGACY: &str = "init";
-pub const GUEST_EXPORT_STEP_LEGACY: &str = "on_bar";
-
-/// Names aligned with `aether_common::guest_abi` (dual-exported with legacy names).
-pub const GUEST_EXPORT_INIT_ABI: &str = "aether_strategy_init";
-pub const GUEST_EXPORT_STEP_ABI: &str = "aether_strategy_step";
-
-/// Wasm codegen failed for this HIR; [`Self::span`] is the best source range (often the offending expression).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("HIR wasm: {message}")]
-pub struct HirWasmError {
-    pub message: String,
-    pub span: Span,
-}
-
-impl HirWasmError {
-    fn at(span: Span, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            span,
-        }
-    }
-
-    fn dummy(message: impl Into<String>) -> Self {
-        Self::at(Span::DUMMY, message)
-    }
-}
+use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
+use crate::hir::{
+    HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType, HirUserFunction, SymbolId,
+};
 
 fn expr_span(hir: &HirScript, id: HirId) -> Span {
     if hir.expr_spans.len() == hir.exprs.len() {
@@ -499,75 +462,7 @@ impl<'a> Ctx<'a> {
                 kind,
                 args,
                 ty: _,
-            } => match kind {
-                BuiltinKind::InputInt => {
-                    if args.len() != 1 {
-                        return Err(HirWasmError::at(span, "input.int arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    // stack: i32 default — for surface `input.int(14)` expr
-                }
-                BuiltinKind::TaSma => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "ta.sma arity"));
-                    }
-                    // Host uses primary series; pass period only (second arg).
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().call(IMPORT_TA_SMA);
-                }
-                BuiltinKind::TaEma => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "ta.ema arity"));
-                    }
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().call(IMPORT_TA_EMA);
-                }
-                BuiltinKind::InputFloat => {
-                    if args.len() != 1 {
-                        return Err(HirWasmError::at(span, "input.float arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                }
-                BuiltinKind::TaCrossover => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "ta.crossover arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().call(IMPORT_TA_CROSSOVER);
-                }
-                BuiltinKind::TaCrossunder => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "ta.crossunder arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().call(IMPORT_TA_CROSSUNDER);
-                }
-                BuiltinKind::MathMax => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "math.max arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().f64_max();
-                }
-                BuiltinKind::MathMin => {
-                    if args.len() != 2 {
-                        return Err(HirWasmError::at(span, "math.min arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    self.emit_expr(func, args[1])?;
-                    func.instructions().f64_min();
-                }
-                BuiltinKind::MathAbs => {
-                    if args.len() != 1 {
-                        return Err(HirWasmError::at(span, "math.abs arity"));
-                    }
-                    self.emit_expr(func, args[0])?;
-                    func.instructions().f64_abs();
-                }
-            },
+            } => emit_builtin_call(*kind, self, func, span, args)?,
             HirExpr::SeriesAccess { base, offset, ty } => {
                 let base_span = expr_span(self.hir, *base);
                 if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
@@ -739,6 +634,12 @@ impl<'a> Ctx<'a> {
                 Ok(())
             }
         }
+    }
+}
+
+impl<'a> HirWasmEmitContext for Ctx<'a> {
+    fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
+        Ctx::emit_expr(self, func, id)
     }
 }
 

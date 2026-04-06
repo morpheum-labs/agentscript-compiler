@@ -1,5 +1,8 @@
 //! Semantic passes after parsing (Phase 1 groundwork).
 //!
+//! **DIP / ISP:** the pluggable seam is [`CompilerPass`] (also exported as [`SemanticPass`]); the
+//! driver holds `Vec<Box<dyn CompilerPass>>` and does not hard-code pass order beyond defaults.
+//!
 //! Today: duplicate definitions, dotted-path roots, `strategy.*` script-kind rules, lexical binding
 //! for unqualified identifiers ([`crate::semantic::passes::lexical`]), and a minimal typechecker
 //! ([`crate::semantic::passes::typecheck`]). Diagnostics carry [`Span`] when the AST provides it.
@@ -19,6 +22,9 @@ pub use passes::{
     typecheck_script_in_session, BreakContinuePass, CompilerPass, EarlyAnalyzePass, HirLowerPass,
     LexicalResolvePass, ResolverPass, TypecheckPass,
 };
+
+/// Second name for [`CompilerPass`] (semantic analysis pipeline step).
+pub use passes::CompilerPass as SemanticPass;
 
 /// One semantic issue at a concrete source range (or [`Span::DUMMY`] when unknown).
 #[derive(Debug, Clone, PartialEq, Eq)]

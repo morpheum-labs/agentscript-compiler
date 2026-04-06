@@ -2,7 +2,8 @@
 
 use crate::hir::HirScript;
 
-use super::hir_wasm::{emit_hir_guest_wasm, HirWasmError};
+use super::hir_wasm::emit_hir_guest_wasm;
+use super::wasm::error::HirWasmError;
 
 /// Emit executable output from a lowered [`HirScript`].
 pub trait HirCodegenBackend {
