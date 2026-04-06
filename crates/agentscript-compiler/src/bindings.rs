@@ -10,7 +10,8 @@ pub struct SemanticSymbolId(pub u32);
 /// Result of resolving an identifier use site (Phase 1: unqualified locals + builtins).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NameBinding {
-    /// User-defined symbol (local, parameter, or hoisted top-level name).
+    /// User-defined symbol: block/local binding, `for`/`for…in` iterator param, function parameter,
+    /// or hoisted top-level name (imports, `f`, enums, UDTs share the same [`SemanticSymbolId`] space).
     Local(SemanticSymbolId),
     /// Known single-segment builtin (`close`, `plot`, …).
     UnqualifiedBuiltin(String),

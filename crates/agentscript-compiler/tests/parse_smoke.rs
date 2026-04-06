@@ -1140,7 +1140,7 @@ n += 1
 fn pine_import_line() {
     let src = "import TradingView/ta/5 as ta\nindicator(\"x\")\n";
     let s = parse_script("t.pine", src).unwrap();
-    let Item::Import(ImportDecl { path, alias }) = &s.items[0] else {
+    let Item::Import(ImportDecl { path, alias, .. }) = &s.items[0] else {
         panic!("expected import");
     };
     assert_eq!(

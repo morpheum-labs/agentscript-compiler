@@ -1,0 +1,202 @@
+---
+source: crates/agentscript-compiler/src/hir/ast_lower.rs
+expression: hir
+---
+HirScript {
+    version: 6,
+    declaration: Indicator {
+        title: Some(
+            "x",
+        ),
+    },
+    inputs: [
+        HirInputDecl {
+            name: "len",
+            default_int: 14,
+        },
+    ],
+    exprs: [
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                1,
+            ),
+            Simple(
+                Primitive(
+                    Int,
+                ),
+            ),
+        ),
+        BuiltinCall {
+            kind: TaSma,
+            args: [
+                HirId(
+                    0,
+                ),
+                HirId(
+                    1,
+                ),
+            ],
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Literal(
+            String(
+                "AAPL",
+            ),
+            Simple(
+                Primitive(
+                    String,
+                ),
+            ),
+        ),
+        Literal(
+            String(
+                "D",
+            ),
+            Simple(
+                Primitive(
+                    String,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                2,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Security(
+            SecurityCall {
+                symbol: HirId(
+                    3,
+                ),
+                timeframe: HirId(
+                    4,
+                ),
+                expression: HirId(
+                    5,
+                ),
+                gaps: WithGaps,
+                lookahead: On,
+                ty: Series(
+                    Primitive(
+                        Float,
+                    ),
+                ),
+            },
+        ),
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        SeriesAccess {
+            base: HirId(
+                7,
+            ),
+            offset: 1,
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                3,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                4,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Add,
+            lhs: HirId(
+                9,
+            ),
+            rhs: HirId(
+                10,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+    ],
+    body: [
+        Let {
+            symbol: SymbolId(
+                2,
+            ),
+            value: HirId(
+                2,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                3,
+            ),
+            value: HirId(
+                6,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                4,
+            ),
+            value: HirId(
+                8,
+            ),
+        },
+        Plot {
+            expr: HirId(
+                11,
+            ),
+            title: None,
+        },
+    ],
+    symbols: SymbolTable {
+        names: [
+            "close",
+            "len",
+            "sma",
+            "htf",
+            "prev",
+        ],
+    },
+}

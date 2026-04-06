@@ -10,6 +10,7 @@ use crate::frontend::ast::{
 };
 use crate::frontend::ast::PrimitiveType;
 use crate::hir::HirType;
+use crate::semantic::builtin_registry;
 use crate::semantic::{AnalyzeError, SemanticDiagnostic};
 use crate::session::CompilerSession;
 
@@ -287,10 +288,14 @@ impl<'a> Checker<'a> {
                 }
                 for (e, st) in cases {
                     let _ = self.type_expr(e);
+                    self.push_scope();
                     self.check_stmt(st);
+                    self.pop_scope();
                 }
                 if let Some(d) = default {
+                    self.push_scope();
                     self.check_stmt(d.as_ref());
+                    self.pop_scope();
                 }
             }
             StmtKind::While { cond, body } => {
@@ -373,18 +378,32 @@ impl<'a> Checker<'a> {
                 if !is_integral(&idx_ty) {
                     self.err(e.span, "series index must be integral");
                 }
-                index_result_type(&base_ty)?
+                match index_result_type(&base_ty) {
+                    Ok(t) => t,
+                    Err(()) => {
+                        self.err(e.span, "cannot subscript this type");
+                        return Err(());
+                    }
+                }
             }
             ExprKind::Array(elts) => {
                 if elts.is_empty() {
-                    HirType::Simple(AstType::Primitive(PrimitiveType::Float))
+                    HirType::Array(Box::new(HirType::Simple(AstType::Primitive(
+                        PrimitiveType::Float,
+                    ))))
                 } else {
                     let mut first = self.type_expr(&elts[0])?;
                     for x in &elts[1..] {
                         let u = self.type_expr(x)?;
-                        first = binary_meet(&first, &u).unwrap_or(first);
+                        first = match binary_meet(&first, &u) {
+                            Some(t) => t,
+                            None => {
+                                self.err(e.span, "array literal elements have incompatible types");
+                                return Err(());
+                            }
+                        };
                     }
-                    first
+                    HirType::Array(Box::new(first))
                 }
             }
             ExprKind::Unary { op, expr } => {
@@ -400,9 +419,10 @@ impl<'a> Checker<'a> {
                         if !is_bool_like(&inner) {
                             self.err(e.span, "unary not expects a boolean operand");
                         }
-                        match inner {
-                            HirType::Series(_) => HirType::Series(AstType::Primitive(PrimitiveType::Bool)),
-                            HirType::Simple(_) => HirType::Simple(AstType::Primitive(PrimitiveType::Bool)),
+                        if is_series_shape(&inner) {
+                            HirType::Series(AstType::Primitive(PrimitiveType::Bool))
+                        } else {
+                            HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
                         }
                     }
                 }
@@ -474,29 +494,39 @@ impl<'a> Checker<'a> {
             arg_tys.push(self.type_expr(e)?);
         }
 
-        match name.as_str() {
-            "ta.sma" | "ta.ema" | "ta.wma" | "ta.rma" => {
-                if arg_tys.len() < 2 {
-                    self.err(
-                        cspan,
-                        format!("`{name}` expects at least two arguments"),
-                    );
-                    return Err(());
-                }
+        if let Some(entry) = builtin_registry::lookup_dotted(name.as_str()) {
+            if arg_tys.len() < entry.min_args {
+                self.err(
+                    cspan,
+                    format!(
+                        "`{}` expects at least {} arguments",
+                        entry.dotted_name,
+                        entry.min_args
+                    ),
+                );
+                return Err(());
+            }
+            if entry.moving_average {
                 let src = promote_numeric_series(coerce_simple_to_series(arg_tys[0].clone()));
                 if !is_numeric(&src) {
                     self.err(
                         cspan,
-                        format!("`{name}`: first argument must be numeric"),
+                        format!("`{}`: first argument must be numeric", name),
                     );
                     return Err(());
                 }
-                if !is_integral(&arg_tys[1]) {
-                    self.err(cspan, format!("`{name}`: length must be integral"));
+                if arg_tys.len() < 2 || !is_integral(&arg_tys[1]) {
+                    self.err(
+                        cspan,
+                        format!("`{}`: length must be integral", name),
+                    );
                     return Err(());
                 }
-                Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
             }
+            return Ok(entry.result.to_hir());
+        }
+
+        match name.as_str() {
             "math.abs" | "math.sqrt" | "math.log" | "math.exp" => {
                 if arg_tys.len() != 1 {
                     self.err(cspan, format!("`{name}` expects one argument"));
@@ -675,21 +705,51 @@ fn param_hir_type(p: &FnParam) -> HirType {
 }
 
 fn var_decl_binding_type(v: &VarDecl) -> HirType {
-    let prim = v
-        .ty
-        .as_ref()
-        .and_then(|t| match t {
-            AstType::Primitive(p) => Some(*p),
-            _ => None,
-        })
-        .unwrap_or(PrimitiveType::Float);
-    let ast = AstType::Primitive(prim);
-    match v.qualifier {
-        Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
-            HirType::Simple(ast)
+    fn elem_hir_for_container(inner: &AstType, q: Option<VarQualifier>) -> HirType {
+        let ast = match inner {
+            AstType::Primitive(p) => AstType::Primitive(*p),
+            _ => AstType::Primitive(PrimitiveType::Float),
+        };
+        match q {
+            Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
+                HirType::Simple(ast)
+            }
+            Some(VarQualifier::Series) | Some(VarQualifier::Var) | Some(VarQualifier::Varip) | None => {
+                HirType::Series(ast)
+            }
         }
-        Some(VarQualifier::Series) | Some(VarQualifier::Var) | Some(VarQualifier::Varip) | None => {
-            HirType::Series(ast)
+    }
+
+    match &v.ty {
+        Some(AstType::Array(elem)) => {
+            HirType::Array(Box::new(elem_hir_for_container(elem.as_ref(), v.qualifier)))
+        }
+        Some(AstType::Matrix(elem)) => {
+            HirType::Matrix(Box::new(elem_hir_for_container(elem.as_ref(), v.qualifier)))
+        }
+        Some(AstType::Primitive(prim)) => {
+            let ast = AstType::Primitive(*prim);
+            match v.qualifier {
+                Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
+                    HirType::Simple(ast)
+                }
+                Some(VarQualifier::Series)
+                | Some(VarQualifier::Var)
+                | Some(VarQualifier::Varip)
+                | None => HirType::Series(ast),
+            }
+        }
+        _ => {
+            let ast = AstType::Primitive(PrimitiveType::Float);
+            match v.qualifier {
+                Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
+                    HirType::Simple(ast)
+                }
+                Some(VarQualifier::Series)
+                | Some(VarQualifier::Var)
+                | Some(VarQualifier::Varip)
+                | None => HirType::Series(ast),
+            }
         }
     }
 }
@@ -808,6 +868,12 @@ fn binary_meet(a: &HirType, b: &HirType) -> Option<HirType> {
     if assignable(b, a) {
         return Some(a.clone());
     }
+    if let (HirType::Array(ea), HirType::Array(eb)) = (a, b) {
+        return binary_meet(ea, eb).map(|e| HirType::Array(Box::new(e)));
+    }
+    if let (HirType::Matrix(ea), HirType::Matrix(eb)) = (a, b) {
+        return binary_meet(ea, eb).map(|e| HirType::Matrix(Box::new(e)));
+    }
     binary_numeric_result(a, b).ok()
 }
 
@@ -815,6 +881,7 @@ fn index_result_type(base: &HirType) -> Result<HirType, ()> {
     match base {
         HirType::Series(a) => Ok(HirType::Series(a.clone())),
         HirType::Simple(AstType::Primitive(p)) => Ok(HirType::Simple(AstType::Primitive(*p))),
+        HirType::Array(elem) | HirType::Matrix(elem) => Ok((**elem).clone()),
         _ => Err(()),
     }
 }
@@ -844,6 +911,8 @@ fn assignable(from: &HirType, to: &HirType) -> bool {
             HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
             HirType::Series(AstType::Primitive(PrimitiveType::Float)),
         ) => true,
+        (HirType::Array(f), HirType::Array(t)) => assignable(f, t),
+        (HirType::Matrix(f), HirType::Matrix(t)) => assignable(f, t),
         _ => false,
     }
 }
@@ -916,6 +985,26 @@ mod tests {
         .unwrap();
         let e = typecheck_script(&bad).unwrap_err();
         assert!(e.message().contains("request.financial"), "{}", e.message());
+    }
+
+    #[test]
+    fn array_literal_promotes_series_and_simple() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = [close, 1.0]\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn array_subscript_yields_element_type() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = [1.0, 2.0]\nb = a[0]\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
     }
 
     #[test]

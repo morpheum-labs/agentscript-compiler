@@ -330,10 +330,14 @@ impl<'a> LexicalCtx<'a> {
                 }
                 for (e, arm) in cases {
                     self.walk_expr(e, context);
+                    self.push_scope();
                     self.walk_stmt(arm, context);
+                    self.pop_scope();
                 }
                 if let Some(d) = default {
-                    self.walk_stmt(d, context);
+                    self.push_scope();
+                    self.walk_stmt(d.as_ref(), context);
+                    self.pop_scope();
                 }
             }
             StmtKind::While { cond, body } => {
@@ -491,6 +495,32 @@ mod tests {
         let s = parse_script(
             "t.pine",
             "indicator(\"x\")\na = 1\n{\n  b = a + 1\n}\n",
+        )
+        .unwrap();
+        lexical_resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn inner_block_var_shadows_outer_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\na = 1\n{\n  var float a = 2.0\n  b = a\n}\n",
+        )
+        .unwrap();
+        lexical_resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn switch_case_arms_have_isolated_scopes() {
+        let s = parse_script(
+            "t.pine",
+            r#"indicator("x")
+x = 1
+switch x {
+    1 => var float y = 1.0
+    2 => var float y = 2.0
+}
+"#,
         )
         .unwrap();
         lexical_resolve_script(&s).unwrap();

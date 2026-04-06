@@ -1,19 +1,21 @@
 //! Known Pine / QAS builtin namespace roots (first segment of `a.b` paths).
 //!
-//! Full signatures live in `pinescriptv6/reference/functions/`; this is only name-resolution glue.
+//! Roots are merged from [`super::builtin_registry`] (data-driven, codegen-ready) plus static
+//! namespaces that exist in Pine but are not yet listed in the registry.
 
 use std::collections::HashSet;
 
+use super::builtin_registry::namespace_roots_from_registry;
+
 /// First path segment accepted for dotted identifiers like `ta.sma`, `request.security`, `mcp.call`.
 pub fn builtin_namespace_roots() -> HashSet<&'static str> {
-    [
-        "ta",
+    let mut s = namespace_roots_from_registry();
+    for root in [
+        "barmerge",
         "strategy",
-        "math",
         "plot",
         "color",
         "input",
-        "str",
         "array",
         "matrix",
         "map",
@@ -47,9 +49,10 @@ pub fn builtin_namespace_roots() -> HashSet<&'static str> {
         "display",
         "currency",
         "format",
-    ]
-    .into_iter()
-    .collect()
+    ] {
+        s.insert(root);
+    }
+    s
 }
 
 /// Single-segment identifiers that resolve without a local binding (matches typecheck globals).

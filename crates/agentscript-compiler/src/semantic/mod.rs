@@ -9,6 +9,7 @@ use std::fmt;
 use crate::frontend::ast::Script;
 use crate::frontend::ast::Span;
 
+pub mod builtin_registry;
 mod builtins;
 pub mod passes;
 

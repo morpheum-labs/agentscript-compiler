@@ -4,8 +4,8 @@ use chumsky::prelude::*;
 
 use crate::frontend::ast::{
     ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern,
-    IfStmt, ImportDecl, Item, NodeId, Script, ScriptDeclaration, ScriptKind, Stmt, StmtKind, Type,
-    UdtField, UserTypeDef, VarDecl, VarQualifier,
+    IfStmt, ImportDecl, Item, NodeId, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind,
+    Type, UdtField, UserTypeDef, VarDecl, VarQualifier,
 };
 
 use super::assign_type::{assign_op, type_parser, type_parser_decl_root, var_qualifier};
@@ -105,10 +105,11 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
         .map_with_span(|(((qual, (ty, name)), _op), value), span| {
+            let sp: Span = span.into();
             Stmt::new(
-                span,
+                sp,
                 StmtKind::VarDecl(VarDecl {
-                    span,
+                    span: sp,
                     qualifier: Some(qual),
                     ty,
                     name,
@@ -128,10 +129,11 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
         .map_with_span(|(((ty, name), _op), value), span| {
+            let sp: Span = span.into();
             Stmt::new(
-                span,
+                sp,
                 StmtKind::VarDecl(VarDecl {
-                    span,
+                    span: sp,
                     qualifier: Some(VarQualifier::Input),
                     ty,
                     name,
@@ -149,10 +151,11 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(pad())
         .then(expr_for_stmt.clone())
         .map_with_span(|(((ty, name), _op), value), span| {
+            let sp: Span = span.into();
             Stmt::new(
-                span,
+                sp,
                 StmtKind::VarDecl(VarDecl {
-                    span,
+                    span: sp,
                     qualifier: None,
                     ty: Some(ty),
                     name,

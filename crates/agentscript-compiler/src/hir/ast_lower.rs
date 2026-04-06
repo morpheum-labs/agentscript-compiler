@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ast::{
-    AssignOp, Expr, ExprKind, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span,
-    Stmt, StmtKind, Type, VarQualifier,
+    AssignOp, BinOp, Expr, ExprKind, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind,
+    Span, Stmt, StmtKind, Type, VarQualifier,
 };
 
 use super::builtin::BuiltinKind;
@@ -99,6 +99,18 @@ impl LowerCtx {
         let id = HirId(self.exprs.len() as u32);
         self.exprs.push(e);
         id
+    }
+
+    fn expr_hir_type(&self, id: HirId) -> HirType {
+        match &self.exprs[id.0 as usize] {
+            HirExpr::Literal(_, ty) => ty.clone(),
+            HirExpr::Variable(_, ty) => ty.clone(),
+            HirExpr::Binary { ty, .. } => ty.clone(),
+            HirExpr::BuiltinCall { ty, .. } => ty.clone(),
+            HirExpr::SeriesAccess { ty, .. } => ty.clone(),
+            HirExpr::Security(sec) => sec.ty.clone(),
+            HirExpr::Plot { .. } => HirType::Series(Type::Primitive(PrimitiveType::Float)),
+        }
     }
 
     fn lower_script(&mut self, script: &Script) -> Result<HirScript, HirLowerError> {
@@ -214,11 +226,13 @@ impl LowerCtx {
                     body.push(plot);
                     return Ok(());
                 }
-                Err(HirLowerError::unsupported(
+                Err(HirLowerError::at(
+                    stmt.span,
                     "only `plot(...)` expression statements are supported in this pass",
                 ))
             }
-            _ => Err(HirLowerError::unsupported(
+            _ => Err(HirLowerError::at(
+                stmt.span,
                 "statement kind not supported by this HIR lowering pass",
             )),
         }
@@ -238,30 +252,70 @@ impl LowerCtx {
                 HirLiteral::String(s.clone()),
                 HirType::Simple(Type::Primitive(PrimitiveType::String)),
             ))),
-            ExprKind::IdentPath(path) => self.lower_ident_path(path),
+            ExprKind::Index { base, index } => {
+                let base_id = self.lower_expr(base.as_ref())?;
+                let idx = index.as_ref();
+                let offset = match &idx.kind {
+                    ExprKind::Int(i) if *i >= 0 && *i <= i64::from(i32::MAX) => *i as i32,
+                    _ => {
+                        return Err(HirLowerError::at(
+                            idx.span,
+                            "series history index must be a non-negative integer literal in this HIR pass",
+                        ));
+                    }
+                };
+                let ty = self.expr_hir_type(base_id);
+                Ok(self.alloc_expr(HirExpr::SeriesAccess {
+                    base: base_id,
+                    offset,
+                    ty,
+                }))
+            }
+            ExprKind::IdentPath(path) => self.lower_ident_path(path, e.span),
+            ExprKind::Binary { op, left, right } => {
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {}
+                    _ => {
+                        return Err(HirLowerError::at(
+                            e.span,
+                            "binary operator not supported by this HIR lowering pass",
+                        ));
+                    }
+                }
+                let lhs = self.lower_expr(left.as_ref())?;
+                let rhs = self.lower_expr(right.as_ref())?;
+                Ok(self.alloc_expr(HirExpr::Binary {
+                    op: *op,
+                    lhs,
+                    rhs,
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                }))
+            }
             ExprKind::Call {
                 callee,
                 type_args,
                 args,
             } => {
                 if type_args.is_some() {
-                    return Err(HirLowerError::unsupported(
+                    return Err(HirLowerError::at(
+                        callee.span,
                         "generic calls are not supported in this HIR lowering pass",
                     ));
                 }
-                self.lower_call(callee.as_ref(), args)
+                self.lower_call(callee.as_ref(), args, e.span)
             }
-            _ => Err(HirLowerError::unsupported(
+            _ => Err(HirLowerError::at(
+                e.span,
                 "expression kind not supported by this HIR lowering pass",
             )),
         }
     }
 
-    fn lower_ident_path(&mut self, path: &[String]) -> Result<HirId, HirLowerError> {
+    fn lower_ident_path(&mut self, path: &[String], span: Span) -> Result<HirId, HirLowerError> {
         if path.len() == 1 {
             let name = &path[0];
             let id = *self.names.get(name.as_str()).ok_or_else(|| {
-                HirLowerError::unsupported(format!("unknown identifier `{name}`"))
+                HirLowerError::at(span, format!("unknown identifier `{name}`"))
             })?;
             let ty = if name == "close" {
                 HirType::Series(Type::Primitive(PrimitiveType::Float))
@@ -272,21 +326,26 @@ impl LowerCtx {
             };
             return Ok(self.alloc_expr(HirExpr::Variable(id, ty)));
         }
-        Err(HirLowerError::unsupported(format!(
-            "qualified identifier `{}` not supported",
-            path.join(".")
-        )))
+        Err(HirLowerError::at(
+            span,
+            format!(
+                "qualified identifier `{}` not supported",
+                path.join(".")
+            ),
+        ))
     }
 
     fn lower_call(
         &mut self,
         callee: &Expr,
         args: &[(Option<String>, Expr)],
+        expr_span: Span,
     ) -> Result<HirId, HirLowerError> {
         let path = match &callee.kind {
             ExprKind::IdentPath(p) => p.as_slice(),
             _ => {
-                return Err(HirLowerError::unsupported(
+                return Err(HirLowerError::at(
+                    callee.span,
                     "only simple path callees are supported",
                 ));
             }
@@ -294,12 +353,16 @@ impl LowerCtx {
 
         if path == ["input", "int"] {
             if args.len() != 1 {
-                return Err(HirLowerError::unsupported("input.int expects one argument"));
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "input.int expects one argument",
+                ));
             }
             let n = match &args[0].1.kind {
                 ExprKind::Int(i) => *i,
                 _ => {
-                    return Err(HirLowerError::unsupported(
+                    return Err(HirLowerError::at(
+                        args[0].1.span,
                         "input.int default must be an integer literal in this pass",
                     ));
                 }
@@ -317,7 +380,7 @@ impl LowerCtx {
 
         if path == ["ta", "sma"] {
             if args.len() != 2 {
-                return Err(HirLowerError::unsupported("ta.sma expects two arguments"));
+                return Err(HirLowerError::at(expr_span, "ta.sma expects two arguments"));
             }
             let a0 = self.lower_expr(&args[0].1)?;
             let a1 = self.lower_expr(&args[1].1)?;
@@ -329,35 +392,104 @@ impl LowerCtx {
         }
 
         if path == ["request", "security"] {
-            if args.len() != 3 {
-                return Err(HirLowerError::unsupported(
-                    "request.security expects three arguments in this pass",
+            if args.len() < 3 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "request.security expects at least three arguments (symbol, timeframe, expression)",
                 ));
             }
             let sym = self.lower_expr(&args[0].1)?;
             let tf = self.lower_expr(&args[1].1)?;
             let inner = self.lower_expr(&args[2].1)?;
+            let mut gaps = GapMode::NoGaps;
+            let mut lookahead = Lookahead::Off;
+            let mut gaps_set = false;
+            let mut lookahead_set = false;
+            for (nm, ex) in args.iter().skip(3) {
+                match nm.as_deref() {
+                    Some("gaps") => {
+                        gaps = gap_mode_from_expr(ex);
+                        gaps_set = true;
+                    }
+                    Some("lookahead") => {
+                        lookahead = lookahead_from_expr(ex);
+                        lookahead_set = true;
+                    }
+                    _ => {}
+                }
+            }
+            let positional: Vec<&Expr> = args
+                .iter()
+                .skip(3)
+                .filter(|(n, _)| n.is_none())
+                .map(|(_, ex)| ex)
+                .collect();
+            if !gaps_set {
+                if let Some(ex) = positional.first() {
+                    gaps = gap_mode_from_expr(ex);
+                }
+            }
+            if !lookahead_set {
+                if let Some(ex) = positional.get(1) {
+                    lookahead = lookahead_from_expr(ex);
+                }
+            }
             let sec = SecurityCall {
                 symbol: sym,
                 timeframe: tf,
                 expression: inner,
-                gaps: GapMode::NoGaps,
-                lookahead: Lookahead::Off,
+                gaps,
+                lookahead,
                 ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
             };
             return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec))));
         }
 
         if path == ["plot"] {
-            return Err(HirLowerError::unsupported(
+            return Err(HirLowerError::at(
+                expr_span,
                 "use `plot(expr)` as a statement, not as a nested expression",
             ));
         }
 
-        Err(HirLowerError::unsupported(format!(
-            "call `{}` not supported",
-            path.join(".")
-        )))
+        Err(HirLowerError::at(
+            expr_span,
+            format!("call `{}` not supported", path.join(".")),
+        ))
+    }
+}
+
+fn path_tail_from_expr(e: &Expr) -> Option<Vec<String>> {
+    match &e.kind {
+        ExprKind::IdentPath(p) => Some(p.clone()),
+        ExprKind::Member { base, field } => {
+            let mut p = path_tail_from_expr(base.as_ref())?;
+            p.push(field.clone());
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+fn gap_mode_from_expr(e: &Expr) -> GapMode {
+    let Some(p) = path_tail_from_expr(e) else {
+        return GapMode::NoGaps;
+    };
+    if p.len() == 2 && p[0] == "barmerge" && p[1] == "gaps_on" {
+        GapMode::WithGaps
+    } else {
+        GapMode::NoGaps
+    }
+}
+
+fn lookahead_from_expr(e: &Expr) -> Lookahead {
+    let Some(p) = path_tail_from_expr(e) else {
+        return Lookahead::Off;
+    };
+    if p.len() == 2 && p[0] == "barmerge" && p[1] == "lookahead_on" {
+        Lookahead::On
+    } else {
+        Lookahead::Off
     }
 }
 
@@ -381,7 +513,10 @@ fn try_plot_stmt(lower: &mut LowerCtx, e: &Expr) -> Result<Option<HirStmt>, HirL
         return Ok(None);
     }
     if args.is_empty() {
-        return Err(HirLowerError::unsupported("plot needs at least one argument"));
+        return Err(HirLowerError::at(
+            e.span,
+            "plot needs at least one argument",
+        ));
     }
     let expr = lower.lower_expr(&args[0].1)?;
     let title = args.get(1).and_then(|(_, ex)| match &ex.kind {
@@ -407,7 +542,8 @@ fn int_default_from_expr(e: &Expr) -> Result<i64, HirLowerError> {
             if let Some(n) = try_input_int_default(e) {
                 return Ok(n);
             }
-            Err(HirLowerError::unsupported(
+            Err(HirLowerError::at(
+                e.span,
                 "input declaration default must be an int literal or input.int(int)",
             ))
         }
@@ -471,5 +607,22 @@ plot(htf)
             c.session.hir.is_some(),
             "tiny indicator should lower into HIR when HirLowerPass runs"
         );
+    }
+
+    const SAMPLE_SERIES_SECURITY: &str = r#"//@version=6
+indicator("x")
+len = input.int(14)
+sma = ta.sma(close, len)
+htf = request.security("AAPL", "D", sma, barmerge.gaps_on, barmerge.lookahead_on)
+prev = close[1]
+plot(htf + prev)
+"#;
+
+    #[test]
+    fn golden_series_access_and_security_options() {
+        let script = parse_script("test", SAMPLE_SERIES_SECURITY).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let hir = lower_script_to_hir(&script).expect("lower");
+        assert_debug_snapshot!(hir);
     }
 }

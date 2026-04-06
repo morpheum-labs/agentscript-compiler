@@ -9,4 +9,8 @@ use crate::frontend::ast::Type as AstType;
 pub enum HirType {
     Simple(AstType),
     Series(AstType),
+    /// Homogeneous array (`[a, b]` or `float[]`): element type carries series/simple per Pine rules.
+    Array(Box<HirType>),
+    /// Row-major matrix type surface (`matrix<float>`): element series/simple like arrays.
+    Matrix(Box<HirType>),
 }

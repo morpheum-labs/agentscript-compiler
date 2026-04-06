@@ -1,6 +1,6 @@
 //! Single-responsibility semantic passes (Phase 1 groundwork).
 
-use crate::frontend::ast::{Script, Span};
+use crate::frontend::ast::Script;
 use crate::hir::lower_script_to_hir;
 use crate::session::CompilerSession;
 
@@ -102,7 +102,7 @@ impl CompilerPass for HirLowerPass {
                 session.hir = Some(hir);
                 Ok(())
             }
-            Err(e) => Err(AnalyzeError::single(e.to_string(), Span::DUMMY)),
+            Err(e) => Err(AnalyzeError::single(e.message, e.span)),
         }
     }
 }
