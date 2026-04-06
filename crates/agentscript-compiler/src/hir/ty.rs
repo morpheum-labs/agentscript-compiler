@@ -166,7 +166,22 @@ pub fn assignable(from: &HirType, to: &HirType) -> bool {
 /// Equality operand compatibility; see `spec/hir.md` (“Typing notes: equality and `na`”).
 #[must_use]
 pub fn type_compatible_eq(a: &HirType, b: &HirType) -> bool {
-    assignable(a, b) || assignable(b, a) || (is_numeric(a) && is_numeric(b))
+    if assignable(a, b) || assignable(b, a) || (is_numeric(a) && is_numeric(b)) {
+        return true;
+    }
+    matches!(
+        (a, b),
+        (
+            HirType::Simple(AstType::Named(n1)),
+            HirType::Simple(AstType::Named(n2))
+        ) if n1 == n2
+    ) || matches!(
+        (a, b),
+        (
+            HirType::Series(AstType::Named(n1)),
+            HirType::Series(AstType::Named(n2))
+        ) if n1 == n2
+    )
 }
 
 /// Unify types for `?:`, `if` expressions, and homogeneous array literals (greatest lower bound).

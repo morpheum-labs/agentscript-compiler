@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use crate::frontend::ast::{
     AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, FnParam, IfStmt, Item,
-    NodeId, Script, ScriptDeclaration, Span, Stmt, StmtKind, Type as AstType, UnaryOp, VarDecl,
-    VarQualifier,
+    NodeId, Script, ScriptDeclaration, Span, Stmt, StmtKind, Type as AstType, UdtField, UnaryOp,
+    VarDecl, VarQualifier,
 };
 use crate::frontend::ast::PrimitiveType;
 use crate::hir::{
@@ -47,6 +47,10 @@ struct Checker<'a> {
     import_aliases: HashMap<String, HirType>,
     /// `f name(...)` / `name(...) =>` declarations (name → params + return type).
     fn_sigs: HashMap<String, FnSig>,
+    /// `enum E { a = expr }` → variant name → value type (from initializer expression).
+    enum_variants: HashMap<String, HashMap<String, HirType>>,
+    /// `type T { float x = ... }` → field name → field binding type.
+    udt_fields: HashMap<String, HashMap<String, HirType>>,
     scopes: Vec<HashMap<String, HirType>>,
     issues: Vec<SemanticDiagnostic>,
     session: &'a mut CompilerSession,
@@ -67,6 +71,8 @@ impl<'a> Checker<'a> {
         Self {
             import_aliases,
             fn_sigs,
+            enum_variants: HashMap::new(),
+            udt_fields: HashMap::new(),
             scopes: vec![HashMap::new()],
             issues: Vec::new(),
             session,
@@ -109,10 +115,33 @@ impl<'a> Checker<'a> {
 
     fn check_script(&mut self, script: &Script) -> Result<(), AnalyzeError> {
         self.collect_top_level_definitions(script);
+        self.collect_enum_and_udt_members(script);
         for item in &script.items {
             self.check_item(item);
         }
         self.finish_result()
+    }
+
+    fn collect_enum_and_udt_members(&mut self, script: &Script) {
+        for item in &script.items {
+            match item {
+                Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
+                    let mut vm = HashMap::new();
+                    for v in &e.variants {
+                        vm.insert(v.name.clone(), enum_variant_init_ty(&v.value));
+                    }
+                    self.enum_variants.insert(e.name.clone(), vm);
+                }
+                Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
+                    let mut fm = HashMap::new();
+                    for fld in &t.fields {
+                        fm.insert(fld.name.clone(), udt_field_hir_type(fld));
+                    }
+                    self.udt_fields.insert(t.name.clone(), fm);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn collect_top_level_definitions(&mut self, script: &Script) {
@@ -529,6 +558,32 @@ impl<'a> Checker<'a> {
         self.define_at(decl_span, &v.name, binding);
     }
 
+    fn type_expr_member(
+        &mut self,
+        e: &Expr,
+        base: &Expr,
+        field: &str,
+    ) -> Result<HirType, ()> {
+        let base_ty = self.type_expr(base)?;
+        if let HirType::Simple(AstType::Named(n)) | HirType::Series(AstType::Named(n)) = &base_ty {
+            if let Some(vm) = self.enum_variants.get(n) {
+                if let Some(t) = vm.get(field) {
+                    return Ok(t.clone());
+                }
+            }
+            if let Some(fm) = self.udt_fields.get(n) {
+                if let Some(t) = fm.get(field) {
+                    return Ok(t.clone());
+                }
+            }
+        }
+        self.err(
+            e.span,
+            format!("unknown field or enum variant `{field}` for this expression type"),
+        );
+        Err(())
+    }
+
     fn type_expr(&mut self, e: &Expr) -> Result<HirType, ()> {
         let t = match &e.kind {
             ExprKind::Int(_) => HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
@@ -540,10 +595,7 @@ impl<'a> Checker<'a> {
                 HirType::Simple(AstType::Primitive(PrimitiveType::Color))
             }
             ExprKind::IdentPath(path) => self.type_ident_path(path, e.span)?,
-            ExprKind::Member { base, field: _ } => {
-                let _base = self.type_expr(base)?;
-                HirType::Series(AstType::Primitive(PrimitiveType::Float))
-            }
+            ExprKind::Member { base, field } => self.type_expr_member(e, base.as_ref(), field)?,
             ExprKind::Call {
                 callee,
                 type_args: _,
@@ -1141,8 +1193,55 @@ fn infer_return_from_block(checker: &mut Checker, stmts: &[Stmt]) -> HirType {
     default_fn_return_hir()
 }
 
-fn fn_decl_type(_f: &FnDecl) -> HirType {
-    HirType::Simple(AstType::Primitive(PrimitiveType::Float))
+fn fn_decl_type(f: &FnDecl) -> HirType {
+    HirType::Simple(AstType::Named(f.name.clone()))
+}
+
+/// Enum variant initializer type for member lookup (`E.a`); non-literals default to int (Pine-style).
+fn enum_variant_init_ty(e: &Expr) -> HirType {
+    match &e.kind {
+        ExprKind::Int(_) => HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
+        ExprKind::Float(_) => HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
+        ExprKind::Bool(_) => HirType::Simple(AstType::Primitive(PrimitiveType::Bool)),
+        ExprKind::String(_) => HirType::Simple(AstType::Primitive(PrimitiveType::String)),
+        _ => HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
+    }
+}
+
+fn udt_field_hir_type(f: &UdtField) -> HirType {
+    fn elem_for(inner: &AstType, q: Option<VarQualifier>) -> HirType {
+        let ast = match inner {
+            AstType::Primitive(p) => AstType::Primitive(*p),
+            _ => AstType::Primitive(PrimitiveType::Float),
+        };
+        match q {
+            Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
+                HirType::Simple(ast)
+            }
+            Some(VarQualifier::Series)
+            | Some(VarQualifier::Var)
+            | Some(VarQualifier::Varip)
+            | None => HirType::Series(ast),
+        }
+    }
+
+    match &f.ty {
+        AstType::Array(elem) => HirType::Array(Box::new(elem_for(elem.as_ref(), f.qualifier))),
+        AstType::Matrix(elem) => HirType::Matrix(Box::new(elem_for(elem.as_ref(), f.qualifier))),
+        AstType::Primitive(prim) => {
+            let ast = AstType::Primitive(*prim);
+            match f.qualifier {
+                Some(VarQualifier::Simple) | Some(VarQualifier::Const) | Some(VarQualifier::Input) => {
+                    HirType::Simple(ast)
+                }
+                Some(VarQualifier::Series)
+                | Some(VarQualifier::Var)
+                | Some(VarQualifier::Varip)
+                | None => HirType::Series(ast),
+            }
+        }
+        _ => HirType::Series(AstType::Primitive(PrimitiveType::Float)),
+    }
 }
 
 fn fn_sig_from_decl(f: &FnDecl) -> FnSig {
@@ -1577,5 +1676,60 @@ mod tests {
         .unwrap();
         let e = typecheck_script(&bad).unwrap_err();
         assert!(e.message().contains("ta.macd"), "{}", e.message());
+    }
+
+    #[test]
+    fn enum_member_access_yields_variant_type() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nenum Side { buy = 1, sell = 2 }\nx = Side.buy\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn udt_field_access_yields_field_type() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ntype Bar { float o = 1.0 }\ny = Bar.o\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn unknown_enum_member_rejected() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nenum Side { buy = 1 }\nx = Side.nope\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&s).unwrap_err();
+        assert!(
+            e.message().contains("nope") || e.message().contains("unknown"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn na_equality_with_series_float_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nb = close == na\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn na_assignable_to_float_series_var() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nx = na\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
     }
 }
