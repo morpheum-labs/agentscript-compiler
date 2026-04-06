@@ -13,42 +13,7 @@ HirScript {
     exprs: [
         Variable(
             SymbolId(
-                0,
-            ),
-            Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        ),
-        UserCall {
-            callee: SymbolId(
-                1,
-            ),
-            args: [
-                HirId(
-                    0,
-                ),
-            ],
-            ty: Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        },
-        Variable(
-            SymbolId(
                 2,
-            ),
-            Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        ),
-        Variable(
-            SymbolId(
-                3,
             ),
             Series(
                 Primitive(
@@ -69,11 +34,46 @@ HirScript {
         Binary {
             op: Mul,
             lhs: HirId(
-                3,
+                0,
             ),
             rhs: HirId(
-                4,
+                1,
             ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                3,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        UserCall {
+            callee: SymbolId(
+                1,
+            ),
+            args: [
+                HirId(
+                    4,
+                ),
+            ],
             ty: Series(
                 Primitive(
                     Float,
@@ -94,15 +94,15 @@ HirScript {
     body: [
         Let {
             symbol: SymbolId(
-                2,
+                4,
             ),
             value: HirId(
-                1,
+                5,
             ),
         },
         Plot {
             expr: HirId(
-                2,
+                6,
             ),
             title: None,
         },
@@ -114,21 +114,21 @@ HirScript {
             ),
             params: [
                 SymbolId(
-                    3,
+                    2,
                 ),
             ],
             body_stmts: [
                 Let {
                     symbol: SymbolId(
-                        4,
+                        3,
                     ),
                     value: HirId(
-                        5,
+                        2,
                     ),
                 },
             ],
             result: HirId(
-                6,
+                3,
             ),
         },
     ],
@@ -136,9 +136,9 @@ HirScript {
         names: [
             "close",
             "g",
-            "z",
             "a",
             "t",
+            "z",
         ],
     },
 }

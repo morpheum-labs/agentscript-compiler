@@ -1,6 +1,5 @@
 ---
 source: crates/agentscript-compiler/src/hir/ast_lower.rs
-assertion_line: 944
 expression: "c.session.hir.as_ref().expect(\"hir\")"
 ---
 HirScript {
@@ -14,52 +13,7 @@ HirScript {
     exprs: [
         Variable(
             SymbolId(
-                0,
-            ),
-            Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        ),
-        UserCall {
-            callee: SymbolId(
-                1,
-            ),
-            args: [
-                HirId(
-                    0,
-                ),
-            ],
-            ty: Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        },
-        Literal(
-            Bool(
-                true,
-            ),
-            Simple(
-                Primitive(
-                    Bool,
-                ),
-            ),
-        ),
-        Variable(
-            SymbolId(
                 2,
-            ),
-            Series(
-                Primitive(
-                    Float,
-                ),
-            ),
-        ),
-        Variable(
-            SymbolId(
-                3,
             ),
             Series(
                 Primitive(
@@ -80,10 +34,10 @@ HirScript {
         Binary {
             op: Mul,
             lhs: HirId(
-                4,
+                0,
             ),
             rhs: HirId(
-                5,
+                1,
             ),
             ty: Series(
                 Primitive(
@@ -91,24 +45,69 @@ HirScript {
                 ),
             ),
         },
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        UserCall {
+            callee: SymbolId(
+                1,
+            ),
+            args: [
+                HirId(
+                    3,
+                ),
+            ],
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Literal(
+            Bool(
+                true,
+            ),
+            Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                3,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
     ],
     body: [
         Let {
             symbol: SymbolId(
-                2,
+                3,
             ),
             value: HirId(
-                1,
+                4,
             ),
         },
         If {
             cond: HirId(
-                2,
+                5,
             ),
             then_branch: [
                 Plot {
                     expr: HirId(
-                        3,
+                        6,
                     ),
                     title: None,
                 },
@@ -123,12 +122,12 @@ HirScript {
             ),
             params: [
                 SymbolId(
-                    3,
+                    2,
                 ),
             ],
             body_stmts: [],
             result: HirId(
-                6,
+                2,
             ),
         },
     ],
@@ -136,8 +135,8 @@ HirScript {
         names: [
             "close",
             "f",
-            "y",
             "x",
+            "y",
         ],
     },
 }
