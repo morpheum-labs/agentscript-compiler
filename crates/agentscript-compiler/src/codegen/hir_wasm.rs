@@ -98,8 +98,11 @@ fn hir_ty_to_val(ty: &HirType) -> Result<ValType, HirWasmError> {
         HirType::Simple(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::I32),
         HirType::Simple(AstType::Primitive(PrimitiveType::Float))
         | HirType::Series(AstType::Primitive(PrimitiveType::Float)) => Ok(ValType::F64),
+        // Boolean conditions and comparisons are encoded as f64 0/1 in the guest v0 pipeline.
+        HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
+        | HirType::Series(AstType::Primitive(PrimitiveType::Bool)) => Ok(ValType::F64),
         _ => Err(HirWasmError::dummy(
-            "only i32 and f64 HIR types are supported in wasm codegen",
+            "only i32, f64, and bool-as-f64 HIR types are supported in wasm codegen",
         )),
     }
 }
@@ -170,7 +173,8 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         HirExpr::Binary { ty, .. }
         | HirExpr::BuiltinCall { ty, .. }
         | HirExpr::UserCall { ty, .. }
-        | HirExpr::SeriesAccess { ty, .. } => ty,
+        | HirExpr::SeriesAccess { ty, .. }
+        | HirExpr::Select { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::at(
@@ -254,25 +258,96 @@ impl<'a> Ctx<'a> {
                 rhs,
                 ty,
             } => {
-                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
-                {
-                    return Err(HirWasmError::at(span, "only f64 binary ops for wasm"));
-                }
-                self.emit_expr(func, *lhs)?;
-                self.emit_expr(func, *rhs)?;
-                let mut ins = func.instructions();
+                let valty = hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))?;
                 match op {
-                    BinOp::Add => ins.f64_add(),
-                    BinOp::Sub => ins.f64_sub(),
-                    BinOp::Mul => ins.f64_mul(),
-                    BinOp::Div => ins.f64_div(),
+                    BinOp::And | BinOp::Or if valty == ValType::F64 => {
+                        self.emit_expr(func, *lhs)?;
+                        func.instructions().f64_const(0.0);
+                        func.instructions().f64_ne();
+                        self.emit_expr(func, *rhs)?;
+                        func.instructions().f64_const(0.0);
+                        func.instructions().f64_ne();
+                        if *op == BinOp::And {
+                            func.instructions().i32_and();
+                        } else {
+                            func.instructions().i32_or();
+                        }
+                        func.instructions().f64_convert_i32_u();
+                    }
+                    _ if valty == ValType::F64 => {
+                        self.emit_expr(func, *lhs)?;
+                        self.emit_expr(func, *rhs)?;
+                        let mut ins = func.instructions();
+                        match op {
+                            BinOp::Add => ins.f64_add(),
+                            BinOp::Sub => ins.f64_sub(),
+                            BinOp::Mul => ins.f64_mul(),
+                            BinOp::Div => ins.f64_div(),
+                            BinOp::Mod => {
+                                return Err(HirWasmError::at(
+                                    span,
+                                    "f64 remainder (`%`) not supported in wasm v0",
+                                ));
+                            }
+                            BinOp::Eq => {
+                                ins.f64_eq();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::Ne => {
+                                ins.f64_ne();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::Lt => {
+                                ins.f64_lt();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::Le => {
+                                ins.f64_le();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::Gt => {
+                                ins.f64_gt();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::Ge => {
+                                ins.f64_ge();
+                                ins.f64_convert_i32_u();
+                            }
+                            BinOp::And | BinOp::Or => {
+                                return Err(HirWasmError::at(
+                                    span,
+                                    "internal: And/Or handled above",
+                                ));
+                            }
+                        };
+                    }
                     _ => {
                         return Err(HirWasmError::at(
                             span,
-                            "binary operator not supported in wasm codegen",
+                            "binary result type not supported in wasm codegen",
                         ));
                     }
-                };
+                }
+            }
+            HirExpr::Select {
+                cond,
+                then_b,
+                else_b,
+                ty,
+            } => {
+                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
+                {
+                    return Err(HirWasmError::at(
+                        span,
+                        "select/ternary wasm v0 requires f64 result type",
+                    ));
+                }
+                self.emit_expr(func, *else_b)?;
+                self.emit_expr(func, *then_b)?;
+                self.emit_expr(func, *cond)?;
+                func.instructions().f64_const(0.0);
+                func.instructions().f64_ne();
+                func.instructions().select();
             }
             HirExpr::BuiltinCall {
                 kind,
