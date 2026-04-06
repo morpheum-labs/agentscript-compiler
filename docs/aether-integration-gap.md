@@ -49,7 +49,7 @@ Roughly ordered by dependency.
 
 ## 5. Checklist (close the gap)
 
-Use this as a working backlog (also tracked in project TODOs where applicable).
+Working backlog — track progress here (markdown checkboxes only).
 
 - [ ] Finalize **step** calling convention in `agentscript-guest-abi.md` (memory + types).
 - [ ] Compiler: **emit** WASM with **exports** matching ABI v`guest_abi::VERSION`.

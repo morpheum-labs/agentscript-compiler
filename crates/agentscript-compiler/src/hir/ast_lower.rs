@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ast::{
-    AssignOp, Expr, ExprKind, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind, Stmt,
-    StmtKind, Type, VarQualifier,
+    AssignOp, Expr, ExprKind, Item, PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span,
+    Stmt, StmtKind, Type, VarQualifier,
 };
 
 use super::builtin::BuiltinKind;
@@ -24,12 +24,25 @@ use super::ty::HirType;
 
 /// Lowering failed: construct not in the supported subset.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("HIR lowering: {0}")]
-pub struct HirLowerError(pub String);
+#[error("HIR lowering: {message}")]
+pub struct HirLowerError {
+    pub message: String,
+    pub span: Span,
+}
 
 impl HirLowerError {
     fn unsupported(msg: impl Into<String>) -> Self {
-        Self(msg.into())
+        Self {
+            message: msg.into(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn at(span: Span, msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            span,
+        }
     }
 }
 
@@ -106,7 +119,13 @@ impl LowerCtx {
                 Item::Stmt(stmt) => {
                     self.lower_top_stmt(stmt, &mut inputs, &mut body)?;
                 }
-                Item::Import(_) | Item::Export(_) | Item::FnDecl(_) | Item::Enum(_) | Item::TypeDef(_) => {
+                Item::Import(i) => {
+                    return Err(HirLowerError::at(
+                        i.span,
+                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
+                    ));
+                }
+                Item::Export(_) | Item::FnDecl(_) | Item::Enum(_) | Item::TypeDef(_) => {
                     return Err(HirLowerError::unsupported(
                         "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
                     ));
@@ -158,7 +177,8 @@ impl LowerCtx {
                     return Ok(());
                 }
                 if v.qualifier.is_some() || v.ty.is_some() {
-                    return Err(HirLowerError::unsupported(
+                    return Err(HirLowerError::at(
+                        v.span,
                         "only plain `name = expr` or `input …` declarations are supported",
                     ));
                 }

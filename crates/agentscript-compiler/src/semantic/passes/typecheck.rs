@@ -140,7 +140,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Export(ExportDecl::Var(v)) => {
-                self.check_var_decl(v, Span::DUMMY);
+                self.check_var_decl(v, v.span);
             }
             Item::Import(_) => {}
         }

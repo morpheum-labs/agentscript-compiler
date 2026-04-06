@@ -25,7 +25,10 @@ pub fn max_node_id(script: &Script) -> u32 {
 
 fn assign_item(item: &mut Item, next: &mut u32) {
     match item {
-        Item::Import(_) => {}
+        Item::Import(i) => {
+            i.id = NodeId(*next);
+            *next += 1;
+        }
         Item::Export(e) => match e {
             ExportDecl::Fn(f) => assign_fn(f, next),
             ExportDecl::Var(v) => {
@@ -48,7 +51,9 @@ fn assign_item(item: &mut Item, next: &mut u32) {
 
 fn max_item(item: &Item, m: &mut u32) {
     match item {
-        Item::Import(_) => {}
+        Item::Import(i) => {
+            *m = (*m).max(i.id.0);
+        }
         Item::Export(e) => match e {
             ExportDecl::Fn(f) => max_fn(f, m),
             ExportDecl::Var(v) => max_expr(&v.value, m),

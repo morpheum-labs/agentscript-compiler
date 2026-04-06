@@ -111,6 +111,8 @@ pub enum ElseBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDecl {
+    /// Span of the full declaration (matches enclosing [`Stmt::span`] when parsed as a statement).
+    pub span: Span,
     pub qualifier: Option<VarQualifier>,
     pub ty: Option<Type>,
     pub name: String,

@@ -1,6 +1,5 @@
 //! Duplicate-definition checks (no types).
 
-use indexmap::IndexMap;
 use std::collections::HashSet;
 
 use crate::frontend::ast::{
@@ -11,52 +10,88 @@ use super::super::{AnalyzeError, SemanticDiagnostic};
 
 pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
-    let mut def_counts: IndexMap<String, usize> = IndexMap::new();
-    let mut import_counts: IndexMap<String, usize> = IndexMap::new();
 
+    // Imports: report at the second (and later) occurrence with that import's span.
+    let mut seen_import_alias: HashSet<String> = HashSet::new();
     for item in &script.items {
-        match item {
-            Item::Import(i) => {
-                *import_counts.entry(i.alias.clone()).or_insert(0) += 1;
+        if let Item::Import(i) = item {
+            if !seen_import_alias.insert(i.alias.clone()) {
+                issues.push(SemanticDiagnostic {
+                    message: format!("duplicate import alias `{}`", i.alias),
+                    span: i.span,
+                });
             }
+        }
+    }
+
+    // Top-level defs: first declaration wins; duplicate reports at the conflicting declaration.
+    let mut seen_def: HashSet<String> = HashSet::new();
+    for item in &script.items {
+        let dup: Option<(String, Span)> = match item {
             Item::FnDecl(f) => {
-                *def_counts.entry(f.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(f.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", f.name),
+                        f.span,
+                    ))
+                } else {
+                    None
+                }
             }
             Item::Export(ExportDecl::Fn(f)) => {
-                *def_counts.entry(f.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(f.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", f.name),
+                        f.span,
+                    ))
+                } else {
+                    None
+                }
             }
             Item::Enum(e) => {
-                *def_counts.entry(e.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(e.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", e.name),
+                        e.span,
+                    ))
+                } else {
+                    None
+                }
             }
             Item::Export(ExportDecl::Enum(e)) => {
-                *def_counts.entry(e.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(e.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", e.name),
+                        e.span,
+                    ))
+                } else {
+                    None
+                }
             }
             Item::TypeDef(t) => {
-                *def_counts.entry(t.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(t.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", t.name),
+                        t.span,
+                    ))
+                } else {
+                    None
+                }
             }
             Item::Export(ExportDecl::TypeDef(t)) => {
-                *def_counts.entry(t.name.clone()).or_insert(0) += 1;
+                if !seen_def.insert(t.name.clone()) {
+                    Some((
+                        format!("duplicate top-level definition `{}`", t.name),
+                        t.span,
+                    ))
+                } else {
+                    None
+                }
             }
-            _ => {}
-        }
-    }
-
-    for (name, n) in &def_counts {
-        if *n > 1 {
-            issues.push(SemanticDiagnostic {
-                message: format!(
-                    "duplicate top-level definition `{name}` ({n} declarations)"
-                ),
-                span: Span::DUMMY,
-            });
-        }
-    }
-    for (alias, n) in &import_counts {
-        if *n > 1 {
-            issues.push(SemanticDiagnostic {
-                message: format!("duplicate import alias `{alias}` ({n} imports)"),
-                span: Span::DUMMY,
-            });
+            _ => None,
+        };
+        if let Some((message, span)) = dup {
+            issues.push(SemanticDiagnostic { message, span });
         }
     }
 
@@ -66,11 +101,11 @@ pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     });
     if primary_kind == Some(ScriptKind::Library) {
         for item in &script.items {
-            if matches!(item, Item::Stmt(_)) {
+            if let Item::Stmt(s) = item {
                 issues.push(SemanticDiagnostic {
                     message: "top-level executable statements are not allowed in `library()` scripts; use `export`"
                         .into(),
-                    span: Span::DUMMY,
+                    span: s.span,
                 });
             }
         }
@@ -106,7 +141,7 @@ fn check_fn_params(f: &FnDecl, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate parameter `{}` in function `{}`",
                     p.name, f.name
                 ),
-                span: Span::DUMMY,
+                span: f.span,
             });
         }
     }
@@ -121,7 +156,7 @@ fn check_enum_variants(e: &EnumDef, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate variant `{}` in enum `{}`",
                     v.name, e.name
                 ),
-                span: Span::DUMMY,
+                span: e.span,
             });
         }
     }
@@ -136,7 +171,7 @@ fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate field `{}` in type `{}`",
                     f.name, t.name
                 ),
-                span: Span::DUMMY,
+                span: t.span,
             });
         }
     }
@@ -225,6 +260,7 @@ x = 1
                     )],
                 }),
                 Item::FnDecl(FnDecl {
+                    span: Span::DUMMY,
                     is_method: false,
                     name: "bad".into(),
                     params: vec![

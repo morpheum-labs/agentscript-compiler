@@ -408,7 +408,7 @@ impl<'a> LexicalCtx<'a> {
                     self.walk_type(ty, "export var");
                 }
                 self.walk_expr(&v.value, "export var");
-                self.define_var_decl(&v.name, "export var", Span::DUMMY);
+                self.define_var_decl(&v.name, "export var", v.span);
             }
             Item::Export(ExportDecl::Enum(e)) | Item::Enum(e) => {
                 for v in &e.variants {

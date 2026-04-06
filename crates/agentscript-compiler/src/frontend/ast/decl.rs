@@ -1,6 +1,7 @@
 //! Top-level script, imports, exports, and declarations.
 
 use super::expr::Expr;
+use super::node::{NodeId, Span};
 use super::stmt::{Stmt, VarDecl};
 use super::types::{Type, VarQualifier};
 
@@ -28,6 +29,9 @@ impl Script {
 /// `import User/Lib/1 as alias` (Pine-style library path).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportDecl {
+    /// Dense id for session side maps and diagnostics ([`assign_node_ids`]).
+    pub id: NodeId,
+    pub span: Span,
     /// Path segments, e.g. `["TradingView", "ta", "5"]`.
     pub path: Vec<String>,
     pub alias: String,
@@ -63,6 +67,7 @@ pub enum Item {
 /// Enumeration definition (`enum tz { ... }`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDef {
+    pub span: Span,
     pub name: String,
     pub variants: Vec<EnumVariant>,
 }
@@ -76,6 +81,7 @@ pub struct EnumVariant {
 /// User-defined type (`type bar { float o = open ... }`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserTypeDef {
+    pub span: Span,
     pub name: String,
     pub fields: Vec<UdtField>,
 }
@@ -90,6 +96,7 @@ pub struct UdtField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
+    pub span: Span,
     /// Pine `method foo(...)` declarations; QAS `f` / Pine bare `foo(...)` are `false`.
     pub is_method: bool,
     pub name: String,

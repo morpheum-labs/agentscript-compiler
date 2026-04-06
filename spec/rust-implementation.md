@@ -86,4 +86,117 @@ Just say which one you want first (most people pick one of these):
 4. **WASM ABI + mcp. host function spec**
 5. Or I can just fork pinecone mentally and give you the exact first 5 files you should edit.
 
-Tell me your preference and we’ll move straight into code. This is now a real, buildable project.
+
+**HIR** stands for **High-Level Intermediate Representation**.
+
+It is a clean, compiler-friendly data structure that sits between your raw **AST** (Abstract Syntax Tree) and the final code generation stage (in your case, WASM).
+
+### Simple Analogy
+Think of the compilation pipeline like translating a recipe:
+
+- **Source code** → The original recipe written in English (or AgentScript).
+- **AST** → A literal tree that mirrors the sentence structure exactly ("mix the flour with water", "bake at 180°C for 30 min"). It still has all the syntactic sugar, ambiguous words, and the way the human wrote it.
+- **HIR** → A rewritten, normalized version of the recipe in a standardized "chef's shorthand". All ambiguities are resolved, ingredients are identified by their official ID, steps are desugared, and special instructions (like "use the high-temperature oven") are turned into explicit commands. It's still high-level (you can read it), but much easier for the kitchen staff (codegen) to follow without mistakes.
+- **Lower-level IR / WASM** → The actual machine instructions the oven and mixer understand.
+
+### Why Compilers Use HIR (Especially in Your AgentScript Compiler)
+After parsing (Phase 0) and semantic analysis (Phase 1), the AST is still too "noisy":
+- Identifiers are just strings (`"close"`, `"ta.sma"`).
+- Types may be partially inferred or missing.
+- `request.security(...)` looks like a regular function call.
+- `close[1]` is just an index expression.
+- There is syntactic sugar, duplicate ways to write the same thing, etc.
+
+**HIR lowering** is the transformation step that converts the AST into this cleaner HIR form.
+
+Benefits for AgentScript:
+- **Resolved names** → Everything points to a `SymbolId` or a known builtin (`BuiltinKind::TaSma`).
+- **Full types** → Every expression knows if it's `Series<f64>`, `Simple<i32>`, etc., with proper promotion rules.
+- **Domain-specific nodes** → `SecurityCall` becomes a dedicated struct (with symbol, timeframe, gaps, lookahead, inner expression). This makes WASM codegen trivial instead of a mess of special cases.
+- **Desugaring** → `close[1]` becomes `SeriesAccess { base: close, offset: -1 }`; ternary operators or compound assignments get normalized.
+- **Easier optimizations** → Constant folding, dead-code elimination, and series-specific optimizations become simple walks over the HIR.
+- **Better testing & debugging** → You can snapshot the HIR and see exactly what the compiler understood.
+- **Maintainability** → Your codegen (Phase 2) only needs to handle the clean HIR, not the messy AST.
+
+This pattern is used in rustc (the Rust compiler itself), and it's exactly what your ROADMAP describes in Phase 1–2: "HIR lowering for a growing subset (e.g., ta.sma, input.int, plot, request.security)" and "AST lowered to HIR via lower_script_to_hir and AstHirLowerer".
+
+### How HIR Lowering Typically Works in Your Project
+You usually do it in **separate passes** (this keeps things SOLID — each pass has one responsibility):
+
+1. **Name Resolution** (part of semantic analysis)  
+   Turn string identifiers into `SymbolId`s and build a symbol table.
+
+2. **Type Checking**  
+   Annotate every node with concrete types and validate rules (e.g., you can't add `Series` and `Simple` without promotion).
+
+3. **HIR Lowering Pass** (`AstHirLowerer` or similar)  
+   Walk the typed AST and build the HIR:
+   - Create `HirScript` containing `HirExpr`s and `HirStmt`s.
+   - Use an arena (`bumpalo`) + `HirId` (indices) to avoid lifetime/borrow checker pain.
+   - Special handling for AgentScript features:
+     - `request.security` → `HirExpr::SecurityCall(...)`
+     - Builtin calls like `ta.sma` → `HirExpr::BuiltinCall { kind: TaSma, args: [...], ty: Series(Float) }`
+     - `plot(...)` → dedicated `Plot` node
+     - Series indexing → `SeriesAccess`
+
+Your repo already has some of this initialized in `hir/` and `ast_lower.rs` (limited scope for now — indicators, basic builtins, and a subset of `request.security`).
+
+### Concrete Before/After Example (AgentScript)
+
+**Source (AST view):**
+```agentscript
+//@version=6
+indicator("Test")
+sma = ta.sma(close, 14)
+htf = request.security("AAPL", "D", sma)
+plot(htf)
+```
+
+**After HIR Lowering (simplified):**
+```rust
+HirScript {
+    version: 6,
+    declaration: HirDeclaration::Indicator { title: "Test" },
+    body: vec![
+        // sma assignment
+        HirStmt::Let {
+            symbol: SymbolId(42),
+            value: HirExpr::BuiltinCall {
+                kind: BuiltinKind::TaSma,
+                args: vec![close_ref, literal_14],
+                ty: Series(Float64)
+            }
+        },
+        // security call
+        HirStmt::Let {
+            symbol: SymbolId(43),
+            value: HirExpr::SecurityCall(SecurityCall {
+                symbol: HirExpr::Literal("AAPL"),
+                timeframe: HirExpr::Literal("D"),
+                expression: HirExpr::Variable(SymbolId(42)),  // the sma
+                gaps: GapMode::NoGaps,
+                lookahead: Lookahead::Off,
+                ty: Series(Float64)
+            })
+        },
+        HirStmt::Plot { expr: Variable(SymbolId(43)), title: None }
+    ]
+}
+```
+
+See how much cleaner and explicit this is? Your future WASM codegen can now directly map `SecurityCall` to the correct host import and series operations without guessing.
+
+### Next Steps for You (Based on Your ROADMAP)
+- Expand the lowering pass to cover more of the language (user functions, loops, full series math).
+- Make sure every HIR node carries proper spans for great error messages.
+- Add golden/snapshot tests for the HIR output (you already have some).
+- Once HIR is solid, Phase 2 (WASM codegen) becomes much easier because you only walk this clean structure.
+
+HIR + lowering is the architectural "sweet spot" that prevents your compiler from turning into spaghetti as you add more Pine-like features (series context, multi-timeframe, strategy commands, etc.).
+
+If you want, I can:
+- Show you a full example of the `HirExpr` enum tailored to AgentScript.
+- Explain how to implement the `AstHirLowerer` visitor.
+- Walk through how `request.security` should be lowered in detail.
+
+Just tell me which part you'd like to dive deeper into!

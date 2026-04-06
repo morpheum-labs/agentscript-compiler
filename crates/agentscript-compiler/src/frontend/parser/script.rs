@@ -4,8 +4,8 @@ use chumsky::prelude::*;
 
 use crate::frontend::ast::{
     ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, FnBody, FnDecl, FnParam, ForInPattern,
-    IfStmt, ImportDecl, Item, Script, ScriptDeclaration, ScriptKind, Stmt, StmtKind, Type, UdtField,
-    UserTypeDef, VarDecl, VarQualifier,
+    IfStmt, ImportDecl, Item, NodeId, Script, ScriptDeclaration, ScriptKind, Stmt, StmtKind, Type,
+    UdtField, UserTypeDef, VarDecl, VarQualifier,
 };
 
 use super::assign_type::{assign_op, type_parser, type_parser_decl_root, var_qualifier};
@@ -108,6 +108,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             Stmt::new(
                 span,
                 StmtKind::VarDecl(VarDecl {
+                    span,
                     qualifier: Some(qual),
                     ty,
                     name,
@@ -130,6 +131,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             Stmt::new(
                 span,
                 StmtKind::VarDecl(VarDecl {
+                    span,
                     qualifier: Some(VarQualifier::Input),
                     ty,
                     name,
@@ -150,6 +152,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
             Stmt::new(
                 span,
                 StmtKind::VarDecl(VarDecl {
+                    span,
                     qualifier: None,
                     ty: Some(ty),
                     name,
@@ -447,7 +450,11 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     let enum_name_and_body = text::ident()
         .then_ignore(pad())
         .then(enum_brace_body.clone())
-        .map(|(name, variants)| EnumDef { name, variants });
+        .map_with_span(|(name, variants), span| EnumDef {
+            span: span.into(),
+            name,
+            variants,
+        });
 
     let enum_item = text::keyword("enum")
         .ignore_then(pad().ignore_then(enum_name_and_body.clone()))
@@ -481,7 +488,11 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     let typedef_name_fields = text::ident()
         .then_ignore(pad())
         .then(typedef_brace_body.clone())
-        .map(|(name, fields)| UserTypeDef { name, fields });
+        .map_with_span(|(name, fields), span| UserTypeDef {
+            span: span.into(),
+            name,
+            fields,
+        });
 
     let typedef_item = text::keyword("type")
         .ignore_then(pad().ignore_then(typedef_name_fields.clone()))
@@ -527,7 +538,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     let fn_decl_pine = text::ident()
         .then_ignore(pad())
         .then(fn_after_params.clone())
-        .map(|(name, (params, body))| FnDecl {
+        .map_with_span(|(name, (params, body)), span| FnDecl {
+            span: span.into(),
             is_method: false,
             name,
             params,
@@ -540,7 +552,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then(text::ident())
         .then_ignore(pad())
         .then(fn_after_params.clone())
-        .map(|((_, name), (params, body))| FnDecl {
+        .map_with_span(|((_, name), (params, body)), span| FnDecl {
+            span: span.into(),
             is_method: false,
             name,
             params,
@@ -553,7 +566,8 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then(text::ident())
         .then_ignore(pad())
         .then(fn_after_params.clone())
-        .map(|((_, name), (params, body))| FnDecl {
+        .map_with_span(|((_, name), (params, body)), span| FnDecl {
+            span: span.into(),
             is_method: true,
             name,
             params,
@@ -580,7 +594,14 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .then_ignore(text::keyword("as"))
         .then_ignore(pad())
         .then(text::ident())
-        .map(|(path, alias)| Item::Import(ImportDecl { path, alias }))
+        .map_with_span(|(path, alias), span| {
+            Item::Import(ImportDecl {
+                id: NodeId::UNASSIGNED,
+                span: span.into(),
+                path,
+                alias,
+            })
+        })
         .boxed();
 
     let export_var_decl = choice((
