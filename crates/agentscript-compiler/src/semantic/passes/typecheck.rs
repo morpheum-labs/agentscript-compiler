@@ -1325,6 +1325,53 @@ mod tests {
     }
 
     #[test]
+    fn math_pow_promotes_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = math.pow(close, 2.0)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn request_security_series_int_from_bar_index() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.security(\"X\", \"D\", bar_index)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn user_function_call_checked_for_arity() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nf(double x) => x * 2.0\nz = f(1.0)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\nf(double x) => x * 2.0\nz = f()\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(e.message().contains('f'), "{}", e.message());
+    }
+
+    #[test]
+    fn compound_assignment_numeric_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = 1.0\na += 2.0\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
     fn compiler_records_expr_types_for_nodes() {
         let s = parse_script(
             "t",

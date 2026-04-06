@@ -4,8 +4,8 @@ use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
 use agentscript_compiler::{
-    analyze_to_hir_compiler, compile_script_to_wasm_v0, check_script, parse_script, AnalyzeError,
-    CompileError, Span,
+    analyze_to_hir_compiler, compile_script_to_wasm_v0, check_script, parse_script,
+    AnalyzeCompileError, CompileError,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,6 +34,10 @@ fn main() -> ExitCode {
             eprintln!("{:?}", miette::Report::new(p));
             ExitCode::FAILURE
         }
+        Err(RunError::Analyze(a)) => {
+            eprintln!("{:?}", miette::Report::new(a));
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("{e}");
             ExitCode::FAILURE
@@ -44,7 +48,7 @@ fn main() -> ExitCode {
 enum RunError {
     Io(std::io::Error),
     Parse(CompileError),
-    Analyze(AnalyzeError),
+    Analyze(AnalyzeCompileError),
     BadEmit(String),
 }
 
@@ -53,7 +57,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Io(e) => write!(f, "{e}"),
             RunError::Parse(_) => write!(f, "parse error"),
-            RunError::Analyze(a) => write!(f, "{a}"),
+            RunError::Analyze(a) => write!(f, "{}", a.summary),
             RunError::BadEmit(s) => write!(f, "unknown --emit= value `{s}` (use ast, hir, or wasm)"),
         }
     }
@@ -87,14 +91,26 @@ fn run() -> Result<(), RunError> {
     };
 
     let script = parse_script(&label, &source).map_err(RunError::Parse)?;
-    check_script(&script).map_err(RunError::Analyze)?;
+    check_script(&script).map_err(|e| {
+        RunError::Analyze(AnalyzeCompileError::from_analyze_error(
+            &label,
+            source.clone(),
+            e,
+        ))
+    })?;
 
     match emit {
         EmitKind::Ast => {
             println!("{script:#?}");
         }
         EmitKind::Hir => {
-            let c = analyze_to_hir_compiler(&script).map_err(RunError::Analyze)?;
+            let c = analyze_to_hir_compiler(&script).map_err(|e| {
+                RunError::Analyze(AnalyzeCompileError::from_analyze_error(
+                    &label,
+                    source.clone(),
+                    e,
+                ))
+            })?;
             let hir = c
                 .session
                 .hir
@@ -104,7 +120,11 @@ fn run() -> Result<(), RunError> {
         }
         EmitKind::Wasm => {
             let wasm = compile_script_to_wasm_v0(&script).map_err(|e| {
-                RunError::Analyze(AnalyzeError::single(e.to_string(), Span::DUMMY))
+                RunError::Analyze(AnalyzeCompileError::from_analyze_error(
+                    &label,
+                    source.clone(),
+                    e,
+                ))
             })?;
             io::stdout().write_all(&wasm)?;
         }

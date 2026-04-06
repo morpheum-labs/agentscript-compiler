@@ -22,12 +22,12 @@ This document tracks **what is missing** to go from **QAS source** to **Aether b
 
 Roughly ordered by dependency.
 
-1. **HIR coverage** — Today: small indicator slice (`input.int`, `close`, `ta.sma`, `request.security`, `plot`). **Gap:** rest of typed surface, user functions, full `request.*` shapes (gaps, lookahead, overloads), strategy bodies.
-2. **WASM codegen** — **Gap:** real `wasm32` module builder (e.g. `wasm-encoder`), not only stubs/experiments; section layout + linking assumptions aligned with MWVM if applicable.
-3. **Guest ABI in emitted code** — **Gap:** exports with correct signatures; memory/buffer convention for `step` (ABI doc still says “TBD”).
+1. **HIR coverage** — Today: indicator slice (`input.int`, `close`, `ta.sma`, **`ta.ema`**, `request.security`, `plot`, `close[k]`). **Gap:** rest of typed surface, user functions in HIR, full `request.*` shapes, strategy bodies.
+2. **WASM codegen** — **Progress:** `wasm-encoder` emission in [`hir_wasm.rs`](../crates/agentscript-compiler/src/codegen/hir_wasm.rs) for that slice. **Gap:** extend with language coverage; MWVM linker story for all `aether` imports.
+3. **Guest ABI in emitted code** — **Progress:** dual exports + `aether` import table documented in [`agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). **Gap:** evolve `init`/`step` signatures (today v0 preview is `() -> ()`); finalize memory/buffer convention for `step`.
 4. **Determinism story** — **Gap:** FP rules, fixed codegen options, optional `cargo_lock_hash` / toolchain metadata for job pins (see Aether ROADMAP optional item).
 5. **Semantics vs Pine v6** — **Gap:** bar model, `var`/`varip`, full builtin registry; see ROADMAP semantics table and `pinescriptv6/` checklist.
-6. **Tooling** — **Gap:** CLI `--emit-wasm`, `-o`, JSON diagnostics (ROADMAP Phase 3).
+6. **Tooling** — **Progress:** `--emit=wasm` / `hir` / `ast`. **Gap:** `-o`, JSON diagnostics (ROADMAP Phase 3).
 
 ---
 
@@ -52,8 +52,8 @@ Roughly ordered by dependency.
 Working backlog — track progress here (markdown checkboxes only).
 
 - [ ] Finalize **step** calling convention in `agentscript-guest-abi.md` (memory + types).
-- [ ] Compiler: **emit** WASM with **exports** matching ABI v`guest_abi::VERSION`.
-- [ ] Compiler: **integration test** — emit → `wasmparser` validate → export names.
+- [x] Compiler: **emit** WASM with **exports** matching reserved ABI names (v0 preview signatures `() -> ()`; see ABI doc).
+- [x] Compiler: **integration test** — emit → `wasmparser` validate → import/export name checks ([`lib.rs` tests](../crates/agentscript-compiler/src/lib.rs)).
 - [ ] Aether: **integration test** — pinned WASM → instantiate → **call `init` / `step`** (stub memory if needed).
 - [ ] Define **import** module names and function signatures for `request.*` / `strategy.*` in ABI doc.
 - [ ] Compiler: lower at least one **`request.security`** path to an **import call**; Aether: stub host implementation for backtest.

@@ -1,5 +1,5 @@
-//! AST → HIR lowering for a **small** supported subset (indicator body: inputs, `ta.sma`,
-//! `request.security`, `plot`).
+//! AST → HIR lowering for a **small** supported subset (indicator body: inputs, `ta.sma` /
+//! `ta.ema`, `request.security`, `plot`).
 //!
 //! Run [`check_script`](crate::semantic::check_script) before lowering so resolution / early rules
 //! have already run.
@@ -391,6 +391,19 @@ impl LowerCtx {
             }));
         }
 
+        if path == ["ta", "ema"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(expr_span, "ta.ema expects two arguments"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            return Ok(self.alloc_expr(HirExpr::BuiltinCall {
+                kind: BuiltinKind::TaEma,
+                args: vec![a0, a1],
+                ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+            }));
+        }
+
         if path == ["request", "security"] {
             if args.len() < 3 {
                 return Err(HirLowerError::at(
@@ -621,6 +634,21 @@ plot(htf + prev)
     #[test]
     fn golden_series_access_and_security_options() {
         let script = parse_script("test", SAMPLE_SERIES_SECURITY).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let hir = lower_script_to_hir(&script).expect("lower");
+        assert_debug_snapshot!(hir);
+    }
+
+    const SAMPLE_EMA: &str = r#"//@version=6
+indicator("EMA pipeline")
+len = input.int(14)
+ema = ta.ema(close, len)
+plot(ema)
+"#;
+
+    #[test]
+    fn golden_ta_ema_indicator() {
+        let script = parse_script("test", SAMPLE_EMA).expect("parse");
         check_script(&script).expect("semantic checks");
         let hir = lower_script_to_hir(&script).expect("lower");
         assert_debug_snapshot!(hir);

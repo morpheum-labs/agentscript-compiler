@@ -41,12 +41,12 @@
 | **`input.*` factory fns** | `input.int`, `input.float`, … | **Partial** | `input.int` literal default in assign / `input int` decl handled in HIR lowering + typecheck subset ([`BuiltinKind::InputInt`](crates/agentscript-compiler/src/hir/builtin.rs)). Other `input.*` factories not modeled. |
 | **Side effects & order** | Order of `strategy.*` / `mcp.*` vs pure exprs | **None** | Needs effect typing + schedule in IR. |
 | **Constant folding** | Compile-time evaluation of literals | **None** | Optional optimization after typecheck. |
-| **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** layout and spec: [`spec/hir.md`](spec/hir.md), [`crates/agentscript-compiler/src/hir/`](crates/agentscript-compiler/src/hir/). **AST → `HirScript`:** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) for indicator + `input.int` + `close` + `ta.sma` + `request.security` + `plot` (golden `insta` snapshot). No bar scheduler, no WASM lowering yet. |
-| **WASM codegen** | `wasm32` module shape | **None** | Phase 2. |
-| **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **None** | Spec + Aether/MWVM alignment; contract tests. |
+| **IR & lowering** | Bar schedule, series nodes, calls → ops | **Partial** | **HIR** layout and spec: [`spec/hir.md`](spec/hir.md), [`crates/agentscript-compiler/src/hir/`](crates/agentscript-compiler/src/hir/). **AST → `HirScript`:** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs) for indicator + `input.int` + `close` + `ta.sma` / **`ta.ema`** + `request.security` + `plot` + `close[k]` (golden `insta` snapshots). No bar scheduler yet. |
+| **WASM codegen** | `wasm32` module shape | **Partial** | [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) (`wasm-encoder`): `aether` imports + dual exports (`init`/`on_bar` + `aether_strategy_*`). Coverage tracks the HIR subset; not full language. |
+| **Guest ABI** | Exports (`init`, `on_bar`, …), imports (data, strategy, request, mcp) | **Partial** | v0 preview: `() -> ()` exports + documented `aether` import table; [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). Host still stubs imports / does not call `step` in production paths. |
 | **Determinism** | FP rules, seeds, replay | **None** | Document + enforce in host for backtest. |
 | **Runtime / host (Aether)** | Data feeds, fills, `request.*`, MCP | **None** | Outside this crate; semantics live here for execution. |
-| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette** with spans. Semantic: [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) (string messages); attaching `Span` to every semantic diagnostic is still open. |
+| **Diagnostics** | Errors beyond parse (types, builtins, ABI) | **Partial** | Parse: **miette** with spans. Semantic: [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) + [`SemanticDiagnostic`](crates/agentscript-compiler/src/semantic/mod.rs) carry `Span`; CLI maps analysis failures through [`AnalyzeCompileError`](crates/agentscript-compiler/src/error.rs) for miette output. |
 
 ## Current status
 
@@ -57,23 +57,25 @@
 - [x] **HIR crate** ([`hir/mod.rs`](crates/agentscript-compiler/src/hir/mod.rs)): `HirScript`, `HirExpr` arena (`exprs` + `HirId`), `SymbolTable`, `SecurityCall`, etc.; design in [`spec/hir.md`](spec/hir.md).
 - [x] **AST → HIR (first slice):** [`lower_script_to_hir`](crates/agentscript-compiler/src/hir/ast_lower.rs), [`AstHirLowerer`](crates/agentscript-compiler/src/hir/ast_lower.rs) + [`LowerToHir`](crates/agentscript-compiler/src/hir/lowering.rs); golden snapshot `crates/agentscript-compiler/src/hir/snapshots/`.
 - [x] **Session hook**: [`CompilerSession`](crates/agentscript-compiler/src/session.rs) with `bumpalo::Bump` (ready for arena-backed IR later).
-- [x] **Diagnostics**: miette-backed `CompileError` with spans (parse); semantic [`AnalyzeError`](crates/agentscript-compiler/src/semantic/mod.rs) is still mostly free text.
-- [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), run parse + analyze, print debug `Script` on success.
+- [x] **Diagnostics**: miette-backed `CompileError` with spans (parse); semantic failures use [`AnalyzeCompileError`](crates/agentscript-compiler/src/error.rs) in the CLI when spans are available.
+- [x] **CLI** (`agentscriptc`): read a file path or stdin (`-`), parse + analyze; `--emit=ast` | `hir` | `wasm` (see [`main.rs`](crates/agentscript-compiler/src/main.rs)).
+- [x] **WASM (HIR subset):** [`compile_script_to_wasm_v0`](crates/agentscript-compiler/src/lib.rs), [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs); `cargo test` validates module + import/export names.
 - [x] **Tests**: parser / error cases in `crates/agentscript-compiler/tests/`; HIR golden in-crate.
 
 **Outstanding work (near term)**
 
 - [ ] **Widen HIR lowering** in step with typecheck: more statements/expressions, `request.security` args (gaps, lookahead, overloads), more builtins, user functions when typed.
 - [ ] **Wire HIR into the driver**: optional `CompilerPass` or session field so consumers get `HirScript` after the same pipeline (not only `lower_script_to_hir` by hand).
-- [ ] **Semantic diagnostics with spans** for imports, decls, and type errors on the hot path ([`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs) already on many nodes).
+- [x] **CLI semantic diagnostics** — [`AnalyzeCompileError`](crates/agentscript-compiler/src/error.rs) + miette for analysis failures with spans.
+- [ ] **Full span coverage** — ensure every semantic error path attaches a non-`DUMMY` [`Span`](crates/agentscript-compiler/src/frontend/ast/node.rs) where the AST has one.
 - [ ] **Full** type system + symbol tables (Pine/QAS parity, generics, library linking).
 - [ ] **`request.security` / `request.financial`** end-to-end: v6-aligned typing, WASM/host imports, Aether/MWVM fixtures.
 - [ ] **Codegen** to **`wasm32-unknown-unknown`** (or agreed triple) + **guest ABI** (`aether-common` / ABI doc).
 
-**Not started (still accurate)**
+**Not started / still open**
 
-- [ ] WASM codegen and loadable modules.
-- [ ] **Guest ABI** fully implemented in emitted WASM and verified against Aether/MWVM smoke tests.
+- [ ] **Full-language** WASM + HIR (strategy bodies, full `request.*`, user functions in IR, etc.).
+- [ ] **Guest ABI** finalized (`init` → `i32`, `step` memory layout) and **invoked** by Aether with contract tests across repos.
 
 ## Downstream alignment
 

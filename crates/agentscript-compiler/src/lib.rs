@@ -21,7 +21,7 @@ pub use frontend::ast::{
     PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Spanned, Stmt, StmtKind, Type,
     UdtField, UnaryOp, UserTypeDef, VarDecl, VarQualifier,
 };
-pub use error::{CompileError, ParseFileError};
+pub use error::{AnalyzeCompileError, CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
 pub use codegen::{emit_hir_guest_wasm, emit_minimal_guest_wasm_v0, HirWasmError};
 pub use semantic::{
@@ -199,6 +199,7 @@ plot(close[1])
             ("aether", "request_security"),
             ("aether", "plot"),
             ("aether", "series_hist"),
+            ("aether", "ta_ema"),
         ] {
             assert!(
                 imports.iter().any(|(m, n)| m == module && n == name),
@@ -218,6 +219,20 @@ plot(close[1])
                 "missing export `{name}`, have {exports:?}"
             );
         }
+    }
+
+    /// Regression: `ta.ema` lowering must emit a validating module (includes `ta_ema` import).
+    #[test]
+    fn compile_ta_ema_sample_to_wasm_validates() {
+        const SAMPLE_EMA: &str = r#"//@version=6
+indicator("EMA")
+len = input.int(14)
+ema = ta.ema(close, len)
+plot(ema)
+"#;
+        let script = parse_script("t", SAMPLE_EMA).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
     #[test]

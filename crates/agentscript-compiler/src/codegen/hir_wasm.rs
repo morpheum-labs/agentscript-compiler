@@ -22,6 +22,11 @@ pub const IMPORT_REQUEST_SECURITY: u32 = 3;
 pub const IMPORT_PLOT: u32 = 4;
 /// Primary series value `offset` bars ago (`close[offset]`); v0 supports [`close`] only in HIR.
 pub const IMPORT_SERIES_HIST: u32 = 5;
+/// EMA on host close stream, same signature as [`IMPORT_TA_SMA`]: `(i32 period) -> f64`.
+pub const IMPORT_TA_EMA: u32 = 6;
+
+/// First function index defined in the guest module (after all `aether` imports).
+pub const GUEST_FUNC_BASE: u32 = IMPORT_TA_EMA + 1;
 
 /// Legacy / CLI-friendly export names (same function indices as [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`]).
 pub const GUEST_EXPORT_INIT_LEGACY: &str = "init";
@@ -245,8 +250,14 @@ impl<'a> Ctx<'a> {
                     }
                     // Host uses primary series; pass period only (second arg).
                     self.emit_expr(func, args[1])?;
-                    // period may be i32 variable
                     func.instructions().call(IMPORT_TA_SMA);
+                }
+                BuiltinKind::TaEma => {
+                    if args.len() != 2 {
+                        return Err(HirWasmError::unsupported("ta.ema arity"));
+                    }
+                    self.emit_expr(func, args[1])?;
+                    func.instructions().call(IMPORT_TA_EMA);
                 }
             },
             HirExpr::SeriesAccess { base, offset, ty } => {
@@ -342,6 +353,7 @@ impl<'a> Ctx<'a> {
 /// | `series_close` | `() -> f64` | Current bar close |
 /// | `input_int` | `(i32 idx) -> i32` | `idx` = index in [`HirScript::inputs`] |
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
+/// | `ta_ema` | `(i32 period) -> f64` | EMA of host close series |
 /// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
@@ -404,6 +416,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         "series_hist",
         EntityType::Function(t_series_hist),
     );
+    // Append new imports after existing v0 indices so [`IMPORT_*`] constants stay stable.
+    imports.import("aether", "ta_ema", EntityType::Function(t_sma));
 
     let mut functions = FunctionSection::new();
     functions.function(t_void);
@@ -418,7 +432,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         page_size_log2: None,
     });
 
-    let fn_init = IMPORT_SERIES_HIST + 1;
+    let fn_init = GUEST_FUNC_BASE;
     let fn_on_bar = fn_init + 1;
 
     let mut exports = ExportSection::new();
