@@ -28,7 +28,6 @@ wasmparser = "0.240"
 
 [dev-dependencies]
 insta = "1"
-wasmparser = "0.240"
 wasmtime = { version = "24", default-features = false, features = ["cranelift", "runtime"] }
 
 [[bin]]
