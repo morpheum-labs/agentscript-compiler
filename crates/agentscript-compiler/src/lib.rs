@@ -209,6 +209,21 @@ plot(g(close))
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
+    #[test]
+    fn compile_wasm_v0_unary_compare_ternary_smoke() {
+        const SRC: &str = r#"//@version=6
+indicator("exprs")
+a = 1.0
+a += 2.0
+b = -close
+c = close > 1.0
+plot(true ? b : 0.0)
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("unary/compare/ternary wasm");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+    }
+
     /// Contract: imports (`aether`, …), dual exports (`init` + `aether_strategy_init`, etc.), and `series_hist` when HIR uses `close[k]`.
     #[test]
     fn compile_script_to_wasm_v0_guest_abi_contract() {

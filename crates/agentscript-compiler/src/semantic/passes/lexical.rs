@@ -576,6 +576,23 @@ switch x {
     }
 
     #[test]
+    fn def_semantic_ids_recorded_for_hir_alignment() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\nf() => 1.0\ny = close + 1\n",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.prepare_analysis(&s);
+        lexical_resolve_script_in_session(&mut session, &s).unwrap();
+        assert!(
+            !session.def_semantic_ids.is_empty(),
+            "expected hoist + walk defs in def_semantic_ids, got {:?}",
+            session.def_semantic_ids
+        );
+    }
+
+    #[test]
     fn compiler_records_close_binding() {
         let s = parse_script("t.pine", "indicator(\"x\")\ny = close + 1\n").unwrap();
         let mut c = Compiler::new();

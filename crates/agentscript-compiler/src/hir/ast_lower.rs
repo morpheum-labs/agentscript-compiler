@@ -514,7 +514,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 Ok(())
             }
             StmtKind::Assign {
-                name,
+                name: _,
                 op: AssignOp::ColonEq,
                 ..
             } => Err(HirLowerError::at(
@@ -1249,6 +1249,23 @@ plot(z)
     #[test]
     fn golden_block_user_function_body() {
         let script = parse_script("test", SAMPLE_BLOCK_USER_FN).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
+    }
+
+    const SAMPLE_UNARY_CMP_TERNARY: &str = r#"//@version=6
+indicator("exprs")
+a = 1.0
+a += 2.0
+b = -close
+c = close > 1.0
+plot(true ? b : 0.0)
+"#;
+
+    #[test]
+    fn golden_unary_compare_ternary_pipeline() {
+        let script = parse_script("test", SAMPLE_UNARY_CMP_TERNARY).expect("parse");
         check_script(&script).expect("semantic checks");
         let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
         assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));

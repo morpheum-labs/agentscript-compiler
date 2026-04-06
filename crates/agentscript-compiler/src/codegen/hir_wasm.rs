@@ -262,10 +262,10 @@ impl<'a> Ctx<'a> {
                 match op {
                     BinOp::And | BinOp::Or if valty == ValType::F64 => {
                         self.emit_expr(func, *lhs)?;
-                        func.instructions().f64_const(0.0);
+                        func.instructions().f64_const(0.0.into());
                         func.instructions().f64_ne();
                         self.emit_expr(func, *rhs)?;
-                        func.instructions().f64_const(0.0);
+                        func.instructions().f64_const(0.0.into());
                         func.instructions().f64_ne();
                         if *op == BinOp::And {
                             func.instructions().i32_and();
@@ -279,10 +279,18 @@ impl<'a> Ctx<'a> {
                         self.emit_expr(func, *rhs)?;
                         let mut ins = func.instructions();
                         match op {
-                            BinOp::Add => ins.f64_add(),
-                            BinOp::Sub => ins.f64_sub(),
-                            BinOp::Mul => ins.f64_mul(),
-                            BinOp::Div => ins.f64_div(),
+                            BinOp::Add => {
+                                ins.f64_add();
+                            }
+                            BinOp::Sub => {
+                                ins.f64_sub();
+                            }
+                            BinOp::Mul => {
+                                ins.f64_mul();
+                            }
+                            BinOp::Div => {
+                                ins.f64_div();
+                            }
                             BinOp::Mod => {
                                 return Err(HirWasmError::at(
                                     span,
@@ -319,7 +327,7 @@ impl<'a> Ctx<'a> {
                                     "internal: And/Or handled above",
                                 ));
                             }
-                        };
+                        }
                     }
                     _ => {
                         return Err(HirWasmError::at(
@@ -342,10 +350,12 @@ impl<'a> Ctx<'a> {
                         "select/ternary wasm v0 requires f64 result type",
                     ));
                 }
-                self.emit_expr(func, *else_b)?;
+                // Stack for `select`: `v1`, `v2`, `i32` (top). Result is `v1` if cond ≠ 0 else `v2`
+                // (Pine `cond ? a : b` → `v1` = then, `v2` = else).
                 self.emit_expr(func, *then_b)?;
+                self.emit_expr(func, *else_b)?;
                 self.emit_expr(func, *cond)?;
-                func.instructions().f64_const(0.0);
+                func.instructions().f64_const(0.0.into());
                 func.instructions().f64_ne();
                 func.instructions().select();
             }

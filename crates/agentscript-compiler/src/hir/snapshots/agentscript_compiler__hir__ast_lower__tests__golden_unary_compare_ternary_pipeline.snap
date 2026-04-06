@@ -1,0 +1,222 @@
+---
+source: crates/agentscript-compiler/src/hir/ast_lower.rs
+expression: "c.session.hir.as_ref().expect(\"hir\")"
+---
+HirScript {
+    version: 6,
+    declaration: Indicator {
+        title: Some(
+            "exprs",
+        ),
+    },
+    inputs: [],
+    exprs: [
+        Literal(
+            Float(
+                1.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                1,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                2.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Add,
+            lhs: HirId(
+                1,
+            ),
+            rhs: HirId(
+                2,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                0.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Sub,
+            lhs: HirId(
+                5,
+            ),
+            rhs: HirId(
+                4,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                1.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Gt,
+            lhs: HirId(
+                7,
+            ),
+            rhs: HirId(
+                8,
+            ),
+            ty: Series(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        },
+        Literal(
+            Bool(
+                true,
+            ),
+            Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                2,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                0.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Select {
+            cond: HirId(
+                10,
+            ),
+            then_b: HirId(
+                11,
+            ),
+            else_b: HirId(
+                12,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+    ],
+    body: [
+        Let {
+            symbol: SymbolId(
+                1,
+            ),
+            value: HirId(
+                0,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                1,
+            ),
+            value: HirId(
+                3,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                2,
+            ),
+            value: HirId(
+                6,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                3,
+            ),
+            value: HirId(
+                9,
+            ),
+        },
+        Plot {
+            expr: HirId(
+                13,
+            ),
+            title: None,
+        },
+    ],
+    user_functions: [],
+    symbols: SymbolTable {
+        names: [
+            "close",
+            "a",
+            "b",
+            "c",
+        ],
+    },
+}
