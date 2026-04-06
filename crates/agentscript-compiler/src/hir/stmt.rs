@@ -21,4 +21,9 @@ pub enum HirStmt {
         else_branch: Option<Vec<HirStmt>>,
     },
     Block(Vec<HirStmt>),
+    /// `var` / `varip`: initializer runs once; value lives in a wasm global across bars.
+    VarInit {
+        symbol: SymbolId,
+        value: HirId,
+    },
 }

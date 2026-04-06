@@ -1,55 +1,14 @@
-//! Thin orchestration: parse hook + ordered semantic passes.
+//! One-shot embedder API ([`WasmCompiler`]). Session-based workflows still use [`crate::driver::Compiler`].
 
-use crate::frontend::ast::Script;
-use crate::semantic::passes::{default_passes, default_passes_with_hir, CompilerPass};
-use crate::semantic::AnalyzeError;
-use crate::session::CompilerSession;
+use crate::pipeline::compile_to_wasm;
+use crate::CompileOrAnalyzeError;
 
-/// Configurable compiler driver (arena + pass list).
-pub struct Compiler {
-    pub session: CompilerSession,
-    passes: Vec<Box<dyn CompilerPass>>,
-}
+/// Minimal façade: compile a full script string to validated guest WASM.
+pub struct WasmCompiler;
 
-impl Compiler {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            session: CompilerSession::new(),
-            passes: default_passes(),
-        }
-    }
-
-    /// Replace the default Phase-0 semantic pipeline.
-    pub fn with_passes(passes: Vec<Box<dyn CompilerPass>>) -> Self {
-        Self {
-            session: CompilerSession::new(),
-            passes,
-        }
-    }
-
-    /// Semantic pipeline plus [`crate::semantic::passes::HirLowerPass`] (AST → HIR for the supported subset).
-    #[must_use]
-    pub fn with_hir_lowering() -> Self {
-        Self {
-            session: CompilerSession::new(),
-            passes: default_passes_with_hir(),
-        }
-    }
-
-    /// Run all registered semantic passes.
-    pub fn run_semantic_passes(&mut self, script: &Script) -> Result<(), AnalyzeError> {
-        self.session.hir = None;
-        self.session.prepare_analysis(script);
-        for p in &mut self.passes {
-            p.run(&mut self.session, script)?;
-        }
-        Ok(())
-    }
-}
-
-impl Default for Compiler {
-    fn default() -> Self {
-        Self::new()
+impl WasmCompiler {
+    /// Same as [`crate::pipeline::compile_to_wasm`] with `src_name` `"main"`.
+    pub fn compile(source: &str) -> Result<Vec<u8>, CompileOrAnalyzeError> {
+        compile_to_wasm("main", source)
     }
 }

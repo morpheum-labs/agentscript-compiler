@@ -1,16 +1,17 @@
 //! HIR → WebAssembly for the supported lowering subset (stack machine, `aether` host imports).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, Module,
+    TypeSection, ValType,
 };
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
 use crate::hir::{
-    BuiltinKind, HirExpr, HirId, HirLiteral, HirScript, HirStmt, HirType, HirUserFunction,
-    SymbolId,
+    BuiltinKind, HirExpr, HirId, HirInputKind, HirLiteral, HirScript, HirStmt, HirType,
+    HirUserFunction, SymbolId,
 };
 
 /// Host import indices (stable ABI v0; must match Aether / MWVM stubs).
@@ -23,9 +24,13 @@ pub const IMPORT_PLOT: u32 = 4;
 pub const IMPORT_SERIES_HIST: u32 = 5;
 /// EMA on host close stream, same signature as [`IMPORT_TA_SMA`]: `(i32 period) -> f64`.
 pub const IMPORT_TA_EMA: u32 = 6;
+pub const IMPORT_INPUT_FLOAT: u32 = 7;
+/// Stateful host: compares `(a,b)` to previous bar; returns bool as f64 (`0`/`1`).
+pub const IMPORT_TA_CROSSOVER: u32 = 8;
+pub const IMPORT_TA_CROSSUNDER: u32 = 9;
 
 /// First function index defined in the guest module (after all `aether` imports).
-pub const GUEST_FUNC_BASE: u32 = IMPORT_TA_EMA + 1;
+pub const GUEST_FUNC_BASE: u32 = IMPORT_TA_CROSSUNDER + 1;
 
 /// Legacy / CLI-friendly export names (same function indices as [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`]).
 pub const GUEST_EXPORT_INIT_LEGACY: &str = "init";
@@ -140,25 +145,106 @@ fn require_string_literal(hir: &HirScript, id: HirId) -> Result<String, HirWasmE
     }
 }
 
-fn collect_lets(body: &[HirStmt], out: &mut Vec<(SymbolId, HirId)>) -> Result<(), HirWasmError> {
+fn collect_lets(
+    body: &[HirStmt],
+    persist: &HashSet<SymbolId>,
+    out: &mut Vec<(SymbolId, HirId)>,
+) -> Result<(), HirWasmError> {
     for s in body {
         match s {
-            HirStmt::Let { symbol, value } => out.push((*symbol, *value)),
-            HirStmt::Block(inner) => collect_lets(inner, out)?,
+            HirStmt::Let { symbol, value } => {
+                if !persist.contains(symbol) {
+                    out.push((*symbol, *value));
+                }
+            }
+            HirStmt::VarInit { .. } => {}
+            HirStmt::Block(inner) => collect_lets(inner, persist, out)?,
             HirStmt::If {
                 then_branch,
                 else_branch,
                 ..
             } => {
-                collect_lets(then_branch, out)?;
+                collect_lets(then_branch, persist, out)?;
                 if let Some(e) = else_branch {
-                    collect_lets(e, out)?;
+                    collect_lets(e, persist, out)?;
                 }
             }
             HirStmt::Plot { .. } => {}
         }
     }
     Ok(())
+}
+
+/// One wasm local per [`SymbolId`]; use the first `Let`'s value only to infer the local type.
+fn collect_lets_unique_symbols(
+    body: &[HirStmt],
+    persist: &HashSet<SymbolId>,
+    out: &mut Vec<(SymbolId, HirId)>,
+) -> Result<(), HirWasmError> {
+    let mut flat: Vec<(SymbolId, HirId)> = Vec::new();
+    collect_lets(body, persist, &mut flat)?;
+    let mut first_val: HashMap<SymbolId, HirId> = HashMap::new();
+    let mut order: Vec<SymbolId> = Vec::new();
+    for (sym, val) in flat {
+        if !first_val.contains_key(&sym) {
+            first_val.insert(sym, val);
+            order.push(sym);
+        }
+    }
+    for sym in order {
+        let val = *first_val
+            .get(&sym)
+            .ok_or_else(|| HirWasmError::dummy("internal: let dedupe map"))?;
+        out.push((sym, val));
+    }
+    Ok(())
+}
+
+fn build_persist_global_pairs(hir: &HirScript) -> Vec<(SymbolId, u32, u32)> {
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+    let mut next_g = 0u32;
+    let mut walk = |stmts: &[HirStmt]| {
+        walk_persist_var_inits(stmts, &mut seen, &mut pairs, &mut next_g);
+    };
+    walk(&hir.body);
+    for uf in &hir.user_functions {
+        walk(&uf.body_stmts);
+    }
+    pairs
+}
+
+fn walk_persist_var_inits(
+    stmts: &[HirStmt],
+    seen: &mut HashSet<SymbolId>,
+    pairs: &mut Vec<(SymbolId, u32, u32)>,
+    next_g: &mut u32,
+) {
+    for s in stmts {
+        match s {
+            HirStmt::VarInit { symbol, .. } => {
+                if seen.insert(*symbol) {
+                    let gi = *next_g;
+                    *next_g += 1;
+                    let gv = *next_g;
+                    *next_g += 1;
+                    pairs.push((*symbol, gi, gv));
+                }
+            }
+            HirStmt::Block(inner) => walk_persist_var_inits(inner, seen, pairs, next_g),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                walk_persist_var_inits(then_branch, seen, pairs, next_g);
+                if let Some(e) = else_branch {
+                    walk_persist_var_inits(e, seen, pairs, next_g);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmError> {
@@ -192,6 +278,11 @@ struct Ctx<'a> {
     sym_to_local: HashMap<SymbolId, u32>,
     pool: &'a HashMap<String, (i32, i32)>,
     user_fn_indices: &'a HashMap<SymbolId, u32>,
+    /// Temp f64 locals for `%` (`lhs` / `rhs`, then reuse second for `trunc(lhs/rhs)*rhs`).
+    scratch_l: u32,
+    scratch_r: u32,
+    /// `var` / `varip`: `(inited_global, value_global)` wasm global indices.
+    persist_globals: &'a HashMap<SymbolId, (u32, u32)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -199,12 +290,17 @@ impl<'a> Ctx<'a> {
         self.hir.symbols.name(id)
     }
 
-    fn input_index(&self, name: &str) -> Option<i32> {
-        self.hir
-            .inputs
-            .iter()
-            .position(|i| i.name == name)
-            .map(|p| p as i32)
+    fn input_import_for_name(&self, name: &str) -> Option<(i32, u32)> {
+        for (i, inp) in self.hir.inputs.iter().enumerate() {
+            if inp.name == name {
+                let import = match inp.kind {
+                    HirInputKind::Int(_) => IMPORT_INPUT_INT,
+                    HirInputKind::Float(_) => IMPORT_INPUT_FLOAT,
+                };
+                return Some((i as i32, import));
+            }
+        }
+        None
     }
 
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
@@ -242,8 +338,10 @@ impl<'a> Ctx<'a> {
                     .ok_or_else(|| HirWasmError::at(span, "unknown symbol"))?;
                 if name == "close" {
                     func.instructions().call(IMPORT_SERIES_CLOSE);
-                } else if let Some(idx) = self.input_index(name) {
-                    func.instructions().i32_const(idx).call(IMPORT_INPUT_INT);
+                } else if let Some(&(_gi, gv)) = self.persist_globals.get(sym) {
+                    func.instructions().global_get(gv);
+                } else if let Some((idx, import_fn)) = self.input_import_for_name(name) {
+                    func.instructions().i32_const(idx).call(import_fn);
                 } else if let Some(&li) = self.sym_to_local.get(sym) {
                     func.instructions().local_get(li);
                 } else {
@@ -293,10 +391,26 @@ impl<'a> Ctx<'a> {
                                 ins.f64_div();
                             }
                             BinOp::Mod => {
-                                return Err(HirWasmError::at(
-                                    span,
-                                    "f64 remainder (`%`) not supported in wasm v0",
-                                ));
+                                let sl = self.scratch_l;
+                                let sr = self.scratch_r;
+                                self.emit_expr(func, *lhs)?;
+                                func.instructions().local_set(sl);
+                                self.emit_expr(func, *rhs)?;
+                                func.instructions().local_set(sr);
+                                func
+                                    .instructions()
+                                    .local_get(sl)
+                                    .local_get(sr)
+                                    .f64_div()
+                                    .f64_trunc()
+                                    .local_get(sr)
+                                    .f64_mul()
+                                    .local_set(sr);
+                                func
+                                    .instructions()
+                                    .local_get(sl)
+                                    .local_get(sr)
+                                    .f64_sub();
                             }
                             BinOp::Eq => {
                                 ins.f64_eq();
@@ -408,6 +522,51 @@ impl<'a> Ctx<'a> {
                     self.emit_expr(func, args[1])?;
                     func.instructions().call(IMPORT_TA_EMA);
                 }
+                BuiltinKind::InputFloat => {
+                    if args.len() != 1 {
+                        return Err(HirWasmError::at(span, "input.float arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                }
+                BuiltinKind::TaCrossover => {
+                    if args.len() != 2 {
+                        return Err(HirWasmError::at(span, "ta.crossover arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                    self.emit_expr(func, args[1])?;
+                    func.instructions().call(IMPORT_TA_CROSSOVER);
+                }
+                BuiltinKind::TaCrossunder => {
+                    if args.len() != 2 {
+                        return Err(HirWasmError::at(span, "ta.crossunder arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                    self.emit_expr(func, args[1])?;
+                    func.instructions().call(IMPORT_TA_CROSSUNDER);
+                }
+                BuiltinKind::MathMax => {
+                    if args.len() != 2 {
+                        return Err(HirWasmError::at(span, "math.max arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                    self.emit_expr(func, args[1])?;
+                    func.instructions().f64_max();
+                }
+                BuiltinKind::MathMin => {
+                    if args.len() != 2 {
+                        return Err(HirWasmError::at(span, "math.min arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                    self.emit_expr(func, args[1])?;
+                    func.instructions().f64_min();
+                }
+                BuiltinKind::MathAbs => {
+                    if args.len() != 1 {
+                        return Err(HirWasmError::at(span, "math.abs arity"));
+                    }
+                    self.emit_expr(func, args[0])?;
+                    func.instructions().f64_abs();
+                }
             },
             HirExpr::SeriesAccess { base, offset, ty } => {
                 let base_span = expr_span(self.hir, *base);
@@ -514,25 +673,6 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
-    fn emit_cond_i32(&self, func: &mut Function, cond: HirId) -> Result<(), HirWasmError> {
-        let span = expr_span(self.hir, cond);
-        let ex = self
-            .hir
-            .exprs
-            .get(cond.0 as usize)
-            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
-        match ex {
-            HirExpr::Literal(HirLiteral::Bool(_), _) => {
-                self.emit_expr(func, cond)?;
-                Ok(())
-            }
-            _ => Err(HirWasmError::at(
-                span,
-                "wasm v0: `if` condition must be a boolean literal",
-            )),
-        }
-    }
-
     fn emit_stmt(&self, func: &mut Function, stmt: &HirStmt) -> Result<(), HirWasmError> {
         match stmt {
             HirStmt::If {
@@ -540,7 +680,8 @@ impl<'a> Ctx<'a> {
                 then_branch,
                 else_branch,
             } => {
-                self.emit_cond_i32(func, *cond)?;
+                let cspan = expr_span(self.hir, *cond);
+                self.emit_select_condition_i32(func, *cond, cspan)?;
                 func.instructions().if_(BlockType::Empty);
                 for s in then_branch {
                     self.emit_stmt(func, s)?;
@@ -557,11 +698,33 @@ impl<'a> Ctx<'a> {
             HirStmt::Let { symbol, value } => {
                 let vspan = expr_span(self.hir, *value);
                 self.emit_expr(func, *value)?;
-                let li = *self
-                    .sym_to_local
-                    .get(symbol)
-                    .ok_or_else(|| HirWasmError::at(vspan, "let without local slot"))?;
-                func.instructions().local_set(li);
+                if let Some(&(_gi, gv)) = self.persist_globals.get(symbol) {
+                    func.instructions().global_set(gv);
+                } else {
+                    let li = *self
+                        .sym_to_local
+                        .get(symbol)
+                        .ok_or_else(|| HirWasmError::at(vspan, "let without local slot"))?;
+                    func.instructions().local_set(li);
+                }
+                Ok(())
+            }
+            HirStmt::VarInit { symbol, value } => {
+                let vspan = expr_span(self.hir, *value);
+                let &(g_inited, g_val) = self.persist_globals.get(symbol).ok_or_else(|| {
+                    HirWasmError::at(
+                        vspan,
+                        "internal: VarInit missing wasm global mapping",
+                    )
+                })?;
+                func.instructions().global_get(g_inited);
+                func.instructions().i32_eqz();
+                func.instructions().if_(BlockType::Empty);
+                self.emit_expr(func, *value)?;
+                func.instructions().global_set(g_val);
+                func.instructions().i32_const(1);
+                func.instructions().global_set(g_inited);
+                func.instructions().end();
                 Ok(())
             }
             HirStmt::Plot { expr, .. } => {
@@ -584,9 +747,10 @@ fn encode_user_function_body(
     uf: &HirUserFunction,
     pool: &HashMap<String, (i32, i32)>,
     user_fn_indices: &HashMap<SymbolId, u32>,
+    persist_globals: &HashMap<SymbolId, (u32, u32)>,
 ) -> Result<Function, HirWasmError> {
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
-    collect_lets(&uf.body_stmts, &mut let_pairs)?;
+    collect_lets_unique_symbols(&uf.body_stmts, &hir.persist_symbols, &mut let_pairs)?;
     let mut sym_to_local: HashMap<SymbolId, u32> = HashMap::new();
     let mut next_local: u32 = 0;
     for p in &uf.params {
@@ -600,11 +764,19 @@ fn encode_user_function_body(
         sym_to_local.insert(*sym, next_local);
         next_local += 1;
     }
+    let scratch_l = next_local;
+    local_defs.push((1, ValType::F64));
+    let scratch_r = scratch_l + 1;
+    local_defs.push((1, ValType::F64));
+
     let ctx = Ctx {
         hir,
         sym_to_local,
         pool,
         user_fn_indices,
+        scratch_l,
+        scratch_r,
+        persist_globals,
     };
     let mut f = Function::new(local_defs);
     for s in &uf.body_stmts {
@@ -628,6 +800,9 @@ fn encode_user_function_body(
 /// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
+/// | `input_float` | `(i32 idx) -> f64` | `idx` = index of a float input in [`HirScript::inputs`] |
+/// | `ta_crossover` | `(f64 a, f64 b) -> f64` | Stateful host: `1.0` when `a > b && prev_a <= prev_b` |
+/// | `ta_crossunder` | `(f64 a, f64 b) -> f64` | Stateful host: `1.0` when `a < b && prev_a >= prev_b` |
 ///
 /// Exports: `memory`, legacy [`GUEST_EXPORT_INIT_LEGACY`] / [`GUEST_EXPORT_STEP_LEGACY`], and
 /// [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`] (same func indices as `init` / `on_bar`).
@@ -636,8 +811,14 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let mut pool = StringPool::new();
     collect_strings(hir, &mut pool)?;
 
+    let persist_pairs = build_persist_global_pairs(hir);
+    let persist_globals: HashMap<SymbolId, (u32, u32)> = persist_pairs
+        .iter()
+        .map(|(s, i, v)| (*s, (*i, *v)))
+        .collect();
+
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
-    collect_lets(&hir.body, &mut let_pairs)?;
+    collect_lets_unique_symbols(&hir.body, &hir.persist_symbols, &mut let_pairs)?;
 
     let mut local_defs: Vec<(u32, ValType)> = Vec::new();
     let mut sym_to_local: HashMap<SymbolId, u32> = HashMap::new();
@@ -654,6 +835,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     types.ty().function([], [ValType::F64]);
     let t_in = types.len();
     types.ty().function([ValType::I32], [ValType::I32]);
+    let t_in_float = types.len();
+    types.ty().function([ValType::I32], [ValType::F64]);
     let t_sma = types.len();
     types.ty().function([ValType::I32], [ValType::F64]);
     let t_sec = types.len();
@@ -665,6 +848,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     types.ty().function([ValType::F64], []);
     let t_series_hist = types.len();
     types.ty().function([ValType::I32], [ValType::F64]);
+    let t_cross = types.len();
+    types.ty().function([ValType::F64, ValType::F64], [ValType::F64]);
     let t_void = types.len();
     types.ty().function([], []);
 
@@ -699,6 +884,21 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     );
     // Append new imports after existing v0 indices so [`IMPORT_*`] constants stay stable.
     imports.import("aether", "ta_ema", EntityType::Function(t_sma));
+    imports.import(
+        "aether",
+        "input_float",
+        EntityType::Function(t_in_float),
+    );
+    imports.import(
+        "aether",
+        "ta_crossover",
+        EntityType::Function(t_cross),
+    );
+    imports.import(
+        "aether",
+        "ta_crossunder",
+        EntityType::Function(t_cross),
+    );
 
     let fn_init = GUEST_FUNC_BASE;
     let fn_on_bar = fn_init + 1;
@@ -725,6 +925,26 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         page_size_log2: None,
     });
 
+    let mut globals = GlobalSection::new();
+    for _ in 0..persist_pairs.len() {
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+        globals.global(
+            GlobalType {
+                val_type: ValType::F64,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::f64_const(0.0f64.into()),
+        );
+    }
+
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
     exports.export(GUEST_EXPORT_INIT_LEGACY, ExportKind::Func, fn_init);
@@ -736,16 +956,27 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     // init
     {
         let mut f = Function::new([]);
+        for (_s, g_inited, _gv) in &persist_pairs {
+            f.instructions().i32_const(0).global_set(*g_inited);
+        }
         f.instructions().end();
         code.function(&f);
     }
     // on_bar
     {
+        let scratch_l = next_local;
+        local_defs.push((1, ValType::F64));
+        let scratch_r = scratch_l + 1;
+        local_defs.push((1, ValType::F64));
+
         let ctx = Ctx {
             hir,
             sym_to_local,
             pool: &pool.map,
             user_fn_indices: &user_fn_indices,
+            scratch_l,
+            scratch_r,
+            persist_globals: &persist_globals,
         };
         let mut f = Function::new(local_defs);
         for stmt in &hir.body {
@@ -755,7 +986,13 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         code.function(&f);
     }
     for uf in &hir.user_functions {
-        let f = encode_user_function_body(hir, uf, &pool.map, &user_fn_indices)?;
+        let f = encode_user_function_body(
+            hir,
+            uf,
+            &pool.map,
+            &user_fn_indices,
+            &persist_globals,
+        )?;
         code.function(&f);
     }
 
@@ -769,6 +1006,9 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     module.section(&imports);
     module.section(&functions);
     module.section(&memory);
+    if !globals.is_empty() {
+        module.section(&globals);
+    }
     module.section(&exports);
     module.section(&code);
     if !pool.bytes.is_empty() {

@@ -78,7 +78,7 @@ impl fmt::Display for AnalyzeError {
 
 impl std::error::Error for AnalyzeError {}
 
-/// Early checks + semantic pipeline via the default [`crate::compiler::Compiler`] driver.
+/// Early checks + semantic pipeline via the default [`crate::Compiler`] driver.
 pub fn check_script(script: &Script) -> Result<(), AnalyzeError> {
-    crate::compiler::Compiler::new().run_semantic_passes(script)
+    crate::Compiler::new().run_semantic_passes(script)
 }

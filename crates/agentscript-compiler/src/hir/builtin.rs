@@ -11,4 +11,12 @@ pub enum BuiltinKind {
     TaEma,
     /// `input.int(default)` surface call (lowering may also record [`crate::hir::script::HirInputDecl`]).
     InputInt,
+    /// `input.float(default)` — literal default in this lowering pass.
+    InputFloat,
+    /// Host compares current `(a,b)` to previous bar values; returns bool as f64.
+    TaCrossover,
+    TaCrossunder,
+    MathMax,
+    MathMin,
+    MathAbs,
 }

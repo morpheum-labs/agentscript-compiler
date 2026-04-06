@@ -40,7 +40,7 @@ pub use ids::{HirId, SymbolId};
 pub use literal::HirLiteral;
 pub use lowering::LowerToHir;
 pub use security::{GapMode, Lookahead, SecurityCall};
-pub use script::{HirDeclaration, HirInputDecl, HirScript, HirUserFunction};
+pub use script::{HirDeclaration, HirInputDecl, HirInputKind, HirScript, HirUserFunction};
 pub use stmt::HirStmt;
 pub use symbols::SymbolTable;
 pub use ty::{

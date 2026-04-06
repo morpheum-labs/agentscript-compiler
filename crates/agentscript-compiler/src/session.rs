@@ -8,6 +8,28 @@ use crate::bindings::{NameBinding, SemanticSymbolId};
 use crate::frontend::ast::{max_node_id, NodeId, Script, Span};
 use crate::hir::{HirScript, HirType};
 
+/// Narrow interface for passes that only record qualified-path resolutions.
+pub trait NameBindingSink {
+    fn set_name_binding(&mut self, id: NodeId, binding: NameBinding);
+}
+
+/// Narrow interface for passes that only store inferred expression types.
+pub trait ExprTypeSink {
+    fn set_expr_type(&mut self, id: NodeId, ty: HirType);
+}
+
+/// Read inferred types after typecheck (e.g. return-type inference over a block).
+pub trait ExprTypesRead {
+    fn expr_types(&self) -> &[Option<HirType>];
+}
+
+/// Typed definition scopes (minimal typechecker surface).
+pub trait SymbolDefRecorder {
+    fn push_symbol_scope(&mut self);
+    fn pop_symbol_scope(&mut self);
+    fn record_symbol_def(&mut self, span: Span, name: &str, ty: HirType);
+}
+
 /// Definition site recorded by typecheck (mirrors lexical scope stack for tooling / LSP).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticDefSite {
@@ -101,6 +123,38 @@ impl CompilerSession {
         if i < self.expr_types.len() {
             self.expr_types[i] = Some(ty);
         }
+    }
+}
+
+impl NameBindingSink for CompilerSession {
+    fn set_name_binding(&mut self, id: NodeId, binding: NameBinding) {
+        CompilerSession::set_name_binding(self, id, binding);
+    }
+}
+
+impl ExprTypeSink for CompilerSession {
+    fn set_expr_type(&mut self, id: NodeId, ty: HirType) {
+        CompilerSession::set_expr_type(self, id, ty);
+    }
+}
+
+impl ExprTypesRead for CompilerSession {
+    fn expr_types(&self) -> &[Option<HirType>] {
+        &self.expr_types
+    }
+}
+
+impl SymbolDefRecorder for CompilerSession {
+    fn push_symbol_scope(&mut self) {
+        CompilerSession::push_symbol_scope(self);
+    }
+
+    fn pop_symbol_scope(&mut self) {
+        CompilerSession::pop_symbol_scope(self);
+    }
+
+    fn record_symbol_def(&mut self, span: Span, name: &str, ty: HirType) {
+        CompilerSession::record_symbol_def(self, span, name, ty);
     }
 }
 

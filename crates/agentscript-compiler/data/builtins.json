@@ -74,8 +74,9 @@
     "binary_numeric": false,
     "unary_numeric": false,
     "unary_string_to_float": false,
-    "bool_binary": true,
-    "series_from_args": false
+    "bool_binary": false,
+    "series_from_args": false,
+    "numeric_args_prefix": 2
   },
   {
     "dotted_name": "ta.crossunder",
@@ -85,8 +86,9 @@
     "binary_numeric": false,
     "unary_numeric": false,
     "unary_string_to_float": false,
-    "bool_binary": true,
-    "series_from_args": false
+    "bool_binary": false,
+    "series_from_args": false,
+    "numeric_args_prefix": 2
   },
   {
     "dotted_name": "math.pow",

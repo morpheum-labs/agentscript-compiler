@@ -219,4 +219,5 @@ HirScript {
             "c",
         ],
     },
+    persist_symbols: {},
 }

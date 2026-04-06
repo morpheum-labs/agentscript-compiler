@@ -139,4 +139,5 @@ HirScript {
             "y",
         ],
     },
+    persist_symbols: {},
 }

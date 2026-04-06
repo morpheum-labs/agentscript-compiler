@@ -7,6 +7,13 @@ repository.workspace = true
 description = "Parser and compiler front-end for AgentScript (QAS / Pine v6–aligned syntax); `.pine` and `.qas` sources."
 build = "build.rs"
 
+[features]
+default = ["codegen-wasm"]
+# Guest WASM v0 emitter (emit_hir_guest_wasm / GuestWasmV0).
+codegen-wasm = []
+# Reserved for an alternate code generator without changing the HIR pipeline.
+codegen-alt = []
+
 [build-dependencies]
 serde_json = "1"
 

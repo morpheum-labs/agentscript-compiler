@@ -17,7 +17,7 @@ use crate::hir::{
 };
 use crate::semantic::builtin_registry;
 use crate::semantic::{AnalyzeError, SemanticDiagnostic};
-use crate::session::CompilerSession;
+use crate::session::{CompilerSession, ExprTypesRead, ExprTypeSink, SymbolDefRecorder};
 
 /// Run type checking on a script (after earlier semantic passes).
 pub fn typecheck_script(script: &Script) -> Result<(), AnalyzeError> {
@@ -42,7 +42,7 @@ struct FnSig {
     ret: HirType,
 }
 
-struct Checker<'a> {
+struct Checker<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> {
     /// Import aliases — names exist but have unknown types until library typing exists.
     import_aliases: HashMap<String, HirType>,
     /// `f name(...)` / `name(...) =>` declarations (name → params + return type).
@@ -53,11 +53,11 @@ struct Checker<'a> {
     udt_fields: HashMap<String, HashMap<String, HirType>>,
     scopes: Vec<HashMap<String, HirType>>,
     issues: Vec<SemanticDiagnostic>,
-    session: &'a mut CompilerSession,
+    session: &'a mut S,
 }
 
-impl<'a> Checker<'a> {
-    fn new(script: &Script, session: &'a mut CompilerSession) -> Self {
+impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
+    fn new(script: &Script, session: &'a mut S) -> Self {
         let mut import_aliases = HashMap::new();
         let mut fn_sigs = HashMap::new();
         for item in &script.items {
@@ -1207,11 +1207,14 @@ fn default_fn_return_hir() -> HirType {
     HirType::Series(AstType::Primitive(PrimitiveType::Float))
 }
 
-fn infer_return_from_block(checker: &mut Checker, stmts: &[Stmt]) -> HirType {
+fn infer_return_from_block<S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead>(
+    checker: &mut Checker<'_, S>,
+    stmts: &[Stmt],
+) -> HirType {
     for s in stmts.iter().rev() {
         if let StmtKind::Expr(e) = &s.kind {
             let i = e.id.0 as usize;
-            if let Some(t) = checker.session.expr_types.get(i).and_then(|x| x.as_ref()) {
+            if let Some(t) = checker.session.expr_types().get(i).and_then(|x| x.as_ref()) {
                 return t.clone();
             }
             return checker

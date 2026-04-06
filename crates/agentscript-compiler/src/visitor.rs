@@ -1,82 +1,105 @@
-//! Default AST walking hooks; extend with specific visitors instead of growing central `match` trees.
+//! AST walking: composable [`VisitExpr`] / [`VisitStmt`] hooks plus [`AstWalk`] recursion.
+//!
+//! The error type parameter `E` defaults to `()` so simple visitors avoid spelling it. Loop bodies
+//! call [`AstWalk::push_loop_frame`] / [`AstWalk::pop_loop_frame`] so passes such as `break` /
+//! `continue` validation can track nesting without duplicating the statement `match`.
 
 use crate::frontend::ast::{
-    ElseBody, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item, Script, Stmt, StmtKind,
+    ElseBody, Expr, ExprKind, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, Stmt, StmtKind,
 };
 
-/// Walk expressions and statements; override selective methods for single-purpose passes.
-pub trait AstVisitor {
-    type Error;
+/// Per-expression hook (default no-op). Invoked at each node before children in [`AstWalk::walk_expr`].
+pub trait VisitExpr<E = ()> {
+    fn visit_expr(&mut self, _expr: &Expr) -> Result<(), E> {
+        Ok(())
+    }
+}
 
-    fn visit_script(&mut self, script: &Script) -> Result<(), Self::Error> {
+/// Per-statement hook (default no-op). Invoked at each node before children in [`AstWalk::walk_stmt`].
+pub trait VisitStmt<E = ()> {
+    fn visit_stmt(&mut self, _stmt: &Stmt) -> Result<(), E> {
+        Ok(())
+    }
+}
+
+/// Recursive pre-order walk; override [`VisitExpr`] / [`VisitStmt`] and/or loop-frame hooks only.
+pub trait AstWalk<E = ()>: VisitExpr<E> + VisitStmt<E> {
+    /// Called when entering the body of `for` / `for … in` / `while`.
+    fn push_loop_frame(&mut self) {}
+
+    /// Called after walking a loop body.
+    fn pop_loop_frame(&mut self) {}
+
+    fn walk_script(&mut self, script: &Script) -> Result<(), E> {
         for item in &script.items {
-            self.visit_item(item)?;
+            self.walk_item(item)?;
         }
         Ok(())
     }
 
-    fn visit_item(&mut self, item: &Item) -> Result<(), Self::Error> {
+    fn walk_item(&mut self, item: &Item) -> Result<(), E> {
         match item {
-            Item::Stmt(s) => self.visit_stmt(s),
-            Item::FnDecl(f) => self.visit_fn_decl(f),
-            Item::Export(crate::frontend::ast::ExportDecl::Fn(f)) => self.visit_fn_decl(f),
+            Item::Stmt(s) => self.walk_stmt(s),
+            Item::FnDecl(f) => self.walk_fn_decl(f),
+            Item::Export(ExportDecl::Fn(f)) => self.walk_fn_decl(f),
             Item::ScriptDecl(d) => {
                 for (_, e) in &d.args {
-                    self.visit_expr(e)?;
+                    self.walk_expr(e)?;
                 }
                 Ok(())
             }
-            Item::Enum(e) | Item::Export(crate::frontend::ast::ExportDecl::Enum(e)) => {
+            Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
                 for v in &e.variants {
-                    self.visit_expr(&v.value)?;
+                    self.walk_expr(&v.value)?;
                 }
                 Ok(())
             }
-            Item::TypeDef(t) | Item::Export(crate::frontend::ast::ExportDecl::TypeDef(t)) => {
+            Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
                 for field in &t.fields {
-                    self.visit_expr(&field.default)?;
+                    self.walk_expr(&field.default)?;
                 }
                 Ok(())
             }
-            Item::Export(crate::frontend::ast::ExportDecl::Var(v)) => {
-                self.visit_expr(&v.value)?;
+            Item::Export(ExportDecl::Var(v)) => {
+                self.walk_expr(&v.value)?;
                 Ok(())
             }
             Item::Import(_) => Ok(()),
         }
     }
 
-    fn visit_fn_decl(&mut self, f: &FnDecl) -> Result<(), Self::Error> {
+    fn walk_fn_decl(&mut self, f: &FnDecl) -> Result<(), E> {
         for p in &f.params {
             if let Some(d) = &p.default {
-                self.visit_expr(d)?;
+                self.walk_expr(d)?;
             }
         }
         match &f.body {
-            FnBody::Expr(e) => self.visit_expr(e),
+            FnBody::Expr(e) => self.walk_expr(e),
             FnBody::Block(stmts) => {
                 for s in stmts {
-                    self.visit_stmt(s)?;
+                    self.walk_stmt(s)?;
                 }
                 Ok(())
             }
         }
     }
 
-    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), Self::Error> {
+    fn walk_stmt(&mut self, stmt: &Stmt) -> Result<(), E> {
+        self.visit_stmt(stmt)?;
         match &stmt.kind {
-            StmtKind::VarDecl(v) => self.visit_expr(&v.value),
+            StmtKind::VarDecl(v) => self.walk_expr(&v.value),
             StmtKind::Assign { value, .. } | StmtKind::TupleAssign { value, .. } => {
-                self.visit_expr(value)
+                self.walk_expr(value)
             }
-            StmtKind::Expr(e) => self.visit_expr(e),
+            StmtKind::Expr(e) => self.walk_expr(e),
             StmtKind::Block(stmts) => {
                 for s in stmts {
-                    self.visit_stmt(s)?;
+                    self.walk_stmt(s)?;
                 }
                 Ok(())
             }
-            StmtKind::If(i) => self.visit_if_stmt(i),
+            StmtKind::If(i) => self.walk_if_stmt(i),
             StmtKind::For {
                 from,
                 to,
@@ -84,21 +107,25 @@ pub trait AstVisitor {
                 body,
                 ..
             } => {
-                self.visit_expr(from)?;
-                self.visit_expr(to)?;
+                self.walk_expr(from)?;
+                self.walk_expr(to)?;
                 if let Some(b) = by {
-                    self.visit_expr(b)?;
+                    self.walk_expr(b)?;
                 }
+                self.push_loop_frame();
                 for s in body {
-                    self.visit_stmt(s)?;
+                    self.walk_stmt(s)?;
                 }
+                self.pop_loop_frame();
                 Ok(())
             }
             StmtKind::ForIn { iterable, body, .. } => {
-                self.visit_expr(iterable)?;
+                self.walk_expr(iterable)?;
+                self.push_loop_frame();
                 for s in body {
-                    self.visit_stmt(s)?;
+                    self.walk_stmt(s)?;
                 }
+                self.pop_loop_frame();
                 Ok(())
             }
             StmtKind::Switch {
@@ -107,39 +134,41 @@ pub trait AstVisitor {
                 default,
             } => {
                 if let Some(s) = scrutinee {
-                    self.visit_expr(s)?;
+                    self.walk_expr(s)?;
                 }
                 for (e, arm) in cases {
-                    self.visit_expr(e)?;
-                    self.visit_stmt(arm)?;
+                    self.walk_expr(e)?;
+                    self.walk_stmt(arm)?;
                 }
                 if let Some(d) = default {
-                    self.visit_stmt(d)?;
+                    self.walk_stmt(d)?;
                 }
                 Ok(())
             }
             StmtKind::While { cond, body } => {
-                self.visit_expr(cond)?;
+                self.walk_expr(cond)?;
+                self.push_loop_frame();
                 for s in body {
-                    self.visit_stmt(s)?;
+                    self.walk_stmt(s)?;
                 }
+                self.pop_loop_frame();
                 Ok(())
             }
             StmtKind::Break | StmtKind::Continue => Ok(()),
         }
     }
 
-    fn visit_if_stmt(&mut self, i: &IfStmt) -> Result<(), Self::Error> {
-        self.visit_expr(&i.cond)?;
+    fn walk_if_stmt(&mut self, i: &IfStmt) -> Result<(), E> {
+        self.walk_expr(&i.cond)?;
         for s in &i.then_body {
-            self.visit_stmt(s)?;
+            self.walk_stmt(s)?;
         }
         if let Some(else_b) = &i.else_body {
             match else_b {
-                ElseBody::If(inner) => self.visit_if_stmt(inner),
+                ElseBody::If(inner) => self.walk_if_stmt(inner),
                 ElseBody::Block(stmts) => {
                     for s in stmts {
-                        self.visit_stmt(s)?;
+                        self.walk_stmt(s)?;
                     }
                     Ok(())
                 }
@@ -149,52 +178,53 @@ pub trait AstVisitor {
         }
     }
 
-    fn visit_expr(&mut self, expr: &Expr) -> Result<(), Self::Error> {
+    fn walk_expr(&mut self, expr: &Expr) -> Result<(), E> {
+        self.visit_expr(expr)?;
         match &expr.kind {
-            ExprKind::Member { base, .. } => self.visit_expr(base.as_ref()),
+            ExprKind::Member { base, .. } => self.walk_expr(base.as_ref()),
             ExprKind::Call {
                 callee,
                 type_args: _,
                 args,
             } => {
-                self.visit_expr(callee.as_ref())?;
+                self.walk_expr(callee.as_ref())?;
                 for (_, a) in args {
-                    self.visit_expr(a)?;
+                    self.walk_expr(a)?;
                 }
                 Ok(())
             }
             ExprKind::Index { base, index } => {
-                self.visit_expr(base.as_ref())?;
-                self.visit_expr(index.as_ref())
+                self.walk_expr(base.as_ref())?;
+                self.walk_expr(index.as_ref())
             }
             ExprKind::Array(elts) => {
                 for x in elts {
-                    self.visit_expr(x)?;
+                    self.walk_expr(x)?;
                 }
                 Ok(())
             }
-            ExprKind::Unary { expr, .. } => self.visit_expr(expr.as_ref()),
+            ExprKind::Unary { expr, .. } => self.walk_expr(expr.as_ref()),
             ExprKind::Binary { left, right, .. } => {
-                self.visit_expr(left.as_ref())?;
-                self.visit_expr(right.as_ref())
+                self.walk_expr(left.as_ref())?;
+                self.walk_expr(right.as_ref())
             }
             ExprKind::Ternary {
                 cond,
                 then_b,
                 else_b,
             } => {
-                self.visit_expr(cond.as_ref())?;
-                self.visit_expr(then_b.as_ref())?;
-                self.visit_expr(else_b.as_ref())
+                self.walk_expr(cond.as_ref())?;
+                self.walk_expr(then_b.as_ref())?;
+                self.walk_expr(else_b.as_ref())
             }
             ExprKind::IfExpr {
                 cond,
                 then_b,
                 else_b,
             } => {
-                self.visit_expr(cond.as_ref())?;
-                self.visit_expr(then_b.as_ref())?;
-                self.visit_expr(else_b.as_ref())
+                self.walk_expr(cond.as_ref())?;
+                self.walk_expr(then_b.as_ref())?;
+                self.walk_expr(else_b.as_ref())
             }
             ExprKind::Int(_)
             | ExprKind::Float(_)
@@ -207,3 +237,32 @@ pub trait AstVisitor {
         }
     }
 }
+
+/// `visit_*` entry points delegate to [`AstWalk`]; hooks live on [`VisitExpr`] / [`VisitStmt`].
+pub trait AstVisitor<E = ()>: AstWalk<E> {
+    fn visit_script(&mut self, script: &Script) -> Result<(), E> {
+        self.walk_script(script)
+    }
+
+    fn visit_item(&mut self, item: &Item) -> Result<(), E> {
+        self.walk_item(item)
+    }
+
+    fn visit_fn_decl(&mut self, f: &FnDecl) -> Result<(), E> {
+        self.walk_fn_decl(f)
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), E> {
+        self.walk_stmt(stmt)
+    }
+
+    fn visit_if_stmt(&mut self, i: &IfStmt) -> Result<(), E> {
+        self.walk_if_stmt(i)
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> Result<(), E> {
+        self.walk_expr(expr)
+    }
+}
+
+impl<E, T: AstWalk<E>> AstVisitor<E> for T {}

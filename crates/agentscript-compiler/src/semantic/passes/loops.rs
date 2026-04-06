@@ -1,106 +1,63 @@
 //! `break` / `continue` may appear only inside `for` or `while` bodies.
 
-use crate::frontend::ast::{
-    ElseBody, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, Stmt, StmtKind,
-};
+use crate::frontend::ast::{Script, Stmt, StmtKind};
+use crate::visitor::{AstWalk, VisitExpr, VisitStmt};
 
 use super::super::{AnalyzeError, SemanticDiagnostic};
 
-pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
-    let mut issues = Vec::new();
-    for item in &script.items {
-        match item {
-            Item::Stmt(s) => walk_stmt(s, 0, &mut issues),
-            Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => walk_fn(f, &mut issues),
-            Item::ScriptDecl(_)
-            | Item::Export(ExportDecl::Var(_))
-            | Item::Export(ExportDecl::Enum(_))
-            | Item::Export(ExportDecl::TypeDef(_))
-            | Item::Enum(_)
-            | Item::TypeDef(_)
-            | Item::Import(_) => {}
-        }
-    }
-    if issues.is_empty() {
-        Ok(())
-    } else {
-        Err(AnalyzeError::new(issues))
-    }
+struct BreakContinueChecker {
+    loop_depth: u32,
+    issues: Vec<SemanticDiagnostic>,
 }
 
-fn walk_fn(f: &FnDecl, issues: &mut Vec<SemanticDiagnostic>) {
-    if let FnBody::Block(stmts) = &f.body {
-        for s in stmts {
-            walk_stmt(s, 0, issues);
-        }
-    }
-}
+impl VisitExpr for BreakContinueChecker {}
 
-fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<SemanticDiagnostic>) {
-    match &s.kind {
-        StmtKind::Break | StmtKind::Continue => {
-            if loop_depth == 0 {
-                let kw = match &s.kind {
-                    StmtKind::Break => "break",
-                    StmtKind::Continue => "continue",
-                    _ => unreachable!(),
-                };
-                issues.push(SemanticDiagnostic {
-                    message: format!(
-                        "`{kw}` is only valid inside a `for` or `while` loop",
-                    ),
-                    span: s.span,
-                });
-            }
-        }
-        StmtKind::Block(stmts) => {
-            for x in stmts {
-                walk_stmt(x, loop_depth, issues);
-            }
-        }
-        StmtKind::If(i) => walk_if(i, loop_depth, issues),
-        StmtKind::For { body, .. } | StmtKind::ForIn { body, .. } => {
-            for x in body {
-                walk_stmt(x, loop_depth.saturating_add(1), issues);
-            }
-        }
-        StmtKind::While { body, .. } => {
-            for x in body {
-                walk_stmt(x, loop_depth.saturating_add(1), issues);
-            }
-        }
-        StmtKind::Switch {
-            cases,
-            default,
-            ..
-        } => {
-            for (_, arm) in cases {
-                walk_stmt(arm, loop_depth, issues);
-            }
-            if let Some(d) = default {
-                walk_stmt(d, loop_depth, issues);
-            }
-        }
-        StmtKind::VarDecl(_)
-        | StmtKind::Assign { .. }
-        | StmtKind::TupleAssign { .. }
-        | StmtKind::Expr(_) => {}
-    }
-}
-
-fn walk_if(i: &IfStmt, loop_depth: u32, issues: &mut Vec<SemanticDiagnostic>) {
-    for x in &i.then_body {
-        walk_stmt(x, loop_depth, issues);
-    }
-    if let Some(else_b) = &i.else_body {
-        match else_b {
-            ElseBody::If(inner) => walk_if(inner, loop_depth, issues),
-            ElseBody::Block(stmts) => {
-                for x in stmts {
-                    walk_stmt(x, loop_depth, issues);
+impl VisitStmt for BreakContinueChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), ()> {
+        match &stmt.kind {
+            StmtKind::Break | StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    let kw = match &stmt.kind {
+                        StmtKind::Break => "break",
+                        StmtKind::Continue => "continue",
+                        _ => unreachable!(),
+                    };
+                    self.issues.push(SemanticDiagnostic {
+                        message: format!(
+                            "`{kw}` is only valid inside a `for` or `while` loop",
+                        ),
+                        span: stmt.span,
+                    });
                 }
             }
+            _ => {}
         }
+        Ok(())
+    }
+}
+
+impl AstWalk for BreakContinueChecker {
+    fn push_loop_frame(&mut self) {
+        self.loop_depth = self.loop_depth.saturating_add(1);
+    }
+
+    fn pop_loop_frame(&mut self) {
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+    }
+}
+
+pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
+    let mut c = BreakContinueChecker {
+        loop_depth: 0,
+        issues: Vec::new(),
+    };
+    let Ok(()) = c.walk_script(script) else {
+        unreachable!("break/continue walk does not surface errors");
+    };
+    if c.issues.is_empty() {
+        Ok(())
+    } else {
+        Err(AnalyzeError::new(c.issues))
     }
 }
 

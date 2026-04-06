@@ -19,10 +19,10 @@ use crate::session::CompilerSession;
 
 use super::builtin::BuiltinKind;
 use super::expr::HirExpr;
-use super::ids::HirId;
+use super::ids::{HirId, SymbolId};
 use super::literal::HirLiteral;
 use super::lowering::LowerToHir;
-use super::script::{HirDeclaration, HirInputDecl, HirScript, HirUserFunction};
+use super::script::{HirDeclaration, HirInputDecl, HirInputKind, HirScript, HirUserFunction};
 use super::security::{GapMode, Lookahead, SecurityCall};
 use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
@@ -105,8 +105,11 @@ struct LowerCtx<'a, 'sess> {
     names: HashMap<String, super::ids::SymbolId>,
     /// Names introduced by `input.int` / `input int` (typed as simple int in HIR).
     input_int_names: HashSet<String>,
+    /// Names introduced by `input.float` / `input float`.
+    input_float_names: HashSet<String>,
     /// User `f(...) =>` / Pine expr-body functions: name → arity (parameters).
     user_fn_arity: HashMap<String, usize>,
+    persist_symbols: HashSet<SymbolId>,
 }
 
 impl<'a, 'sess> LowerCtx<'a, 'sess> {
@@ -127,7 +130,9 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             symbols: SymbolTable::new(),
             names: HashMap::new(),
             input_int_names: HashSet::new(),
+            input_float_names: HashSet::new(),
             user_fn_arity: HashMap::new(),
+            persist_symbols: HashSet::new(),
         }
     }
 
@@ -218,6 +223,9 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         if self.input_int_names.contains(name) {
             return HirType::Simple(Type::Primitive(PrimitiveType::Int));
         }
+        if self.input_float_names.contains(name) {
+            return HirType::Simple(Type::Primitive(PrimitiveType::Float));
+        }
         HirType::Series(Type::Primitive(PrimitiveType::Float))
     }
 
@@ -243,6 +251,10 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
 
     fn register_input_int(&mut self, name: &str) {
         self.input_int_names.insert(name.to_string());
+    }
+
+    fn register_input_float(&mut self, name: &str) {
+        self.input_float_names.insert(name.to_string());
     }
 
     fn intern_name(&mut self, name: &str) -> super::ids::SymbolId {
@@ -362,6 +374,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             body,
             user_functions,
             symbols: std::mem::take(&mut self.symbols),
+            persist_symbols: std::mem::take(&mut self.persist_symbols),
         })
     }
 
@@ -483,13 +496,40 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
     ) -> Result<(), HirLowerError> {
         match &stmt.kind {
             StmtKind::VarDecl(v) => {
+                if matches!(
+                    v.qualifier,
+                    Some(VarQualifier::Var) | Some(VarQualifier::Varip)
+                ) {
+                    let sym = if self.session.is_some() {
+                        self.declare_local(&v.name, v.span)?
+                    } else {
+                        self.intern_name(&v.name)
+                    };
+                    let value = self.lower_expr(&v.value)?;
+                    self.persist_symbols.insert(sym);
+                    body.push(HirStmt::VarInit { symbol: sym, value });
+                    return Ok(());
+                }
                 if v.qualifier == Some(VarQualifier::Input) {
-                    let def = int_default_from_expr(&v.value)?;
-                    inputs.push(HirInputDecl {
-                        name: v.name.clone(),
-                        default_int: def,
-                    });
-                    self.register_input_int(&v.name);
+                    let is_float = matches!(
+                        v.ty,
+                        Some(Type::Primitive(PrimitiveType::Float))
+                    );
+                    if is_float {
+                        let def = float_default_from_expr(&v.value)?;
+                        inputs.push(HirInputDecl {
+                            name: v.name.clone(),
+                            kind: HirInputKind::Float(def),
+                        });
+                        self.register_input_float(&v.name);
+                    } else {
+                        let def = int_default_from_expr(&v.value)?;
+                        inputs.push(HirInputDecl {
+                            name: v.name.clone(),
+                            kind: HirInputKind::Int(def),
+                        });
+                        self.register_input_int(&v.name);
+                    }
                     let sym = self.intern_name(&v.name);
                     if let Some(sid) = self.next_def_sid(v.span)? {
                         self.sid_to_hir.insert(sid, sym);
@@ -499,7 +539,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 if v.qualifier.is_some() || v.ty.is_some() {
                     return Err(HirLowerError::at(
                         v.span,
-                        "only plain `name = expr` or `input …` declarations are supported",
+                        "only plain `name = expr`, `input …`, or `var` / `varip` declarations are supported",
                     ));
                 }
                 let sym = if self.session.is_some() {
@@ -515,13 +555,20 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 Ok(())
             }
             StmtKind::Assign {
-                name: _,
+                name,
                 op: AssignOp::ColonEq,
-                ..
-            } => Err(HirLowerError::at(
-                stmt.span,
-                "`:=` reassignment is not supported in this HIR lowering pass",
-            )),
+                value,
+            } => {
+                let sym = self.resolve_var_symbol(name).ok_or_else(|| {
+                    HirLowerError::at(
+                        stmt.span,
+                        format!("unknown variable `{name}` for `:=` reassignment"),
+                    )
+                })?;
+                let hir = self.lower_expr(value)?;
+                body.push(HirStmt::Let { symbol: sym, value: hir });
+                Ok(())
+            }
             StmtKind::Assign {
                 name,
                 op: AssignOp::Eq,
@@ -530,9 +577,21 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 if let Some(n) = try_input_int_default(value) {
                     inputs.push(HirInputDecl {
                         name: name.clone(),
-                        default_int: n,
+                        kind: HirInputKind::Int(n),
                     });
                     self.register_input_int(name);
+                    let sym = self.intern_name(name);
+                    if let Some(sid) = self.next_def_sid(stmt.span)? {
+                        self.sid_to_hir.insert(sid, sym);
+                    }
+                    return Ok(());
+                }
+                if let Some(x) = try_input_float_default(value) {
+                    inputs.push(HirInputDecl {
+                        name: name.clone(),
+                        kind: HirInputKind::Float(x),
+                    });
+                    self.register_input_float(name);
                     let sym = self.intern_name(name);
                     if let Some(sid) = self.next_def_sid(stmt.span)? {
                         self.sid_to_hir.insert(sid, sym);
@@ -866,15 +925,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         args: &[(Option<String>, Expr)],
         expr_span: Span,
     ) -> Result<HirId, HirLowerError> {
-        let path = match &callee.kind {
-            ExprKind::IdentPath(p) => p.as_slice(),
-            _ => {
-                return Err(HirLowerError::at(
-                    callee.span,
-                    "only simple path callees are supported",
-                ));
-            }
-        };
+        let (path, method_receiver) = callee_path_with_receiver(callee)?;
 
         if path == ["input", "int"] {
             if args.len() != 1 {
@@ -909,6 +960,39 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             ));
         }
 
+        if path == ["input", "float"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "input.float expects one argument",
+                ));
+            }
+            let x = match &args[0].1.kind {
+                ExprKind::Float(f) => *f,
+                _ => {
+                    return Err(HirLowerError::at(
+                        args[0].1.span,
+                        "input.float default must be a float literal in this pass",
+                    ));
+                }
+            };
+            let lit = self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::Float(x),
+                    HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                ),
+                args[0].1.span,
+            );
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::InputFloat,
+                    args: vec![lit],
+                    ty: HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
+        }
+
         if path == ["ta", "sma"] {
             if args.len() != 2 {
                 return Err(HirLowerError::at(expr_span, "ta.sma expects two arguments"));
@@ -925,12 +1009,57 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             ));
         }
 
+        // `close.sma(len)` → `ta.sma(close, len)` (Pine method form).
+        if path == ["close", "sma"] {
+            let recv = method_receiver.ok_or_else(|| {
+                HirLowerError::at(callee.span, "internal: close.sma missing receiver")
+            })?;
+            if args.len() != 1 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "close.sma expects one argument (length)",
+                ));
+            }
+            let a0 = self.lower_expr(recv)?;
+            let a1 = self.lower_expr(&args[0].1)?;
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaSma,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
+        }
+
         if path == ["ta", "ema"] {
             if args.len() != 2 {
                 return Err(HirLowerError::at(expr_span, "ta.ema expects two arguments"));
             }
             let a0 = self.lower_expr(&args[0].1)?;
             let a1 = self.lower_expr(&args[1].1)?;
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaEma,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["close", "ema"] {
+            let recv = method_receiver.ok_or_else(|| {
+                HirLowerError::at(callee.span, "internal: close.ema missing receiver")
+            })?;
+            if args.len() != 1 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "close.ema expects one argument (length)",
+                ));
+            }
+            let a0 = self.lower_expr(recv)?;
+            let a1 = self.lower_expr(&args[0].1)?;
             return Ok(self.alloc_expr(
                 HirExpr::BuiltinCall {
                     kind: BuiltinKind::TaEma,
@@ -1001,6 +1130,94 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec)), expr_span));
         }
 
+        if path == ["ta", "crossover"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "ta.crossover expects two arguments",
+                ));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaCrossover,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Bool)),
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["ta", "crossunder"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "ta.crossunder expects two arguments",
+                ));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaCrossunder,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Bool)),
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "max"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(expr_span, "math.max expects two arguments"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            let ty = HirType::Series(Type::Primitive(PrimitiveType::Float));
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathMax,
+                    args: vec![a0, a1],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "min"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(expr_span, "math.min expects two arguments"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            let ty = HirType::Series(Type::Primitive(PrimitiveType::Float));
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathMin,
+                    args: vec![a0, a1],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "abs"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.abs expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathAbs,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
         if path.len() == 1 {
             let name = &path[0];
             if let Some(&arity) = self.user_fn_arity.get(name.as_str()) {
@@ -1031,7 +1248,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             }
         }
 
-        if path == ["plot"] {
+        if path.as_slice() == ["plot"] {
             return Err(HirLowerError::at(
                 expr_span,
                 "use `plot(expr)` as a statement, not as a nested expression",
@@ -1042,6 +1259,27 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             expr_span,
             format!("call `{}` not supported", path.join(".")),
         ))
+    }
+}
+
+/// Dotted callee path (`ta.sma`) or method form (`close.sma`), plus the receiver expression for the latter.
+fn callee_path_with_receiver(callee: &Expr) -> Result<(Vec<String>, Option<&Expr>), HirLowerError> {
+    match &callee.kind {
+        ExprKind::IdentPath(p) => Ok((p.clone(), None)),
+        ExprKind::Member { base, field } => {
+            let mut path = path_tail_from_expr(base.as_ref()).ok_or_else(|| {
+                HirLowerError::at(
+                    callee.span,
+                    "invalid method callee (expected a simple path before `.`)",
+                )
+            })?;
+            path.push(field.clone());
+            Ok((path, Some(base.as_ref())))
+        }
+        _ => Err(HirLowerError::at(
+            callee.span,
+            "only path or member call forms are supported",
+        )),
     }
 }
 
@@ -1157,6 +1395,46 @@ fn try_input_int_default(e: &Expr) -> Option<i64> {
     }
     match &args[0].1.kind {
         ExprKind::Int(i) => Some(*i),
+        _ => None,
+    }
+}
+
+fn float_default_from_expr(e: &Expr) -> Result<f64, HirLowerError> {
+    match &e.kind {
+        ExprKind::Float(x) => Ok(*x),
+        _ => {
+            if let Some(x) = try_input_float_default(e) {
+                return Ok(x);
+            }
+            Err(HirLowerError::at(
+                e.span,
+                "input float declaration default must be a float literal or input.float(float)",
+            ))
+        }
+    }
+}
+
+fn try_input_float_default(e: &Expr) -> Option<f64> {
+    let ExprKind::Call {
+        callee,
+        type_args,
+        args,
+    } = &e.kind
+    else {
+        return None;
+    };
+    if type_args.is_some() || args.len() != 1 {
+        return None;
+    }
+    let path = match &callee.kind {
+        ExprKind::IdentPath(p) => p.as_slice(),
+        _ => return None,
+    };
+    if path != ["input", "float"] {
+        return None;
+    }
+    match &args[0].1.kind {
+        ExprKind::Float(f) => Some(*f),
         _ => None,
     }
 }

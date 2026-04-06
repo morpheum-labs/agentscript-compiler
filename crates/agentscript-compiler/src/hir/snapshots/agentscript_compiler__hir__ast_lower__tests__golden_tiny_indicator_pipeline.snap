@@ -1,6 +1,5 @@
 ---
 source: crates/agentscript-compiler/src/hir/ast_lower.rs
-assertion_line: 885
 expression: "c.session.hir.as_ref().expect(\"hir\")"
 ---
 HirScript {
@@ -13,7 +12,9 @@ HirScript {
     inputs: [
         HirInputDecl {
             name: "len",
-            default_int: 14,
+            kind: Int(
+                14,
+            ),
         },
     ],
     exprs: [
@@ -147,4 +148,5 @@ HirScript {
             "htf",
         ],
     },
+    persist_symbols: {},
 }

@@ -206,4 +206,5 @@ HirScript {
             "cmp",
         ],
     },
+    persist_symbols: {},
 }

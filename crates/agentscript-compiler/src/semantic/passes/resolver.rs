@@ -9,22 +9,22 @@ use crate::frontend::ast::{
 };
 
 use crate::frontend::ast::Span;
-use crate::session::CompilerSession;
+use crate::session::{CompilerSession, NameBindingSink};
 
 use super::super::builtins::builtin_namespace_roots;
 use super::super::{AnalyzeError, SemanticDiagnostic};
 
-struct ResolveCtx<'a> {
+struct ResolveCtx<'a, S: NameBindingSink> {
     script_kind: Option<ScriptKind>,
     import_aliases: HashSet<String>,
     user_type_roots: HashSet<String>,
     builtins: HashSet<&'static str>,
     issues: Vec<SemanticDiagnostic>,
-    session: &'a mut CompilerSession,
+    session: &'a mut S,
 }
 
-impl<'a> ResolveCtx<'a> {
-    fn new(script: &Script, session: &'a mut CompilerSession) -> Self {
+impl<'a, S: NameBindingSink> ResolveCtx<'a, S> {
+    fn new(script: &Script, session: &'a mut S) -> Self {
         let mut import_aliases = HashSet::new();
         let mut user_type_roots = HashSet::new();
         for item in &script.items {

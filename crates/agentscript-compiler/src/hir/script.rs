@@ -2,6 +2,7 @@
 //!
 //! **SRP:** top-level program shape; no per-node logic.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::frontend::ast::{ScriptKind, Span};
@@ -12,10 +13,15 @@ use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum HirInputKind {
+    Int(i64),
+    Float(f64),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirInputDecl {
     pub name: String,
-    /// `input.int` / `input int` — minimal subset uses int defaults only.
-    pub default_int: i64,
+    pub kind: HirInputKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +60,8 @@ pub struct HirScript {
     pub body: Vec<HirStmt>,
     pub user_functions: Vec<HirUserFunction>,
     pub symbols: SymbolTable,
+    /// Symbols declared with `var` / `varip` (persist across `on_bar` via wasm globals).
+    pub persist_symbols: HashSet<SymbolId>,
 }
 
 impl fmt::Debug for HirScript {
@@ -67,6 +75,7 @@ impl fmt::Debug for HirScript {
             .field("body", &self.body)
             .field("user_functions", &self.user_functions)
             .field("symbols", &self.symbols)
+            .field("persist_symbols", &self.persist_symbols)
             .finish()
     }
 }
