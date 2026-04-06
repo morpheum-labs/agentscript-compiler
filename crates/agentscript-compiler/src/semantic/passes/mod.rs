@@ -14,8 +14,8 @@ mod typecheck;
 
 pub use early::analyze_script;
 pub use lexical::{lexical_resolve_script, lexical_resolve_script_in_session};
-pub use resolver::resolve_script;
-pub use typecheck::typecheck_script;
+pub use resolver::{resolve_script, resolve_script_in_session};
+pub use typecheck::{typecheck_script, typecheck_script_in_session};
 
 /// Pluggable pipeline step; add new passes without editing the driver’s control flow.
 pub trait CompilerPass {
@@ -57,8 +57,8 @@ impl CompilerPass for ResolverPass {
         "resolve"
     }
 
-    fn run(&mut self, _session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
-        resolver::resolve_script(script)
+    fn run(&mut self, session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        resolver::resolve_script_in_session(session, script)
     }
 }
 
@@ -83,8 +83,8 @@ impl CompilerPass for TypecheckPass {
         "typecheck"
     }
 
-    fn run(&mut self, _session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
-        typecheck::typecheck_script(script)
+    fn run(&mut self, session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        typecheck::typecheck_script_in_session(session, script)
     }
 }
 

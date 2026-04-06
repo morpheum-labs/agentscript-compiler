@@ -341,7 +341,9 @@ pub fn resolve_script_in_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::NameBinding;
     use crate::parse_script;
+    use crate::Compiler;
 
     #[test]
     fn strategy_long_in_indicator_rejected() {
@@ -393,5 +395,26 @@ mod tests {
         )
         .unwrap();
         resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn qualified_ta_sma_recorded_on_session() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\ny = ta.sma(close, 14)\n",
+        )
+        .unwrap();
+        let mut c = Compiler::new();
+        c.run_semantic_passes(&s).unwrap();
+        assert!(
+            c.session.name_bindings.iter().any(|b| {
+                matches!(
+                    b,
+                    Some(NameBinding::QualifiedPath(p)) if p == "ta.sma"
+                )
+            }),
+            "expected QualifiedPath(ta.sma), got {:?}",
+            c.session.name_bindings
+        );
     }
 }

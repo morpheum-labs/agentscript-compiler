@@ -26,11 +26,11 @@ pub use frontend::parser::script_parser;
 pub use codegen::emit_minimal_guest_wasm_v0;
 pub use semantic::{
     analyze_script, check_script, default_passes, default_passes_with_hir, lexical_resolve_script,
-    lexical_resolve_script_in_session, resolve_script, typecheck_script, AnalyzeError,
-    BreakContinuePass, CompilerPass, EarlyAnalyzePass, HirLowerPass, LexicalResolvePass, ResolverPass,
-    SemanticDiagnostic, TypecheckPass,
+    lexical_resolve_script_in_session, resolve_script, resolve_script_in_session, typecheck_script,
+    typecheck_script_in_session, AnalyzeError, BreakContinuePass, CompilerPass, EarlyAnalyzePass,
+    HirLowerPass, LexicalResolvePass, ResolverPass, SemanticDiagnostic, TypecheckPass,
 };
-pub use hir::{lower_script_to_hir, AstHirLowerer, HirLowerError, HirScript, LowerToHir};
+pub use hir::{lower_script_to_hir, AstHirLowerer, HirLowerError, HirScript, HirType, LowerToHir};
 pub use session::CompilerSession;
 pub use visitor::AstVisitor;
 

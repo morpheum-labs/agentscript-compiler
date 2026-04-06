@@ -851,7 +851,10 @@ fn assignable(from: &HirType, to: &HirType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::typecheck_script;
+    use crate::frontend::ast::{PrimitiveType, Type as AstType};
+    use crate::hir::HirType;
     use crate::parse_script;
+    use crate::Compiler;
 
     #[test]
     fn typecheck_ok_indicator_arithmetic() {
@@ -913,5 +916,25 @@ mod tests {
         .unwrap();
         let e = typecheck_script(&bad).unwrap_err();
         assert!(e.message().contains("request.financial"), "{}", e.message());
+    }
+
+    #[test]
+    fn compiler_records_expr_types_for_nodes() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nfloat y = close + 1.0\n",
+        )
+        .unwrap();
+        let mut c = Compiler::new();
+        c.run_semantic_passes(&s).unwrap();
+        let float_series = HirType::Series(AstType::Primitive(PrimitiveType::Float));
+        assert!(
+            c.session
+                .expr_types
+                .iter()
+                .any(|t| t.as_ref() == Some(&float_series)),
+            "expected at least one Series(float) in {:?}",
+            c.session.expr_types
+        );
     }
 }

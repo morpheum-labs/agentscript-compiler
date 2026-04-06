@@ -14,8 +14,9 @@ pub mod passes;
 
 pub use passes::{
     analyze_script, default_passes, default_passes_with_hir, lexical_resolve_script,
-    lexical_resolve_script_in_session, resolve_script, typecheck_script, BreakContinuePass,
-    CompilerPass, EarlyAnalyzePass, HirLowerPass, LexicalResolvePass, ResolverPass, TypecheckPass,
+    lexical_resolve_script_in_session, resolve_script, resolve_script_in_session, typecheck_script,
+    typecheck_script_in_session, BreakContinuePass, CompilerPass, EarlyAnalyzePass, HirLowerPass,
+    LexicalResolvePass, ResolverPass, TypecheckPass,
 };
 
 /// One semantic issue at a concrete source range (or [`Span::DUMMY`] when unknown).
