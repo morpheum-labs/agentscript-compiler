@@ -1,0 +1,209 @@
+---
+source: crates/agentscript-compiler/src/hir/ast_lower.rs
+expression: "c.session.hir.as_ref().expect(\"hir\")"
+---
+HirScript {
+    version: 6,
+    declaration: Indicator {
+        title: Some(
+            "not",
+        ),
+    },
+    inputs: [],
+    exprs: [
+        Literal(
+            Bool(
+                true,
+            ),
+            Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Not {
+            inner: HirId(
+                0,
+            ),
+            ty: Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                1.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Binary {
+            op: Gt,
+            lhs: HirId(
+                2,
+            ),
+            rhs: HirId(
+                3,
+            ),
+            ty: Series(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        },
+        Not {
+            inner: HirId(
+                4,
+            ),
+            ty: Series(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                1,
+            ),
+            Simple(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                1.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                0.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Select {
+            cond: HirId(
+                6,
+            ),
+            then_b: HirId(
+                7,
+            ),
+            else_b: HirId(
+                8,
+            ),
+            ty: Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+        Variable(
+            SymbolId(
+                2,
+            ),
+            Series(
+                Primitive(
+                    Bool,
+                ),
+            ),
+        ),
+        Variable(
+            SymbolId(
+                0,
+            ),
+            Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Literal(
+            Float(
+                0.0,
+            ),
+            Simple(
+                Primitive(
+                    Float,
+                ),
+            ),
+        ),
+        Select {
+            cond: HirId(
+                10,
+            ),
+            then_b: HirId(
+                11,
+            ),
+            else_b: HirId(
+                12,
+            ),
+            ty: Series(
+                Primitive(
+                    Float,
+                ),
+            ),
+        },
+    ],
+    body: [
+        Let {
+            symbol: SymbolId(
+                1,
+            ),
+            value: HirId(
+                1,
+            ),
+        },
+        Let {
+            symbol: SymbolId(
+                2,
+            ),
+            value: HirId(
+                5,
+            ),
+        },
+        Plot {
+            expr: HirId(
+                9,
+            ),
+            title: None,
+        },
+        Plot {
+            expr: HirId(
+                13,
+            ),
+            title: None,
+        },
+    ],
+    user_functions: [],
+    symbols: SymbolTable {
+        names: [
+            "close",
+            "lit",
+            "cmp",
+        ],
+    },
+}

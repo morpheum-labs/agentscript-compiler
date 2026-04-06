@@ -44,6 +44,11 @@ pub enum HirExpr {
         else_b: HirId,
         ty: HirType,
     },
+    /// Unary `not` on a bool-like operand (scalar or series bool).
+    Not {
+        inner: HirId,
+        ty: HirType,
+    },
     Security(Box<SecurityCall>),
     /// Inline plot when lowered as an expression-shaped construct (if the surface allows).
     Plot {

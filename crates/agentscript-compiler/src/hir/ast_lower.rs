@@ -275,6 +275,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             HirExpr::UserCall { ty, .. } => ty.clone(),
             HirExpr::SeriesAccess { ty, .. } => ty.clone(),
             HirExpr::Select { ty, .. } => ty.clone(),
+            HirExpr::Not { ty, .. } => ty.clone(),
             HirExpr::Security(sec) => sec.ty.clone(),
             HirExpr::Plot { .. } => HirType::Series(Type::Primitive(PrimitiveType::Float)),
         }
@@ -733,10 +734,16 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                             e.span,
                         ))
                     }
-                    UnaryOp::Not => Err(HirLowerError::at(
-                        e.span,
-                        "unary `not` is not supported in this HIR lowering pass",
-                    )),
+                    UnaryOp::Not => {
+                        let ty = self.expr_ty_from_session_or_float_series(e);
+                        Ok(self.alloc_expr(
+                            HirExpr::Not {
+                                inner,
+                                ty,
+                            },
+                            e.span,
+                        ))
+                    }
                 }
             }
             ExprKind::Binary { op, left, right } => {
@@ -1266,6 +1273,22 @@ plot(true ? b : 0.0)
     #[test]
     fn golden_unary_compare_ternary_pipeline() {
         let script = parse_script("test", SAMPLE_UNARY_CMP_TERNARY).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
+    }
+
+    const SAMPLE_UNARY_NOT: &str = r#"//@version=6
+indicator("not")
+lit = not true
+cmp = not (close > 1.0)
+plot(lit ? 1.0 : 0.0)
+plot(cmp ? close : 0.0)
+"#;
+
+    #[test]
+    fn golden_unary_not_pipeline() {
+        let script = parse_script("test", SAMPLE_UNARY_NOT).expect("parse");
         check_script(&script).expect("semantic checks");
         let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
         assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));

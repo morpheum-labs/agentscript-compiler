@@ -174,7 +174,8 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         | HirExpr::BuiltinCall { ty, .. }
         | HirExpr::UserCall { ty, .. }
         | HirExpr::SeriesAccess { ty, .. }
-        | HirExpr::Select { ty, .. } => ty,
+        | HirExpr::Select { ty, .. }
+        | HirExpr::Not { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::at(
@@ -335,6 +336,29 @@ impl<'a> Ctx<'a> {
                             "binary result type not supported in wasm codegen",
                         ));
                     }
+                }
+            }
+            HirExpr::Not { inner, ty } => {
+                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
+                {
+                    return Err(HirWasmError::at(
+                        span,
+                        "unary `not` wasm v0 requires bool-as-f64 result type",
+                    ));
+                }
+                let inner_ex = self
+                    .hir
+                    .exprs
+                    .get(inner.0 as usize)
+                    .ok_or_else(|| HirWasmError::at(span, "bad HirId in not operand"))?;
+                if let HirExpr::Literal(HirLiteral::Bool(b), _) = inner_ex {
+                    func
+                        .instructions()
+                        .f64_const((if *b { 0.0 } else { 1.0 }).into());
+                } else {
+                    func.instructions().f64_const(1.0.into());
+                    self.emit_expr(func, *inner)?;
+                    func.instructions().f64_sub();
                 }
             }
             HirExpr::Select {
