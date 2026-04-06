@@ -110,12 +110,19 @@ pub fn analyze_to_hir_compiler(script: &Script) -> Result<Compiler, AnalyzeError
     Ok(c)
 }
 
-/// Lower + emit the Phase 2 stub guest module (`init` / `on_bar`). Requires the current HIR subset.
+/// Lower + emit a guest `wasm32` module (`memory`, `init`, `on_bar`) using [`codegen::emit_hir_guest_wasm`].
+/// Requires the current HIR subset; wasm emit errors map to [`AnalyzeError`].
 pub fn compile_script_to_wasm_v0(script: &Script) -> Result<Vec<u8>, AnalyzeError> {
     let mut c = Compiler::with_hir_lowering();
     c.run_semantic_passes(script)?;
-    debug_assert!(c.session.hir.is_some());
-    Ok(codegen::emit_minimal_guest_wasm_v0())
+    let hir = c
+        .session
+        .hir
+        .as_ref()
+        .expect("hir present after successful hir lowering");
+    codegen::emit_hir_guest_wasm(hir).map_err(|e| {
+        AnalyzeError::single(e.to_string(), crate::frontend::ast::Span::DUMMY)
+    })
 }
 
 /// Parse failure ([`CompileError`]) or post-parse semantic failure ([`AnalyzeError`]).
