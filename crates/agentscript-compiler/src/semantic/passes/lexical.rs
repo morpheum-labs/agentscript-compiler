@@ -5,6 +5,7 @@
 //! Successful resolutions are recorded on [`crate::session::CompilerSession::name_bindings`]
 //! keyed by expression [`crate::frontend::ast::NodeId`].
 
+use indexmap::map::Entry;
 use indexmap::IndexMap;
 
 use crate::bindings::{NameBinding, SemanticSymbolId};
@@ -42,25 +43,28 @@ impl<'a> LexicalCtx<'a> {
             }
             match item {
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
-                    root.entry(f.name.clone()).or_insert_with(|| {
+                    if let Entry::Vacant(v) = root.entry(f.name.clone()) {
                         let id = SemanticSymbolId(next_symbol);
                         next_symbol += 1;
-                        id
-                    });
+                        session.def_semantic_ids.push(id);
+                        v.insert(id);
+                    }
                 }
                 Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
-                    root.entry(e.name.clone()).or_insert_with(|| {
+                    if let Entry::Vacant(v) = root.entry(e.name.clone()) {
                         let id = SemanticSymbolId(next_symbol);
                         next_symbol += 1;
-                        id
-                    });
+                        session.def_semantic_ids.push(id);
+                        v.insert(id);
+                    }
                 }
                 Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
-                    root.entry(t.name.clone()).or_insert_with(|| {
+                    if let Entry::Vacant(v) = root.entry(t.name.clone()) {
                         let id = SemanticSymbolId(next_symbol);
                         next_symbol += 1;
-                        id
-                    });
+                        session.def_semantic_ids.push(id);
+                        v.insert(id);
+                    }
                 }
                 _ => {}
             }
@@ -113,6 +117,7 @@ impl<'a> LexicalCtx<'a> {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), id);
         }
+        self.session.def_semantic_ids.push(id);
     }
 
     fn define_var_decl(&mut self, name: &str, ctx: &str, span: Span) {
@@ -128,6 +133,7 @@ impl<'a> LexicalCtx<'a> {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), id);
         }
+        self.session.def_semantic_ids.push(id);
     }
 
     fn define_param(&mut self, name: &str) {
@@ -135,6 +141,7 @@ impl<'a> LexicalCtx<'a> {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), id);
         }
+        self.session.def_semantic_ids.push(id);
     }
 
     fn resolve_ident(&mut self, name: &str, context: &str, expr: &Expr) {

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bumpalo::Bump;
 
-use crate::bindings::NameBinding;
+use crate::bindings::{NameBinding, SemanticSymbolId};
 use crate::frontend::ast::{max_node_id, NodeId, Script, Span};
 use crate::hir::{HirScript, HirType};
 
@@ -26,6 +26,10 @@ pub struct CompilerSession {
     pub expr_types: Vec<Option<HirType>>,
     /// Typed binding stack aligned with typechecker scopes (innermost vector last).
     pub symbol_def_stack: Vec<HashMap<String, SemanticDefSite>>,
+    /// Definition sites in **lexical walk order** (hoisted `fn`/`enum`/`type` names, then `walk_item`
+    /// `define_*`). Used by HIR lowering to align [`SemanticSymbolId`] with [`crate::hir::SymbolId`].
+    /// Import aliases are excluded (HIR does not lower imports yet).
+    pub def_semantic_ids: Vec<SemanticSymbolId>,
 }
 
 impl CompilerSession {
@@ -37,6 +41,7 @@ impl CompilerSession {
             name_bindings: Vec::new(),
             expr_types: Vec::new(),
             symbol_def_stack: Vec::new(),
+            def_semantic_ids: Vec::new(),
         }
     }
 
@@ -47,6 +52,7 @@ impl CompilerSession {
         self.name_bindings.clear();
         self.expr_types.clear();
         self.symbol_def_stack.clear();
+        self.def_semantic_ids.clear();
     }
 
     /// Allocate side maps for `script` (from [`max_node_id`]).
@@ -56,6 +62,7 @@ impl CompilerSession {
         self.name_bindings = vec![None; len];
         self.expr_types = vec![None; len];
         self.symbol_def_stack = vec![HashMap::new()];
+        self.def_semantic_ids.clear();
     }
 
     /// Push a scope frame for typed symbol definitions (call with [`Self::push_symbol_scope`] from typecheck).

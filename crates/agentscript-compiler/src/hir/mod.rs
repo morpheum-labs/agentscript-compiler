@@ -30,7 +30,10 @@ mod stmt;
 mod symbols;
 mod ty;
 
-pub use ast_lower::{lower_script_to_hir, lower_script_to_hir_in_bump, AstHirLowerer, HirLowerError};
+pub use ast_lower::{
+    lower_script_to_hir, lower_script_to_hir_in_bump, lower_script_to_hir_in_bump_with_session,
+    AstHirLowerer, HirLowerError,
+};
 pub use builtin::BuiltinKind;
 pub use expr::HirExpr;
 pub use ids::{HirId, SymbolId};
