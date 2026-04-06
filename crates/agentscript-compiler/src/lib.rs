@@ -286,6 +286,21 @@ plot(close[1])
         validate_guest_abi_v0(&wasm).expect("guest ABI v0 contract");
     }
 
+    /// `request.security` symbol/timeframe may be `let`-bound static strings (resolved to pool literals).
+    #[test]
+    fn compile_request_security_let_bound_strings_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("sec_let")
+sym = "AAPL"
+tf = "D"
+plot(request.security(sym, tf, close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
     #[test]
     fn compile_var_persist_to_wasm_validates() {
         const SRC: &str = r#"//@version=6

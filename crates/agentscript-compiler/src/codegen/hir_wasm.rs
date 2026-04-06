@@ -114,15 +114,98 @@ fn hir_ty_to_val(ty: &HirType, span: Span) -> Result<ValType, HirWasmError> {
     }
 }
 
-fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasmError> {
+/// `let` bindings visible for resolving `request.security` symbol/timeframe to static UTF-8 (literals
+/// and chains through `let`-bound variables in the same statement list, including nested blocks).
+fn collect_let_values_flat(body: &[HirStmt], m: &mut HashMap<SymbolId, HirId>) {
+    for s in body {
+        match s {
+            HirStmt::Let { symbol, value } => {
+                m.insert(*symbol, *value);
+            }
+            HirStmt::Block(inner) => collect_let_values_flat(inner, m),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_let_values_flat(then_branch, m);
+                if let Some(e) = else_branch {
+                    collect_let_values_flat(e, m);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn resolve_security_string(
+    hir: &HirScript,
+    id: HirId,
+    lets: &HashMap<SymbolId, HirId>,
+) -> Result<String, HirWasmError> {
+    let mut visiting = HashSet::new();
+    resolve_security_string_inner(hir, id, lets, &mut visiting)
+}
+
+fn resolve_security_string_inner(
+    hir: &HirScript,
+    id: HirId,
+    lets: &HashMap<SymbolId, HirId>,
+    visiting: &mut HashSet<HirId>,
+) -> Result<String, HirWasmError> {
+    let span = expr_span(hir, id);
+    if !visiting.insert(id) {
+        return Err(HirWasmError::at(
+            span,
+            "request.security: circular reference in string `let` bindings",
+        ));
+    }
+    let ex = hir
+        .exprs
+        .get(id.0 as usize)
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+    let out = match ex {
+        HirExpr::Literal(HirLiteral::String(s), _) => Ok(s.clone()),
+        HirExpr::Variable(sym, _) => {
+            let init = lets.get(sym).copied().ok_or_else(|| {
+                HirWasmError::at(
+                    span,
+                    "request.security: symbol/timeframe must be a string literal or a `let`-bound static string for wasm codegen",
+                )
+            })?;
+            resolve_security_string_inner(hir, init, lets, visiting)
+        }
+        _ => Err(HirWasmError::at(
+            span,
+            "request.security: symbol/timeframe must be a string literal or a `let`-bound static string for wasm codegen",
+        )),
+    };
+    visiting.remove(&id);
+    out
+}
+
+fn merged_let_bindings(hir: &HirScript) -> HashMap<SymbolId, HirId> {
+    let mut m = HashMap::new();
+    collect_let_values_flat(&hir.body, &mut m);
+    for uf in &hir.user_functions {
+        collect_let_values_flat(&uf.body_stmts, &mut m);
+    }
+    m
+}
+
+fn collect_strings(
+    hir: &HirScript,
+    pool: &mut StringPool,
+    all_lets: &HashMap<SymbolId, HirId>,
+) -> Result<(), HirWasmError> {
     for e in &hir.exprs {
         match e {
             HirExpr::Literal(HirLiteral::String(s), _) => {
                 pool.intern(s);
             }
             HirExpr::Security(sec) => {
-                let sym = require_string_literal(hir, sec.symbol)?;
-                let tf = require_string_literal(hir, sec.timeframe)?;
+                let sym = resolve_security_string(hir, sec.symbol, all_lets)?;
+                let tf = resolve_security_string(hir, sec.timeframe, all_lets)?;
                 pool.intern(&sym);
                 pool.intern(&tf);
             }
@@ -144,10 +227,6 @@ fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasm
         }
     }
     Ok(())
-}
-
-fn require_string_literal(hir: &HirScript, id: HirId) -> Result<String, HirWasmError> {
-    require_string_literal_for(hir, id, "request.security", "symbol or timeframe")
 }
 
 fn require_string_literal_for(
@@ -200,10 +279,24 @@ fn collect_lets(
     Ok(())
 }
 
+/// `let` value that resolves to a **static UTF-8 string** (literal or `let` chain) for
+/// `request.security` / codegen — no f64/i32 wasm local.
+fn let_value_is_static_security_string(
+    hir: &HirScript,
+    val: HirId,
+    let_bindings: &HashMap<SymbolId, HirId>,
+) -> bool {
+    resolve_security_string(hir, val, let_bindings).is_ok()
+}
+
 /// One wasm local per [`SymbolId`]; use the first `Let`'s value only to infer the local type.
+/// Skips `let` bindings whose value is a **compile-time static string** (see [`let_value_is_static_security_string`]):
+/// no wasm local; [`request.security`] resolves via [`merged_let_bindings`].
 fn collect_lets_unique_symbols(
+    hir: &HirScript,
     body: &[HirStmt],
     persist: &HashSet<SymbolId>,
+    let_bindings: &HashMap<SymbolId, HirId>,
     out: &mut Vec<(SymbolId, HirId)>,
 ) -> Result<(), HirWasmError> {
     let mut flat: Vec<(SymbolId, HirId)> = Vec::new();
@@ -221,6 +314,9 @@ fn collect_lets_unique_symbols(
         let val = *first_val
             .get(&sym)
             .expect("internal: collect_lets_unique_symbols order/first_val mismatch");
+        if let_value_is_static_security_string(hir, val, let_bindings) {
+            continue;
+        }
         out.push((sym, val));
     }
     Ok(())
@@ -305,6 +401,8 @@ struct Ctx<'a> {
     hir: &'a HirScript,
     /// Let-bound locals: symbol -> wasm local index (parameters use indices `0..params` in user fns).
     sym_to_local: HashMap<SymbolId, u32>,
+    /// Merged `let` initializers (script + user functions) for `request.security` static strings.
+    let_bindings: &'a HashMap<SymbolId, HirId>,
     pool: &'a HashMap<String, (i32, i32)>,
     user_fn_indices: &'a HashMap<SymbolId, u32>,
     /// Temp f64 locals for `%` (`lhs` / `rhs`, then reuse second for `trunc(lhs/rhs)*rhs`).
@@ -578,14 +676,14 @@ impl<'a> Ctx<'a> {
                 let sym_span = expr_span(self.hir, sec.symbol);
                 let tf_span = expr_span(self.hir, sec.timeframe);
                 let (so, sl) = {
-                    let s = require_string_literal(self.hir, sec.symbol)?;
+                    let s = resolve_security_string(self.hir, sec.symbol, self.let_bindings)?;
                     self.pool
                         .get(&s)
                         .copied()
                         .ok_or_else(|| HirWasmError::at(sym_span, "missing string pool entry"))?
                 };
                 let (to, tl) = {
-                    let s = require_string_literal(self.hir, sec.timeframe)?;
+                    let s = resolve_security_string(self.hir, sec.timeframe, self.let_bindings)?;
                     self.pool
                         .get(&s)
                         .copied()
@@ -766,6 +864,10 @@ impl<'a> Ctx<'a> {
                 Ok(())
             }
             HirStmt::Let { symbol, value } => {
+                if let_value_is_static_security_string(self.hir, *value, self.let_bindings) {
+                    // No wasm local; `request.security` resolves via [`merged_let_bindings`].
+                    return Ok(());
+                }
                 let vspan = expr_span(self.hir, *value);
                 self.emit_expr(func, *value)?;
                 if let Some(&(_gi, gv)) = self.persist_globals.get(symbol) {
@@ -852,9 +954,16 @@ fn encode_user_function_body(
     pool: &HashMap<String, (i32, i32)>,
     user_fn_indices: &HashMap<SymbolId, u32>,
     persist_globals: &HashMap<SymbolId, (u32, u32)>,
+    let_bindings: &HashMap<SymbolId, HirId>,
 ) -> Result<Function, HirWasmError> {
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
-    collect_lets_unique_symbols(&uf.body_stmts, &hir.persist_symbols, &mut let_pairs)?;
+    collect_lets_unique_symbols(
+        hir,
+        &uf.body_stmts,
+        &hir.persist_symbols,
+        let_bindings,
+        &mut let_pairs,
+    )?;
     let mut sym_to_local: HashMap<SymbolId, u32> = HashMap::new();
     let mut next_local: u32 = 0;
     for p in &uf.params {
@@ -876,6 +985,7 @@ fn encode_user_function_body(
     let ctx = Ctx {
         hir,
         sym_to_local,
+        let_bindings,
         pool,
         user_fn_indices,
         scratch_l,
@@ -901,7 +1011,7 @@ fn encode_user_function_body(
 /// | `input_int` | `(i32 idx) -> i32` | `idx` = index in [`HirScript::inputs`] |
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
 /// | `ta_ema` | `(i32 period) -> f64` | EMA of host close series |
-/// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
+/// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Symbol/timeframe UTF-8 in guest memory (string literals or `let`-bound static strings resolved at compile time) |
 /// | `request_financial` | `(sym×2, id×2, period×2, gaps, ignore, cur×2) -> f64` | `gaps`: `0`/`1`; `ignore`: `0`/`1`; `cur`: string pool or `-1`,`0`; v0 string + ignore bool literals |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
@@ -921,8 +1031,9 @@ fn encode_user_function_body(
 /// until the guest reads OHLCV from imports keyed by host state.
 #[must_use]
 pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
+    let all_lets = merged_let_bindings(hir);
     let mut pool = StringPool::new();
-    collect_strings(hir, &mut pool)?;
+    collect_strings(hir, &mut pool, &all_lets)?;
 
     let persist_pairs = build_persist_global_pairs(hir);
     let persist_globals: HashMap<SymbolId, (u32, u32)> = persist_pairs
@@ -931,7 +1042,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         .collect();
 
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
-    collect_lets_unique_symbols(&hir.body, &hir.persist_symbols, &mut let_pairs)?;
+    collect_lets_unique_symbols(hir, &hir.body, &hir.persist_symbols, &all_lets, &mut let_pairs)?;
 
     let mut types = TypeSection::new();
     let t_close = types.len();
@@ -1130,6 +1241,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         let ctx = Ctx {
             hir,
             sym_to_local: sym_to_local_step,
+            let_bindings: &all_lets,
             pool: &pool.map,
             user_fn_indices: &user_fn_indices,
             scratch_l,
@@ -1151,6 +1263,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             &pool.map,
             &user_fn_indices,
             &persist_globals,
+            &all_lets,
         )?;
         code.function(&f);
     }

@@ -114,7 +114,8 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 - [x] **ABI v1 (2026-04):** `aether_strategy_init` **`() -> i32`**; `aether_strategy_step` **`(i32 bar_index) -> i32`**; `guest_abi::VERSION` **2**; docs + [`validate_guest_abi_v1`](crates/agentscript-compiler/src/codegen/wasm/abi.rs); wasmtime **`init`/`step`** smoke.
 - [ ] **Next ABI bump (optional):** `step` gains pointer/length or struct for OHLCV/context in linear memory per [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md); increment `guest_abi::VERSION` when shipped.
 - [ ] **Import table discipline:** any new/changed `aether` import updates [`codegen/wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) (`GUEST_ABI_V0_IMPORTS`), **Aether/MWVM** linker stubs, [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs), and the guest ABI doc in lockstep.
-- [ ] **`request.security` / `request.financial`:** dynamic symbol/args, prefetch/determinism notes, and Wasm signatures documented before relying on production hosts.
+- [x] **`request.security` (static string slice):** symbol/timeframe may be string literals **or** `let`-bound chains resolving to literals (merged script + user-fn `let` map); same Wasm import. **Still open:** runtime / series-string symbol & timeframe, prefetch/determinism.
+- [ ] **`request.financial` / other `request.*`:** dynamic args and production host semantics as needed.
 
 ### Slice definition of done
 

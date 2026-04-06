@@ -127,6 +127,19 @@ plot(close)
 }
 
 #[test]
+fn wasmtime_instantiate_request_security_let_bound_strings() {
+    const SRC: &str = r#"//@version=6
+indicator("sec")
+sym = "AAPL"
+tf = "D"
+plot(request.security(sym, tf, close))
+"#;
+    let script = parse_script("t", SRC).expect("parse");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    instantiate_guest_wasm(&wasm);
+}
+
+#[test]
 fn wasmtime_instantiate_request_financial() {
     const SRC: &str = r#"//@version=6
 indicator("fin")
