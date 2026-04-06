@@ -17,8 +17,4 @@ impl HirWasmError {
             span,
         }
     }
-
-    pub(crate) fn dummy(message: impl Into<String>) -> Self {
-        Self::at(Span::DUMMY, message)
-    }
 }

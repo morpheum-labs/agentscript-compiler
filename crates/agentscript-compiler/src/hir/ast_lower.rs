@@ -23,6 +23,7 @@ use super::ids::{HirId, SymbolId};
 use super::literal::HirLiteral;
 use super::lowering::LowerToHir;
 use super::script::{HirDeclaration, HirInputDecl, HirInputKind, HirScript, HirUserFunction};
+use super::financial::FinancialCall;
 use super::security::{GapMode, Lookahead, SecurityCall};
 use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
@@ -32,7 +33,7 @@ fn script_declaration_span(decl: &ScriptDeclaration) -> Span {
     decl.args
         .first()
         .map(|(_, ex)| ex.span)
-        .unwrap_or(Span::DUMMY)
+        .unwrap_or(decl.span)
 }
 
 /// Lowering failed: construct not in the supported subset.
@@ -494,7 +495,9 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             HirExpr::Select { ty, .. } => ty.clone(),
             HirExpr::Not { ty, .. } => ty.clone(),
             HirExpr::Security(sec) => sec.ty.clone(),
+            HirExpr::Financial(f) => f.ty.clone(),
             HirExpr::Plot { .. } => HirType::Series(Type::Primitive(PrimitiveType::Float)),
+            HirExpr::Array { ty, .. } => ty.clone(),
         }
     }
 
@@ -1046,6 +1049,40 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     e.span,
                 ))
             }
+            ExprKind::Array(elts) => {
+                let mut ids = Vec::with_capacity(elts.len());
+                for x in elts {
+                    ids.push(self.lower_expr(x)?);
+                }
+                let ty = self
+                    .session
+                    .and_then(|s| {
+                        if e.id != NodeId::UNASSIGNED {
+                            s.expr_types
+                                .get(e.id.0 as usize)
+                                .and_then(|t| t.as_ref())
+                                .cloned()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if ids.is_empty() {
+                            HirType::Array(Box::new(HirType::Simple(Type::Primitive(
+                                PrimitiveType::Float,
+                            ))))
+                        } else {
+                            HirType::Array(Box::new(self.expr_hir_type(ids[0])))
+                        }
+                    });
+                Ok(self.alloc_expr(
+                    HirExpr::Array {
+                        elements: ids,
+                        ty,
+                    },
+                    e.span,
+                ))
+            }
             ExprKind::Ternary {
                 cond,
                 then_b,
@@ -1081,7 +1118,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                         "generic calls are not supported in this HIR lowering pass",
                     ));
                 }
-                self.lower_call(callee.as_ref(), args, e.span)
+                self.lower_call(callee.as_ref(), args, e.span, e)
             }
             _ => Err(HirLowerError::at(
                 e.span,
@@ -1164,6 +1201,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         callee: &Expr,
         args: &[(Option<String>, Expr)],
         expr_span: Span,
+        call_expr: &Expr,
     ) -> Result<HirId, HirLowerError> {
         let (path, method_receiver) = callee_path_with_receiver(callee)?;
 
@@ -1441,6 +1479,36 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec)), expr_span));
         }
 
+        if path == ["request", "financial"] {
+            if args.len() < 3 {
+                return Err(HirLowerError::at(
+                    expr_span,
+                    "request.financial expects at least three arguments (symbol, financial id, period)",
+                ));
+            }
+            let symbol = self.lower_expr(&args[0].1)?;
+            let financial_id = self.lower_expr(&args[1].1)?;
+            let period = self.lower_expr(&args[2].1)?;
+            let mut ignore_invalid_symbol: Option<HirId> = None;
+            for (nm, ex) in args.iter().skip(3) {
+                if nm.as_deref() == Some("ignore_invalid_symbol") {
+                    ignore_invalid_symbol = Some(self.lower_expr(ex)?);
+                }
+            }
+            if ignore_invalid_symbol.is_none() && args.len() == 4 && args[3].0.is_none() {
+                ignore_invalid_symbol = Some(self.lower_expr(&args[3].1)?);
+            }
+            let ty = self.expr_ty_from_session_or_float_series(call_expr);
+            let fin = FinancialCall {
+                symbol,
+                financial_id,
+                period,
+                ignore_invalid_symbol,
+                ty,
+            };
+            return Ok(self.alloc_expr(HirExpr::Financial(Box::new(fin)), expr_span));
+        }
+
         if path == ["ta", "crossover"] {
             if args.len() != 2 {
                 return Err(HirLowerError::at(
@@ -1557,6 +1625,135 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             return Ok(self.alloc_expr(
                 HirExpr::BuiltinCall {
                     kind: BuiltinKind::MathAbs,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "sqrt"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.sqrt expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathSqrt,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "round"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.round expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathRound,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "log"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.log expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathLog,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "exp"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.exp expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathExp,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "pow"] {
+            if args.len() != 2 {
+                return Err(HirLowerError::at(expr_span, "math.pow expects two arguments"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let a1 = self.lower_expr(&args[1].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(call_expr);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathPow,
+                    args: vec![a0, a1],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "ceil"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.ceil expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathCeil,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "floor"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.floor expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathFloor,
+                    args: vec![a0],
+                    ty,
+                },
+                expr_span,
+            ));
+        }
+
+        if path == ["math", "trunc"] {
+            if args.len() != 1 {
+                return Err(HirLowerError::at(expr_span, "math.trunc expects one argument"));
+            }
+            let a0 = self.lower_expr(&args[0].1)?;
+            let ty = self.expr_ty_from_session_or_float_series(&args[0].1);
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::MathTrunc,
                     args: vec![a0],
                     ty,
                 },
@@ -1984,5 +2181,27 @@ plot(cmp ? close : 0.0)
         check_script(&script).expect("semantic checks");
         let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
         assert_debug_snapshot!(c.session.hir.as_ref().expect("hir"));
+    }
+
+    const SAMPLE_ARRAY_LITERAL: &str = r#"//@version=6
+indicator("arr")
+x = [1.0, 2.0, 3.0]
+plot(close)
+"#;
+
+    #[test]
+    fn array_literal_lowers_to_hir_array_expr() {
+        use crate::hir::HirExpr;
+
+        let script = parse_script("test", SAMPLE_ARRAY_LITERAL).expect("parse");
+        check_script(&script).expect("semantic checks");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        let hir = c.session.hir.as_ref().expect("hir");
+        assert!(
+            hir.exprs
+                .iter()
+                .any(|e| matches!(e, HirExpr::Array { .. })),
+            "expected HirExpr::Array in expr arena"
+        );
     }
 }

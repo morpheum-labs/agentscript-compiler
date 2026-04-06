@@ -1,7 +1,7 @@
 use agentscript_compiler::{
     parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind,
-    FnBody, ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Stmt,
-    StmtKind, Type, UnaryOp, VarQualifier,
+    FnBody, ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Span,
+    Stmt, StmtKind, Type, UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -22,10 +22,13 @@ fn version_and_indicator() {
     let Item::ScriptDecl(ScriptDeclaration {
         kind: ScriptKind::Indicator,
         args,
+        span,
+        ..
     }) = &s.items[0]
     else {
         panic!("expected indicator decl");
     };
+    assert_ne!(*span, Span::DUMMY, "script decl should carry a source span");
     assert_eq!(args.len(), 1);
     assert_eq!(args[0].0, None);
     assert_eq!(args[0].1.kind, ExprKind::String("x".into()));

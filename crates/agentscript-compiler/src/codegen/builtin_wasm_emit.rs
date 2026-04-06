@@ -8,8 +8,8 @@ use crate::frontend::ast::Span;
 use crate::hir::{BuiltinKind, HirId};
 
 use super::wasm::abi::{
-    IMPORT_NZ, IMPORT_TA_ATR, IMPORT_TA_CROSSOVER, IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA,
-    IMPORT_TA_TR,
+    IMPORT_MATH_EXP, IMPORT_MATH_LOG, IMPORT_MATH_POW, IMPORT_NZ, IMPORT_TA_ATR, IMPORT_TA_CROSSOVER,
+    IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA, IMPORT_TA_TR,
 };
 use super::wasm::error::HirWasmError;
 
@@ -211,6 +211,159 @@ impl BuiltinWasmEmit for MathAbsEmit {
     }
 }
 
+struct MathSqrtEmit;
+
+impl BuiltinWasmEmit for MathSqrtEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.sqrt arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().f64_sqrt();
+        Ok(())
+    }
+}
+
+struct MathRoundEmit;
+
+impl BuiltinWasmEmit for MathRoundEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.round arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().f64_nearest();
+        Ok(())
+    }
+}
+
+struct MathLogEmit;
+
+impl BuiltinWasmEmit for MathLogEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.log arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().call(IMPORT_MATH_LOG);
+        Ok(())
+    }
+}
+
+struct MathExpEmit;
+
+impl BuiltinWasmEmit for MathExpEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.exp arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().call(IMPORT_MATH_EXP);
+        Ok(())
+    }
+}
+
+struct MathPowEmit;
+
+impl BuiltinWasmEmit for MathPowEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 2 {
+            return Err(HirWasmError::at(span, "math.pow arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr(func, args[1])?;
+        func.instructions().call(IMPORT_MATH_POW);
+        Ok(())
+    }
+}
+
+struct MathCeilEmit;
+
+impl BuiltinWasmEmit for MathCeilEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.ceil arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().f64_ceil();
+        Ok(())
+    }
+}
+
+struct MathFloorEmit;
+
+impl BuiltinWasmEmit for MathFloorEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.floor arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().f64_floor();
+        Ok(())
+    }
+}
+
+struct MathTruncEmit;
+
+impl BuiltinWasmEmit for MathTruncEmit {
+    fn emit(
+        &self,
+        ctx: &dyn HirWasmEmitContext,
+        func: &mut Function,
+        span: Span,
+        args: &[HirId],
+    ) -> Result<(), HirWasmError> {
+        if args.len() != 1 {
+            return Err(HirWasmError::at(span, "math.trunc arity"));
+        }
+        ctx.emit_expr(func, args[0])?;
+        func.instructions().f64_trunc();
+        Ok(())
+    }
+}
+
 struct TaTrEmit;
 
 impl BuiltinWasmEmit for TaTrEmit {
@@ -278,6 +431,14 @@ static TA_CROSSUNDER: TaCrossunderEmit = TaCrossunderEmit;
 static MATH_MAX: MathMaxEmit = MathMaxEmit;
 static MATH_MIN: MathMinEmit = MathMinEmit;
 static MATH_ABS: MathAbsEmit = MathAbsEmit;
+static MATH_SQRT: MathSqrtEmit = MathSqrtEmit;
+static MATH_ROUND: MathRoundEmit = MathRoundEmit;
+static MATH_LOG: MathLogEmit = MathLogEmit;
+static MATH_EXP: MathExpEmit = MathExpEmit;
+static MATH_POW: MathPowEmit = MathPowEmit;
+static MATH_CEIL: MathCeilEmit = MathCeilEmit;
+static MATH_FLOOR: MathFloorEmit = MathFloorEmit;
+static MATH_TRUNC: MathTruncEmit = MathTruncEmit;
 static TA_TR: TaTrEmit = TaTrEmit;
 static TA_ATR: TaAtrEmit = TaAtrEmit;
 static NZ: NzEmit = NzEmit;
@@ -293,6 +454,14 @@ fn handler(kind: BuiltinKind) -> &'static dyn BuiltinWasmEmit {
         BuiltinKind::MathMax => &MATH_MAX,
         BuiltinKind::MathMin => &MATH_MIN,
         BuiltinKind::MathAbs => &MATH_ABS,
+        BuiltinKind::MathSqrt => &MATH_SQRT,
+        BuiltinKind::MathRound => &MATH_ROUND,
+        BuiltinKind::MathLog => &MATH_LOG,
+        BuiltinKind::MathExp => &MATH_EXP,
+        BuiltinKind::MathPow => &MATH_POW,
+        BuiltinKind::MathCeil => &MATH_CEIL,
+        BuiltinKind::MathFloor => &MATH_FLOOR,
+        BuiltinKind::MathTrunc => &MATH_TRUNC,
         BuiltinKind::TaTr => &TA_TR,
         BuiltinKind::TaAtr => &TA_ATR,
         BuiltinKind::Nz => &NZ,

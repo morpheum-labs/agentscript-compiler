@@ -119,6 +119,8 @@ pub enum FnBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScriptDeclaration {
+    /// Full `indicator` / `strategy` / `library` header span (keyword through closing `)`).
+    pub span: Span,
     pub kind: ScriptKind,
     /// Named (`Some(name)`, value) or positional (`None`, value) actual arguments.
     pub args: Vec<(Option<String>, Expr)>,

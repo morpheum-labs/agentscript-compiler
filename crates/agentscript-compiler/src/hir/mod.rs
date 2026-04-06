@@ -21,6 +21,7 @@
 mod ast_lower;
 mod builtin;
 mod expr;
+mod financial;
 mod ids;
 mod literal;
 pub mod lowering;
@@ -36,6 +37,7 @@ pub use ast_lower::{
 };
 pub use builtin::BuiltinKind;
 pub use expr::HirExpr;
+pub use financial::FinancialCall;
 pub use ids::{HirId, SymbolId};
 pub use literal::HirLiteral;
 pub use lowering::LowerToHir;

@@ -8,6 +8,7 @@ HirScript {
         title: Some(
             "exprs",
         ),
+        timeframe: None,
     },
     inputs: [],
     exprs: [
@@ -23,7 +24,7 @@ HirScript {
         ),
         Variable(
             SymbolId(
-                1,
+                6,
             ),
             Series(
                 Primitive(
@@ -135,7 +136,7 @@ HirScript {
         ),
         Variable(
             SymbolId(
-                2,
+                7,
             ),
             Series(
                 Primitive(
@@ -173,7 +174,7 @@ HirScript {
     body: [
         Let {
             symbol: SymbolId(
-                1,
+                6,
             ),
             value: HirId(
                 0,
@@ -181,7 +182,7 @@ HirScript {
         },
         Let {
             symbol: SymbolId(
-                1,
+                6,
             ),
             value: HirId(
                 3,
@@ -189,7 +190,7 @@ HirScript {
         },
         Let {
             symbol: SymbolId(
-                2,
+                7,
             ),
             value: HirId(
                 6,
@@ -197,7 +198,7 @@ HirScript {
         },
         Let {
             symbol: SymbolId(
-                3,
+                8,
             ),
             value: HirId(
                 9,
@@ -214,6 +215,11 @@ HirScript {
     symbols: SymbolTable {
         names: [
             "close",
+            "open",
+            "high",
+            "low",
+            "volume",
+            "time",
             "a",
             "b",
             "c",

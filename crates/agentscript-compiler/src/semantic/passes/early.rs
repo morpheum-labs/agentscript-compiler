@@ -253,6 +253,7 @@ x = 1
             agentscript_version: None,
             items: vec![
                 Item::ScriptDecl(ScriptDeclaration {
+                    span: Span { start: 0, end: 1 },
                     kind: ScriptKind::Indicator,
                     args: vec![(
                         None,
@@ -260,7 +261,7 @@ x = 1
                     )],
                 }),
                 Item::FnDecl(FnDecl {
-                    span: Span::DUMMY,
+                    span: Span { start: 0, end: 1 },
                     is_method: false,
                     name: "bad".into(),
                     params: vec![

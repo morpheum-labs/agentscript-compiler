@@ -7,6 +7,7 @@ use crate::frontend::ast::BinOp;
 use super::builtin::BuiltinKind;
 use super::ids::{HirId, SymbolId};
 use super::literal::HirLiteral;
+use super::financial::FinancialCall;
 use super::security::SecurityCall;
 use super::ty::HirType;
 
@@ -44,12 +45,18 @@ pub enum HirExpr {
         else_b: HirId,
         ty: HirType,
     },
+    /// Homogeneous array literal `[a, b, …]` (empty `[]` uses float element type from typecheck).
+    Array {
+        elements: Vec<HirId>,
+        ty: HirType,
+    },
     /// Unary `not` on a bool-like operand (scalar or series bool).
     Not {
         inner: HirId,
         ty: HirType,
     },
     Security(Box<SecurityCall>),
+    Financial(Box<FinancialCall>),
     /// Inline plot when lowered as an expression-shaped construct (if the surface allows).
     Plot {
         expr: HirId,

@@ -8,12 +8,13 @@ HirScript {
         title: Some(
             "UF",
         ),
+        timeframe: None,
     },
     inputs: [],
     exprs: [
         Variable(
             SymbolId(
-                2,
+                7,
             ),
             Series(
                 Primitive(
@@ -57,7 +58,7 @@ HirScript {
         ),
         UserCall {
             callee: SymbolId(
-                1,
+                6,
             ),
             args: [
                 HirId(
@@ -82,7 +83,7 @@ HirScript {
         ),
         Variable(
             SymbolId(
-                3,
+                8,
             ),
             Series(
                 Primitive(
@@ -94,7 +95,7 @@ HirScript {
     body: [
         Let {
             symbol: SymbolId(
-                3,
+                8,
             ),
             value: HirId(
                 4,
@@ -118,11 +119,11 @@ HirScript {
     user_functions: [
         HirUserFunction {
             symbol: SymbolId(
-                1,
+                6,
             ),
             params: [
                 SymbolId(
-                    2,
+                    7,
                 ),
             ],
             body_stmts: [],
@@ -134,6 +135,11 @@ HirScript {
     symbols: SymbolTable {
         names: [
             "close",
+            "open",
+            "high",
+            "low",
+            "volume",
+            "time",
             "f",
             "x",
             "y",

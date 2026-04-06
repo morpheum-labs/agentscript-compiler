@@ -35,9 +35,17 @@ pub const IMPORT_TA_TR: u32 = 16;
 pub const IMPORT_TA_ATR: u32 = 17;
 /// `(f64 a, f64 y) -> f64` — Pine `nz`-style replacement when `a` is na.
 pub const IMPORT_NZ: u32 = 18;
+/// `(f64) -> f64` — natural logarithm (`math.log`).
+pub const IMPORT_MATH_LOG: u32 = 19;
+/// `(f64) -> f64` — `math.exp`.
+pub const IMPORT_MATH_EXP: u32 = 20;
+/// `(f64, f64) -> f64` — `math.pow`.
+pub const IMPORT_MATH_POW: u32 = 21;
+/// `(i32 sym_o, i32 sym_l, i32 id_o, i32 id_l, i32 per_o, i32 per_l, i32 ignore) -> f64` — strings in guest memory; `ignore` is `0`/`1`.
+pub const IMPORT_REQUEST_FINANCIAL: u32 = 22;
 
 /// First function index defined in the guest module (after all `aether` imports).
-pub const GUEST_FUNC_BASE: u32 = IMPORT_NZ + 1;
+pub const GUEST_FUNC_BASE: u32 = IMPORT_REQUEST_FINANCIAL + 1;
 
 /// `ta_sma` / `ta_ema` first argument: host moving-average source stream.
 pub const MA_SRC_CLOSE: i32 = 0;
@@ -86,6 +94,10 @@ pub static GUEST_ABI_V0_IMPORTS: &[(&str, &str)] = &[
     ("aether", "ta_tr"),
     ("aether", "ta_atr"),
     ("aether", "nz"),
+    ("aether", "math_log"),
+    ("aether", "math_exp"),
+    ("aether", "math_pow"),
+    ("aether", "request_financial"),
 ];
 
 /// Required export names for a full guest strategy module from [`crate::codegen::emit_hir_guest_wasm`].

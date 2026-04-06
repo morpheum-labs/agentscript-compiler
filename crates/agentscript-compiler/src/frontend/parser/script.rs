@@ -76,7 +76,13 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
     ))
     .then_ignore(pad())
     .then(decl_args)
-    .map(|(kind, args)| Item::ScriptDecl(ScriptDeclaration { kind, args }))
+    .map_with_span(|(kind, args), span| {
+        Item::ScriptDecl(ScriptDeclaration {
+            span: span.into(),
+            kind,
+            args,
+        })
+    })
     .boxed();
 
     let expr_for_stmt = expr.clone();

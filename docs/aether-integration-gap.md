@@ -22,7 +22,7 @@ This document tracks **what is missing** to go from **QAS source** to **Aether b
 
 Roughly ordered by dependency.
 
-1. **HIR coverage** — Today: indicator slice (`input.int`, `close`, `ta.sma`, **`ta.ema`**, `request.security`, `plot`, `close[k]`). **Gap:** rest of typed surface, user functions in HIR, full `request.*` shapes, strategy bodies.
+1. **HIR coverage** — Today: indicator slice (`input.int`, `close`, `ta.sma`, **`ta.ema`**, `request.security`, **`request.financial`** (v0 literals), `plot`, `close[k]`). **Gap:** rest of typed surface, user functions in HIR, full `request.*` shapes (gaps, currency, …), strategy bodies.
 2. **WASM codegen** — **Progress:** `wasm-encoder` emission in [`hir_wasm.rs`](../crates/agentscript-compiler/src/codegen/hir_wasm.rs) for that slice. **Gap:** extend with language coverage; MWVM linker story for all `aether` imports.
 3. **Guest ABI in emitted code** — **Progress:** dual exports + `aether` import table documented in [`agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). **Gap:** evolve `init`/`step` signatures (today v0 preview is `() -> ()`); finalize memory/buffer convention for `step`.
 4. **Determinism story** — **Gap:** FP rules, fixed codegen options, optional `cargo_lock_hash` / toolchain metadata for job pins (see Aether ROADMAP optional item).
@@ -35,14 +35,14 @@ Roughly ordered by dependency.
 
 1. **Invoke guest exports** after preflight — **Gap:** call `init` / `step` (or agreed batch export) and feed OHLCV / bar index per finalized ABI.
 2. **Contract tests** — **Gap:** CI test: load compiler-emitted (or pinned fixture) WASM → assert exports exist → optional hash match → **call sequence** smoke.
-3. **Host imports** — **Gap:** implement or stub `request.security` / `request.financial` / `strategy.*` as WASM imports wired to oracle / vector engine (stubs first).
+3. **Host imports** — **Progress:** `aether-mwvm` stubs **`request.security`** (identity on inner) and **`request.financial`** (`0.0`). **Gap:** real oracle / vector engine wiring; `strategy.*` and remaining `request.*`.
 4. **ABI doc completion** — **Gap:** finalize `aether_strategy_step` signature (linear memory layout, ptr/len, or fixed struct).
 
 ---
 
 ## 4. Shared / process gaps
 
-- **Cross-repo tests:** Same WASM bytes verified in **compiler** (emit + validate) and **Aether** (instantiate + export smoke). Ideally one **pinned** `.wasm` fixture in tests.
+- **Cross-repo tests:** Same WASM bytes verified in **compiler** (emit + validate) and **Aether** (instantiate + export smoke). Ideally one **pinned** `.wasm` fixture in tests. **Today:** `agentscript-compiler` integration test [`tests/wasmtime_guest_instantiate.rs`](../crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) compiles minimal scripts and **instantiates** with a stub linker that must stay aligned with `aether-mwvm` `link_aether_guest_abi_v0` (an `aether-mwvm` dev-dependency on the compiler was avoided: some toolchains fail building the combined graph via `ar_archive_writer` / rustc features).
 - **Naming drift:** ABI doc lists `aether_strategy_init` / `aether_strategy_step`; compiler/codegen and `guest_abi` constants must stay in lockstep.
 
 ---
@@ -57,7 +57,8 @@ Working backlog — track progress here (markdown checkboxes only).
 - [x] Compiler: **wasmtime smoke** — `wasmtime::Module::new` accepts emitted bytes (same [`lib.rs`](../crates/agentscript-compiler/src/lib.rs); no host imports linked).
 - [ ] Aether: **integration test** — pinned WASM → instantiate → **call `init` / `step`** (stub memory if needed).
 - [ ] Define **import** module names and function signatures for `request.*` / `strategy.*` in ABI doc.
-- [ ] Compiler: lower at least one **`request.security`** path to an **import call**; Aether: stub host implementation for backtest.
+- [x] Compiler: lower **`request.security`** to **`request_security`** import; Aether MWVM: stub (pass-through inner `f64`).
+- [x] Compiler: lower **`request.financial`** v0 to **`request_financial`** import; Aether MWVM: stub (`0.0`).
 - [ ] Document **one** end-to-end command sequence: `.qas` → `agentscriptc` → `.wasm` → `aether-cli --wasm` (when CLI flags exist).
 
 ---

@@ -14,11 +14,13 @@ use crate::codegen::wasm::error::HirWasmError;
 #[allow(unused_imports)] // Re-export for API / rustdoc; builtin emission uses `builtin_wasm_emit`.
 pub use crate::codegen::wasm::abi::{
     GUEST_EXPORT_INIT_ABI, GUEST_EXPORT_INIT_LEGACY, GUEST_EXPORT_STEP_ABI,
-    GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_NZ,
-    IMPORT_PLOT, IMPORT_REQUEST_SECURITY, IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIGH, IMPORT_SERIES_HIST,
-    IMPORT_SERIES_HIST_AT, IMPORT_SERIES_LOW, IMPORT_SERIES_OPEN, IMPORT_SERIES_TIME,
-    IMPORT_SERIES_VOLUME, IMPORT_TA_ATR, IMPORT_TA_CROSSOVER, IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA,
-    IMPORT_TA_SMA, IMPORT_TA_TR, MA_SRC_CLOSE, MA_SRC_TRUE_RANGE, series_hist_kind,
+    GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_MATH_EXP,
+    IMPORT_MATH_LOG, IMPORT_MATH_POW, IMPORT_NZ, IMPORT_PLOT, IMPORT_REQUEST_FINANCIAL,
+    IMPORT_REQUEST_SECURITY,
+    IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIGH, IMPORT_SERIES_HIST, IMPORT_SERIES_HIST_AT,
+    IMPORT_SERIES_LOW, IMPORT_SERIES_OPEN, IMPORT_SERIES_TIME, IMPORT_SERIES_VOLUME, IMPORT_TA_ATR,
+    IMPORT_TA_CROSSOVER, IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA, IMPORT_TA_TR,
+    MA_SRC_CLOSE, MA_SRC_TRUE_RANGE, series_hist_kind,
 };
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
@@ -28,14 +30,15 @@ use crate::hir::{
 };
 
 fn expr_span(hir: &HirScript, id: HirId) -> Span {
+    let i = id.0 as usize;
     if hir.expr_spans.len() == hir.exprs.len() {
-        hir.expr_spans
-            .get(id.0 as usize)
-            .copied()
-            .unwrap_or(Span::DUMMY)
-    } else {
-        Span::DUMMY
+        return hir.expr_spans.get(i).copied().unwrap_or(Span::DUMMY);
     }
+    // Best-effort when arena lengths diverge (should not happen from [`ast_lower`]).
+    if let Some(s) = hir.expr_spans.get(i) {
+        return *s;
+    }
+    hir.expr_spans.first().copied().unwrap_or(Span::DUMMY)
 }
 
 struct StringPool {
@@ -80,6 +83,8 @@ fn hir_expr_ty<'a>(hir: &'a HirScript, id: HirId) -> Result<&'a HirType, HirWasm
         HirExpr::Select { ty, .. } => ty,
         HirExpr::Not { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
+        HirExpr::Financial(f) => &f.ty,
+        HirExpr::Array { ty, .. } => ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::at(
                 span,
@@ -89,7 +94,7 @@ fn hir_expr_ty<'a>(hir: &'a HirScript, id: HirId) -> Result<&'a HirType, HirWasm
     })
 }
 
-fn hir_ty_to_val(ty: &HirType) -> Result<ValType, HirWasmError> {
+fn hir_ty_to_val(ty: &HirType, span: Span) -> Result<ValType, HirWasmError> {
     match ty {
         HirType::Simple(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::I32),
         HirType::Simple(AstType::Primitive(PrimitiveType::Float))
@@ -97,8 +102,13 @@ fn hir_ty_to_val(ty: &HirType) -> Result<ValType, HirWasmError> {
         // Boolean conditions and comparisons are encoded as f64 0/1 in the guest v0 pipeline.
         HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
         | HirType::Series(AstType::Primitive(PrimitiveType::Bool)) => Ok(ValType::F64),
-        _ => Err(HirWasmError::dummy(
-            "only i32, f64, and bool-as-f64 HIR types are supported in wasm codegen",
+        HirType::Array(_) | HirType::Matrix(_) => Err(HirWasmError::at(
+            span,
+            "array and matrix types are not supported in wasm codegen v0",
+        )),
+        _ => Err(HirWasmError::at(
+            span,
+            "only i32, f64, and bool-as-f64 HIR types are supported in wasm codegen v0",
         )),
     }
 }
@@ -115,6 +125,16 @@ fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasm
                 pool.intern(&sym);
                 pool.intern(&tf);
             }
+            HirExpr::Financial(f) => {
+                for (id, label) in [
+                    (f.symbol, "symbol"),
+                    (f.financial_id, "financial id"),
+                    (f.period, "period"),
+                ] {
+                    let s = require_string_literal_for(hir, id, "request.financial", label)?;
+                    pool.intern(&s);
+                }
+            }
             _ => {}
         }
     }
@@ -122,6 +142,15 @@ fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasm
 }
 
 fn require_string_literal(hir: &HirScript, id: HirId) -> Result<String, HirWasmError> {
+    require_string_literal_for(hir, id, "request.security", "symbol or timeframe")
+}
+
+fn require_string_literal_for(
+    hir: &HirScript,
+    id: HirId,
+    context: &str,
+    role: &str,
+) -> Result<String, HirWasmError> {
     let span = expr_span(hir, id);
     let ex = hir
         .exprs
@@ -131,7 +160,7 @@ fn require_string_literal(hir: &HirScript, id: HirId) -> Result<String, HirWasmE
         HirExpr::Literal(HirLiteral::String(s), _) => Ok(s.clone()),
         _ => Err(HirWasmError::at(
             span,
-            "request.security symbol/timeframe must be string literals for wasm codegen",
+            format!("{context}: {role} must be a string literal for wasm codegen"),
         )),
     }
 }
@@ -177,15 +206,16 @@ fn collect_lets_unique_symbols(
     let mut first_val: HashMap<SymbolId, HirId> = HashMap::new();
     let mut order: Vec<SymbolId> = Vec::new();
     for (sym, val) in flat {
-        if !first_val.contains_key(&sym) {
-            first_val.insert(sym, val);
+        use std::collections::hash_map::Entry;
+        if let Entry::Vacant(e) = first_val.entry(sym) {
+            e.insert(val);
             order.push(sym);
         }
     }
     for sym in order {
         let val = *first_val
             .get(&sym)
-            .ok_or_else(|| HirWasmError::dummy("internal: let dedupe map"))?;
+            .expect("internal: collect_lets_unique_symbols order/first_val mismatch");
         out.push((sym, val));
     }
     Ok(())
@@ -244,7 +274,7 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         .exprs
         .get(value.0 as usize)
         .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
-    hir_ty_to_val(match ex {
+    let ty_ref = match ex {
         HirExpr::Literal(_, t) => t,
         HirExpr::Variable(_, t) => t,
         HirExpr::Binary { ty, .. }
@@ -253,14 +283,17 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         | HirExpr::SeriesAccess { ty, .. }
         | HirExpr::Select { ty, .. }
         | HirExpr::Not { ty, .. } => ty,
+        HirExpr::Array { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
+        HirExpr::Financial(f) => &f.ty,
         HirExpr::Plot { .. } => {
             return Err(HirWasmError::at(
                 span,
                 "plot expression shape not supported as let value",
             ));
         }
-    })
+    };
+    hir_ty_to_val(ty_ref, span)
 }
 
 struct Ctx<'a> {
@@ -358,7 +391,7 @@ impl<'a> Ctx<'a> {
                 rhs,
                 ty,
             } => {
-                let valty = hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))?;
+                let valty = hir_ty_to_val(ty, span)?;
                 match op {
                     BinOp::And | BinOp::Or if valty == ValType::F64 => {
                         self.emit_expr(func, *lhs)?;
@@ -454,8 +487,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             HirExpr::Not { inner, ty } => {
-                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
-                {
+                if hir_ty_to_val(ty, span)? != ValType::F64 {
                     return Err(HirWasmError::at(
                         span,
                         "unary `not` wasm v0 requires bool-as-f64 result type",
@@ -482,8 +514,7 @@ impl<'a> Ctx<'a> {
                 else_b,
                 ty,
             } => {
-                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
-                {
+                if hir_ty_to_val(ty, span)? != ValType::F64 {
                     return Err(HirWasmError::at(
                         span,
                         "select/ternary wasm v0 requires f64 result type",
@@ -503,8 +534,7 @@ impl<'a> Ctx<'a> {
             } => emit_builtin_call(*kind, self, func, span, args)?,
             HirExpr::SeriesAccess { base, offset, ty } => {
                 let base_span = expr_span(self.hir, *base);
-                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
-                {
+                if hir_ty_to_val(ty, span)? != ValType::F64 {
                     return Err(HirWasmError::at(
                         span,
                         "series history wasm codegen expects f64 series element type",
@@ -565,6 +595,75 @@ impl<'a> Ctx<'a> {
                 self.emit_expr(func, sec.expression)?;
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
+            HirExpr::Financial(f) => {
+                let sym_span = expr_span(self.hir, f.symbol);
+                let id_span = expr_span(self.hir, f.financial_id);
+                let per_span = expr_span(self.hir, f.period);
+                let (so, sl) = {
+                    let s = require_string_literal_for(
+                        self.hir,
+                        f.symbol,
+                        "request.financial",
+                        "symbol",
+                    )?;
+                    self.pool
+                        .get(&s)
+                        .copied()
+                        .ok_or_else(|| HirWasmError::at(sym_span, "missing string pool entry"))?
+                };
+                let (ido, idl) = {
+                    let s = require_string_literal_for(
+                        self.hir,
+                        f.financial_id,
+                        "request.financial",
+                        "financial id",
+                    )?;
+                    self.pool
+                        .get(&s)
+                        .copied()
+                        .ok_or_else(|| HirWasmError::at(id_span, "missing string pool entry"))?
+                };
+                let (po, pl) = {
+                    let s = require_string_literal_for(
+                        self.hir,
+                        f.period,
+                        "request.financial",
+                        "period",
+                    )?;
+                    self.pool
+                        .get(&s)
+                        .copied()
+                        .ok_or_else(|| HirWasmError::at(per_span, "missing string pool entry"))?
+                };
+                let ignore = match f.ignore_invalid_symbol {
+                    None => 0i32,
+                    Some(iid) => {
+                        let ispan = expr_span(self.hir, iid);
+                        let ex = self
+                            .hir
+                            .exprs
+                            .get(iid.0 as usize)
+                            .ok_or_else(|| HirWasmError::at(ispan, "bad HirId"))?;
+                        match ex {
+                            HirExpr::Literal(HirLiteral::Bool(b), _) => i32::from(*b),
+                            _ => {
+                                return Err(HirWasmError::at(
+                                    ispan,
+                                    "request.financial: `ignore_invalid_symbol` must be a boolean literal for wasm codegen v0",
+                                ));
+                            }
+                        }
+                    }
+                };
+                func.instructions().i32_const(so);
+                func.instructions().i32_const(sl);
+                func.instructions().i32_const(ido);
+                func.instructions().i32_const(idl);
+                func.instructions().i32_const(po);
+                func.instructions().i32_const(pl);
+                func.instructions().i32_const(ignore);
+                func.instructions().call(IMPORT_REQUEST_FINANCIAL);
+            }
             HirExpr::UserCall { callee, args, .. } => {
                 let fn_idx = self.user_fn_indices.get(callee).copied().ok_or_else(|| {
                     HirWasmError::at(span, "internal: user function not registered for wasm")
@@ -573,6 +672,12 @@ impl<'a> Ctx<'a> {
                     self.emit_expr(func, *a)?;
                 }
                 func.instructions().call(fn_idx);
+            }
+            HirExpr::Array { .. } => {
+                return Err(HirWasmError::at(
+                    span,
+                    "array literals are not supported in wasm codegen v0",
+                ));
             }
             HirExpr::Plot { .. } => {
                 return Err(HirWasmError::at(
@@ -705,7 +810,7 @@ impl<'a> HirWasmEmitContext for Ctx<'a> {
     ) -> Result<(), HirWasmError> {
         self.emit_expr(func, period)?;
         let ty = hir_expr_ty(self.hir, period)?;
-        let vt = hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))?;
+        let vt = hir_ty_to_val(ty, span)?;
         if vt == ValType::F64 {
             func.instructions().i32_trunc_sat_f64_s();
         }
@@ -769,11 +874,15 @@ fn encode_user_function_body(
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
 /// | `ta_ema` | `(i32 period) -> f64` | EMA of host close series |
 /// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
+/// | `request_financial` | `(i32 sym_o, i32 sym_l, i32 id_o, i32 id_l, i32 per_o, i32 per_l, i32 ignore) -> f64` | `ignore` is `0`/`1`; v0 requires string + bool literals |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
 /// | `input_float` | `(i32 idx) -> f64` | `idx` = index of a float input in [`HirScript::inputs`] |
 /// | `ta_crossover` | `(f64 a, f64 b) -> f64` | Stateful host: `1.0` when `a > b && prev_a <= prev_b` |
 /// | `ta_crossunder` | `(f64 a, f64 b) -> f64` | Stateful host: `1.0` when `a < b && prev_a >= prev_b` |
+/// | `math_log` | `(f64) -> f64` | Natural log (`math.log`); NaN/`na` policy on host |
+/// | `math_exp` | `(f64) -> f64` | `math.exp` |
+/// | `math_pow` | `(f64, f64) -> f64` | `math.pow` |
 ///
 /// Exports: `memory`, legacy [`GUEST_EXPORT_INIT_LEGACY`] / [`GUEST_EXPORT_STEP_LEGACY`], and
 /// [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`] (same func indices as `init` / `on_bar`).
@@ -823,8 +932,23 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     types.ty().function([ValType::I32, ValType::I32], [ValType::F64]);
     let t_nz = types.len();
     types.ty().function([ValType::F64, ValType::F64], [ValType::F64]);
+    let t_unary_f64 = types.len();
+    types.ty().function([ValType::F64], [ValType::F64]);
     let t_cross = types.len();
     types.ty().function([ValType::F64, ValType::F64], [ValType::F64]);
+    let t_financial = types.len();
+    types.ty().function(
+        [
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        [ValType::F64],
+    );
     let t_void = types.len();
     types.ty().function([], []);
 
@@ -887,6 +1011,14 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     imports.import("aether", "ta_tr", EntityType::Function(t_close));
     imports.import("aether", "ta_atr", EntityType::Function(t_series_hist));
     imports.import("aether", "nz", EntityType::Function(t_nz));
+    imports.import("aether", "math_log", EntityType::Function(t_unary_f64));
+    imports.import("aether", "math_exp", EntityType::Function(t_unary_f64));
+    imports.import("aether", "math_pow", EntityType::Function(t_cross));
+    imports.import(
+        "aether",
+        "request_financial",
+        EntityType::Function(t_financial),
+    );
 
     let fn_init = GUEST_FUNC_BASE;
     let fn_on_bar = fn_init + 1;

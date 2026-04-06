@@ -190,6 +190,39 @@
     "series_from_args": false
   },
   {
+    "dotted_name": "math.ceil",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.floor",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "math.trunc",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
     "dotted_name": "ta.atr",
     "min_args": 1,
     "result": "SeriesFloat",

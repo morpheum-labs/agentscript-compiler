@@ -314,6 +314,72 @@ plot(x ? y : 0.0)
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
+    #[test]
+    fn compile_math_sqrt_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("sqrt")
+y = math.sqrt(close)
+plot(y)
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
+    #[test]
+    fn compile_math_round_log_exp_pow_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("math")
+a = math.round(close)
+b = math.log(close)
+c = math.exp(close * 0.001)
+d = math.pow(close, 2.0)
+plot(a + b + c + d)
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI includes math_log/math_exp/math_pow");
+    }
+
+    #[test]
+    fn compile_math_ceil_floor_trunc_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("cf")
+plot(math.ceil(close) + math.floor(close) + math.trunc(close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
+    #[test]
+    fn compile_request_financial_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("fin")
+f = request.financial("NASDAQ:MSFT", "ACCOUNTS_PAYABLE", "FY", ignore_invalid_symbol=true)
+plot(f)
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI includes request_financial");
+    }
+
+    #[test]
+    fn compile_request_financial_three_arg_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("fin3")
+plot(request.financial("NASDAQ:MSFT", "ACCOUNTS_PAYABLE", "FY"))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
     /// Regression: `ta.ema` lowering must emit a validating module (includes `ta_ema` import).
     #[test]
     fn compile_ta_ema_sample_to_wasm_validates() {

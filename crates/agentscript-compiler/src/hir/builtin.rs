@@ -19,6 +19,22 @@ pub enum BuiltinKind {
     MathMax,
     MathMin,
     MathAbs,
+    /// Square root (`math.sqrt`); emitted as wasm `f64.sqrt` (no host import).
+    MathSqrt,
+    /// `math.round` → wasm `f64.nearest`.
+    MathRound,
+    /// `math.log` — host `(f64) -> f64` (natural log; NaN policy on host).
+    MathLog,
+    /// `math.exp` — host `(f64) -> f64`.
+    MathExp,
+    /// `math.pow` — host `(f64, f64) -> f64`.
+    MathPow,
+    /// `math.ceil` → wasm `f64.ceil`.
+    MathCeil,
+    /// `math.floor` → wasm `f64.floor`.
+    MathFloor,
+    /// `math.trunc` → wasm `f64.trunc`.
+    MathTrunc,
     /// True range series (`ta.tr`).
     TaTr,
     /// Average true range (`ta.atr(length)`).

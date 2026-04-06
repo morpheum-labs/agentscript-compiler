@@ -1724,6 +1724,36 @@ mod tests {
     }
 
     #[test]
+    fn registry_math_sqrt_on_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = math.sqrt(close)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn registry_math_round_log_exp_on_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = math.round(close)\nb = math.log(close)\nc = math.exp(close)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn registry_math_ceil_floor_trunc_on_series() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = math.ceil(close)\nb = math.floor(close)\nc = math.trunc(close)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
     fn ternary_unifies_int_and_float_to_float_series() {
         let s = parse_script(
             "t",
