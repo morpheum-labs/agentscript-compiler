@@ -171,39 +171,47 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    const UPTREND_EXAMPLE: &str = include_str!("../../../examples/uptrend.pine");
+    /// Minimal indicator for WASM pipeline smoke tests (full `examples/uptrend.pine` is analyzed in integration tests).
+    const TINY_INDICATOR: &str = r#"//@version=6
+indicator("Test Agent")
+
+len = input.int(14)
+sma = ta.sma(close, len)
+htf = request.security("AAPL", "D", sma)
+plot(htf)
+"#;
 
     #[test]
     fn compile_script_to_wasm_v0_smoke() {
-        let script = parse_script("examples/uptrend.pine", UPTREND_EXAMPLE).expect("parse");
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
         let wasm = compile_script_to_wasm_v0(&script).expect("compile");
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
     #[test]
     fn wasm_compiler_oneshot_smoke() {
-        let wasm = WasmCompiler::compile(UPTREND_EXAMPLE).expect("WasmCompiler::compile");
+        let wasm = WasmCompiler::compile(TINY_INDICATOR).expect("WasmCompiler::compile");
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
     #[test]
     fn compile_to_wasm_pipeline_smoke() {
-        let wasm = compile_to_wasm("examples/uptrend.pine", UPTREND_EXAMPLE).expect("compile_to_wasm");
+        let wasm = compile_to_wasm("t", TINY_INDICATOR).expect("compile_to_wasm");
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
     #[test]
     fn session_hir_set_after_analyze_to_hir_compiler() {
-        let script = parse_script("examples/uptrend.pine", UPTREND_EXAMPLE).expect("parse");
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
         let c = analyze_to_hir_compiler(&script).expect("hir");
         assert!(session_hir(&c).is_some());
     }
 
     #[test]
-    fn wasmtime_accepts_compiled_uptrend_example_module() {
+    fn wasmtime_accepts_compiled_tiny_indicator_module() {
         use wasmtime::{Engine, Module};
 
-        let script = parse_script("examples/uptrend.pine", UPTREND_EXAMPLE).expect("parse");
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
         let wasm = compile_script_to_wasm_v0(&script).expect("compile");
         let engine = Engine::default();
         Module::new(&engine, &wasm).expect("wasmtime parses and compiles module");

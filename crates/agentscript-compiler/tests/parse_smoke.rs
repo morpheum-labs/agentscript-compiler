@@ -1234,6 +1234,12 @@ fn dotted_ident_stays_ident_path() {
 }
 
 #[test]
+fn examples_uptrend_pine_parse_and_analyze() {
+    let src = include_str!("../../../examples/uptrend.pine");
+    parse_and_analyze("examples/uptrend.pine", src).expect("repo example parse + analyze");
+}
+
+#[test]
 fn fixture_minimal_strategy_parse_and_analyze() {
     let src = include_str!("fixtures/minimal_strategy.pine");
     let s = parse_and_analyze("minimal_strategy.pine", src).expect("fixture parse + analyze");
