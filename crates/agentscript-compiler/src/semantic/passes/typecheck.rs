@@ -1682,7 +1682,7 @@ mod tests {
     fn enum_member_access_yields_variant_type() {
         let s = parse_script(
             "t",
-            "indicator(\"x\")\nenum Side { buy = 1, sell = 2 }\nx = Side.buy\n",
+            "indicator(\"x\")\nenum Side {\n  buy = 1\n  sell = 2\n}\nx = Side.buy\n",
         )
         .unwrap();
         typecheck_script(&s).unwrap();
@@ -1702,7 +1702,7 @@ mod tests {
     fn unknown_enum_member_rejected() {
         let s = parse_script(
             "t",
-            "indicator(\"x\")\nenum Side { buy = 1 }\nx = Side.nope\n",
+            "indicator(\"x\")\nenum Side {\n  buy = 1\n}\nx = Side.nope\n",
         )
         .unwrap();
         let e = typecheck_script(&s).unwrap_err();
