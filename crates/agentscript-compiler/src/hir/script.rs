@@ -2,7 +2,9 @@
 //!
 //! **SRP:** top-level program shape; no per-node logic.
 
-use crate::frontend::ast::ScriptKind;
+use std::fmt;
+
+use crate::frontend::ast::{ScriptKind, Span};
 
 use super::expr::HirExpr;
 use super::stmt::HirStmt;
@@ -28,13 +30,29 @@ pub enum HirDeclaration {
     FromAst(ScriptKind),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct HirScript {
     pub version: u32,
     pub declaration: HirDeclaration,
     pub inputs: Vec<HirInputDecl>,
     /// Expression arena: [`super::ids::HirId`] indexes into this vector.
     pub exprs: Vec<HirExpr>,
+    /// Source span per expression (same order/length as [`Self::exprs`]); codegen errors attach these.
+    pub expr_spans: Vec<Span>,
     pub body: Vec<HirStmt>,
     pub symbols: SymbolTable,
+}
+
+impl fmt::Debug for HirScript {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Omit `expr_spans` so debug snapshots stay stable; spans are for diagnostics / wasm errors.
+        f.debug_struct("HirScript")
+            .field("version", &self.version)
+            .field("declaration", &self.declaration)
+            .field("inputs", &self.inputs)
+            .field("exprs", &self.exprs)
+            .field("body", &self.body)
+            .field("symbols", &self.symbols)
+            .finish()
+    }
 }

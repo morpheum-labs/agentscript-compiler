@@ -26,6 +26,7 @@ dependencies = [
  "indexmap",
  "insta",
  "miette",
+ "serde_json",
  "thiserror",
  "wasm-encoder 0.240.0",
  "wasmparser 0.240.0",

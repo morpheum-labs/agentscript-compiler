@@ -1,12 +1,21 @@
 //! Shared compiler state: allocation arena, name resolution side maps, last HIR snapshot.
 
+use std::collections::HashMap;
+
 use bumpalo::Bump;
 
 use crate::bindings::NameBinding;
-use crate::frontend::ast::{max_node_id, NodeId, Script};
+use crate::frontend::ast::{max_node_id, NodeId, Script, Span};
 use crate::hir::{HirScript, HirType};
 
-/// Long-lived state for a compile session (arena-backed AST in later phases).
+/// Definition site recorded by typecheck (mirrors lexical scope stack for tooling / LSP).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemanticDefSite {
+    pub def_span: Span,
+    pub ty: HirType,
+}
+
+/// Long-lived state for a compile session (`Bump` backs the HIR expr pool during [`crate::semantic::passes::HirLowerPass`]; AST arena migration is later).
 pub struct CompilerSession {
     pub arena: Bump,
     /// Filled by [`crate::semantic::passes::HirLowerPass`] when lowering succeeds for the script.
@@ -15,6 +24,8 @@ pub struct CompilerSession {
     pub name_bindings: Vec<Option<NameBinding>>,
     /// Inferred [`HirType`] per expression node; filled by [`crate::semantic::passes::typecheck`].
     pub expr_types: Vec<Option<HirType>>,
+    /// Typed binding stack aligned with typechecker scopes (innermost vector last).
+    pub symbol_def_stack: Vec<HashMap<String, SemanticDefSite>>,
 }
 
 impl CompilerSession {
@@ -25,6 +36,7 @@ impl CompilerSession {
             hir: None,
             name_bindings: Vec::new(),
             expr_types: Vec::new(),
+            symbol_def_stack: Vec::new(),
         }
     }
 
@@ -34,6 +46,7 @@ impl CompilerSession {
         self.hir = None;
         self.name_bindings.clear();
         self.expr_types.clear();
+        self.symbol_def_stack.clear();
     }
 
     /// Allocate side maps for `script` (from [`max_node_id`]).
@@ -42,6 +55,29 @@ impl CompilerSession {
         let len = n.saturating_add(1);
         self.name_bindings = vec![None; len];
         self.expr_types = vec![None; len];
+        self.symbol_def_stack = vec![HashMap::new()];
+    }
+
+    /// Push a scope frame for typed symbol definitions (call with [`Self::push_symbol_scope`] from typecheck).
+    pub fn push_symbol_scope(&mut self) {
+        self.symbol_def_stack.push(HashMap::new());
+    }
+
+    pub fn pop_symbol_scope(&mut self) {
+        let _ = self.symbol_def_stack.pop();
+    }
+
+    /// Record a binding in the innermost symbol scope (typecheck only).
+    pub fn record_symbol_def(&mut self, span: Span, name: &str, ty: HirType) {
+        if let Some(m) = self.symbol_def_stack.last_mut() {
+            m.insert(
+                name.to_string(),
+                SemanticDefSite {
+                    def_span: span,
+                    ty,
+                },
+            );
+        }
     }
 
     /// Record resolution for an expression node (no-op if `id` is out of range).

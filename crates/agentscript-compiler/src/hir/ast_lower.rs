@@ -6,6 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use bumpalo::collections::Vec as BumpVec;
+use bumpalo::Bump;
+
 use crate::frontend::ast::{
     AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item,
     PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind, Type, VarQualifier,
@@ -22,6 +25,13 @@ use super::stmt::HirStmt;
 use super::symbols::SymbolTable;
 use super::ty::HirType;
 
+fn script_declaration_span(decl: &ScriptDeclaration) -> Span {
+    decl.args
+        .first()
+        .map(|(_, ex)| ex.span)
+        .unwrap_or(Span::DUMMY)
+}
+
 /// Lowering failed: construct not in the supported subset.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("HIR lowering: {message}")]
@@ -31,13 +41,6 @@ pub struct HirLowerError {
 }
 
 impl HirLowerError {
-    fn unsupported(msg: impl Into<String>) -> Self {
-        Self {
-            message: msg.into(),
-            span: Span::DUMMY,
-        }
-    }
-
     fn at(span: Span, msg: impl Into<String>) -> Self {
         Self {
             message: msg.into(),
@@ -58,14 +61,25 @@ impl LowerToHir for AstHirLowerer {
     }
 }
 
-/// Parse-time script → HIR for the supported subset.
+/// Parse-time script → HIR for the supported subset (uses a fresh [`Bump`] for the expr arena).
 pub fn lower_script_to_hir(script: &Script) -> Result<HirScript, HirLowerError> {
-    let mut lower = LowerCtx::new();
+    let arena = Bump::new();
+    lower_script_to_hir_in_bump(&arena, script)
+}
+
+/// Lower using the given arena (e.g. [`crate::session::CompilerSession::arena`] for session-scoped allocation).
+pub fn lower_script_to_hir_in_bump(
+    bump: &Bump,
+    script: &Script,
+) -> Result<HirScript, HirLowerError> {
+    let mut lower = LowerCtx::new(bump);
     lower.lower_script(script)
 }
 
-struct LowerCtx {
-    exprs: Vec<HirExpr>,
+struct LowerCtx<'a> {
+    bump: &'a Bump,
+    exprs: BumpVec<'a, HirExpr>,
+    expr_spans: BumpVec<'a, Span>,
     symbols: SymbolTable,
     names: HashMap<String, super::ids::SymbolId>,
     /// Names introduced by `input.int` / `input int` (typed as simple int in HIR).
@@ -74,10 +88,12 @@ struct LowerCtx {
     user_fn_arity: HashMap<String, usize>,
 }
 
-impl LowerCtx {
-    fn new() -> Self {
+impl<'a> LowerCtx<'a> {
+    fn new(bump: &'a Bump) -> Self {
         Self {
-            exprs: Vec::new(),
+            bump,
+            exprs: BumpVec::new_in(bump),
+            expr_spans: BumpVec::new_in(bump),
             symbols: SymbolTable::new(),
             names: HashMap::new(),
             input_int_names: HashSet::new(),
@@ -124,9 +140,10 @@ impl LowerCtx {
         id
     }
 
-    fn alloc_expr(&mut self, e: HirExpr) -> HirId {
+    fn alloc_expr(&mut self, e: HirExpr, span: Span) -> HirId {
         let id = HirId(self.exprs.len() as u32);
         self.exprs.push(e);
+        self.expr_spans.push(span);
         id
     }
 
@@ -177,8 +194,33 @@ impl LowerCtx {
                     ));
                 }
                 Item::FnDecl(_) | Item::Export(ExportDecl::Fn(_)) => {}
-                Item::Export(_) | Item::Enum(_) | Item::TypeDef(_) => {
-                    return Err(HirLowerError::unsupported(
+                Item::Enum(e) => {
+                    return Err(HirLowerError::at(
+                        e.span,
+                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
+                    ));
+                }
+                Item::TypeDef(t) => {
+                    return Err(HirLowerError::at(
+                        t.span,
+                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
+                    ));
+                }
+                Item::Export(ExportDecl::Var(v)) => {
+                    return Err(HirLowerError::at(
+                        v.span,
+                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
+                    ));
+                }
+                Item::Export(ExportDecl::Enum(e)) => {
+                    return Err(HirLowerError::at(
+                        e.span,
+                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
+                    ));
+                }
+                Item::Export(ExportDecl::TypeDef(t)) => {
+                    return Err(HirLowerError::at(
+                        t.span,
                         "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
                     ));
                 }
@@ -189,7 +231,12 @@ impl LowerCtx {
             version,
             declaration,
             inputs,
-            exprs: std::mem::take(&mut self.exprs),
+            exprs: std::mem::replace(&mut self.exprs, BumpVec::new_in(self.bump))
+                .into_iter()
+                .collect(),
+            expr_spans: std::mem::replace(&mut self.expr_spans, BumpVec::new_in(self.bump))
+                .into_iter()
+                .collect(),
             body,
             symbols: std::mem::take(&mut self.symbols),
         })
@@ -204,7 +251,8 @@ impl LowerCtx {
             ScriptKind::Strategy => Ok(HirDeclaration::Strategy {
                 title: first_string_arg(&decl.args),
             }),
-            ScriptKind::Library => Err(HirLowerError::unsupported(
+            ScriptKind::Library => Err(HirLowerError::at(
+                script_declaration_span(decl),
                 "library() scripts are not supported by this HIR lowering pass",
             )),
         }
@@ -332,22 +380,34 @@ impl LowerCtx {
 
     fn lower_expr(&mut self, e: &Expr) -> Result<HirId, HirLowerError> {
         match &e.kind {
-            ExprKind::Int(i) => Ok(self.alloc_expr(HirExpr::Literal(
-                HirLiteral::Int(*i),
-                HirType::Simple(Type::Primitive(PrimitiveType::Int)),
-            ))),
-            ExprKind::Float(f) => Ok(self.alloc_expr(HirExpr::Literal(
-                HirLiteral::Float(*f),
-                HirType::Simple(Type::Primitive(PrimitiveType::Float)),
-            ))),
-            ExprKind::Bool(b) => Ok(self.alloc_expr(HirExpr::Literal(
-                HirLiteral::Bool(*b),
-                HirType::Simple(Type::Primitive(PrimitiveType::Bool)),
-            ))),
-            ExprKind::String(s) => Ok(self.alloc_expr(HirExpr::Literal(
-                HirLiteral::String(s.clone()),
-                HirType::Simple(Type::Primitive(PrimitiveType::String)),
-            ))),
+            ExprKind::Int(i) => Ok(self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::Int(*i),
+                    HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+                ),
+                e.span,
+            )),
+            ExprKind::Float(f) => Ok(self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::Float(*f),
+                    HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                ),
+                e.span,
+            )),
+            ExprKind::Bool(b) => Ok(self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::Bool(*b),
+                    HirType::Simple(Type::Primitive(PrimitiveType::Bool)),
+                ),
+                e.span,
+            )),
+            ExprKind::String(s) => Ok(self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::String(s.clone()),
+                    HirType::Simple(Type::Primitive(PrimitiveType::String)),
+                ),
+                e.span,
+            )),
             ExprKind::Index { base, index } => {
                 let base_id = self.lower_expr(base.as_ref())?;
                 let idx = index.as_ref();
@@ -361,11 +421,14 @@ impl LowerCtx {
                     }
                 };
                 let ty = self.expr_hir_type(base_id);
-                Ok(self.alloc_expr(HirExpr::SeriesAccess {
-                    base: base_id,
-                    offset,
-                    ty,
-                }))
+                Ok(self.alloc_expr(
+                    HirExpr::SeriesAccess {
+                        base: base_id,
+                        offset,
+                        ty,
+                    },
+                    e.span,
+                ))
             }
             ExprKind::IdentPath(path) => self.lower_ident_path(path, e.span),
             ExprKind::Binary { op, left, right } => {
@@ -380,12 +443,15 @@ impl LowerCtx {
                 }
                 let lhs = self.lower_expr(left.as_ref())?;
                 let rhs = self.lower_expr(right.as_ref())?;
-                Ok(self.alloc_expr(HirExpr::Binary {
-                    op: *op,
-                    lhs,
-                    rhs,
-                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
-                }))
+                Ok(self.alloc_expr(
+                    HirExpr::Binary {
+                        op: *op,
+                        lhs,
+                        rhs,
+                        ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                    },
+                    e.span,
+                ))
             }
             ExprKind::Call {
                 callee,
@@ -420,7 +486,7 @@ impl LowerCtx {
             } else {
                 HirType::Series(Type::Primitive(PrimitiveType::Float))
             };
-            return Ok(self.alloc_expr(HirExpr::Variable(id, ty)));
+            return Ok(self.alloc_expr(HirExpr::Variable(id, ty), span));
         }
         Err(HirLowerError::at(
             span,
@@ -463,15 +529,21 @@ impl LowerCtx {
                     ));
                 }
             };
-            let lit = self.alloc_expr(HirExpr::Literal(
-                HirLiteral::Int(n),
-                HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+            let lit = self.alloc_expr(
+                HirExpr::Literal(
+                    HirLiteral::Int(n),
+                    HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+                ),
+                args[0].1.span,
+            );
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::InputInt,
+                    args: vec![lit],
+                    ty: HirType::Simple(Type::Primitive(PrimitiveType::Int)),
+                },
+                expr_span,
             ));
-            return Ok(self.alloc_expr(HirExpr::BuiltinCall {
-                kind: BuiltinKind::InputInt,
-                args: vec![lit],
-                ty: HirType::Simple(Type::Primitive(PrimitiveType::Int)),
-            }));
         }
 
         if path == ["ta", "sma"] {
@@ -480,11 +552,14 @@ impl LowerCtx {
             }
             let a0 = self.lower_expr(&args[0].1)?;
             let a1 = self.lower_expr(&args[1].1)?;
-            return Ok(self.alloc_expr(HirExpr::BuiltinCall {
-                kind: BuiltinKind::TaSma,
-                args: vec![a0, a1],
-                ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
-            }));
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaSma,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
         }
 
         if path == ["ta", "ema"] {
@@ -493,11 +568,14 @@ impl LowerCtx {
             }
             let a0 = self.lower_expr(&args[0].1)?;
             let a1 = self.lower_expr(&args[1].1)?;
-            return Ok(self.alloc_expr(HirExpr::BuiltinCall {
-                kind: BuiltinKind::TaEma,
-                args: vec![a0, a1],
-                ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
-            }));
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::TaEma,
+                    args: vec![a0, a1],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                },
+                expr_span,
+            ));
         }
 
         if path == ["request", "security"] {
@@ -557,7 +635,7 @@ impl LowerCtx {
                 lookahead,
                 ty: sec_ty,
             };
-            return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec))));
+            return Ok(self.alloc_expr(HirExpr::Security(Box::new(sec)), expr_span));
         }
 
         if path.len() == 1 {
@@ -579,11 +657,14 @@ impl LowerCtx {
                 for (_, e) in args {
                     call_args.push(self.lower_expr(e)?);
                 }
-                return Ok(self.alloc_expr(HirExpr::UserCall {
-                    callee: sym,
-                    args: call_args,
-                    ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
-                }));
+                return Ok(self.alloc_expr(
+                    HirExpr::UserCall {
+                        callee: sym,
+                        args: call_args,
+                        ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                    },
+                    expr_span,
+                ));
             }
         }
 

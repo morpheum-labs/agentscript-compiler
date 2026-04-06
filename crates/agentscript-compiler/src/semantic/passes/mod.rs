@@ -1,7 +1,7 @@
 //! Single-responsibility semantic passes (Phase 1 groundwork).
 
 use crate::frontend::ast::Script;
-use crate::hir::lower_script_to_hir;
+use crate::hir::lower_script_to_hir_in_bump;
 use crate::session::CompilerSession;
 
 use super::AnalyzeError;
@@ -97,7 +97,7 @@ impl CompilerPass for HirLowerPass {
     }
 
     fn run(&mut self, session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
-        match lower_script_to_hir(script) {
+        match lower_script_to_hir_in_bump(&session.arena, script) {
             Ok(hir) => {
                 session.hir = Some(hir);
                 Ok(())

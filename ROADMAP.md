@@ -157,8 +157,8 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 - [ ] **HIR completeness:** cover the rest of the typed surface, optimizations, bar/series schedule if needed.
 - [ ] **`request.security` lowering to host:** beyond the HIR node — documented **host imports** (resolve symbol/timeframe, merge bars, return OHLC/series slice or per-bar samples per ABI); **determinism** (feed + merge policy ⇒ stable results); optional **static request graph** in metadata for host prefetch.
 - [ ] **`request.financial` lowering:** lower to **host imports** that resolve symbol + financial id + period and return series aligned with the ABI; **determinism** and prefetch/metadata story consistent with `request.security`.
-- [ ] WASM emission (likely `wasm-encoder` / `wasmparser` validation, or another chosen stack).
-- [ ] **ABI contract** implemented in codegen (documented in-repo + mirrored types in Aether where useful).
+- [x] **WASM emission (HIR subset v0):** [`emit_hir_guest_wasm`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) + [`compile_script_to_wasm_v0`](crates/agentscript-compiler/src/lib.rs) using `wasm-encoder` / `wasmparser` in tests. Emits `aether` imports, `memory`, and dual exports (`init`/`on_bar` + `aether_strategy_*`). **Still not** full-language codegen: [`HirWasmError`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) rejects `UserCall`, body `if`, non-`close` series history, nested `plot`, etc.
+- [x] **Guest module ABI v0 (partial):** import indices and export names are defined in [`hir_wasm.rs`](crates/agentscript-compiler/src/codegen/hir_wasm.rs) and described in [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md). **Still open for Phase 2 “done”:** full `request.*` / user-fn lowering, richer `init`/`step` signatures, and Aether/MWVM contract tests beyond the current smoke checks.
 
 ## Phase 3 — Tooling & integration
 

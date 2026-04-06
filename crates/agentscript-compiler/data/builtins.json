@@ -1,0 +1,123 @@
+[
+  {
+    "dotted_name": "ta.sma",
+    "min_args": 2,
+    "result": "SeriesFloat",
+    "moving_average": true,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.ema",
+    "min_args": 2,
+    "result": "SeriesFloat",
+    "moving_average": true,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.wma",
+    "min_args": 2,
+    "result": "SeriesFloat",
+    "moving_average": true,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.rma",
+    "min_args": 2,
+    "result": "SeriesFloat",
+    "moving_average": true,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.rsi",
+    "min_args": 2,
+    "result": "SeriesFloat",
+    "moving_average": true,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.macd",
+    "min_args": 4,
+    "result": "SeriesFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.crossover",
+    "min_args": 2,
+    "result": "SeriesBool",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": true,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "ta.crossunder",
+    "min_args": 2,
+    "result": "SeriesBool",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": true,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "math.pow",
+    "min_args": 2,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": true,
+    "unary_numeric": false,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": false
+  },
+  {
+    "dotted_name": "math.round",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": true,
+    "unary_string_to_float": false,
+    "bool_binary": false,
+    "series_from_args": true
+  },
+  {
+    "dotted_name": "str.tonumber",
+    "min_args": 1,
+    "result": "SimpleFloat",
+    "moving_average": false,
+    "binary_numeric": false,
+    "unary_numeric": false,
+    "unary_string_to_float": true,
+    "bool_binary": false,
+    "series_from_args": false
+  }
+]

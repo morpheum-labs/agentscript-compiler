@@ -30,8 +30,11 @@ pub use semantic::{
     typecheck_script_in_session, AnalyzeError, BreakContinuePass, CompilerPass, EarlyAnalyzePass,
     HirLowerPass, LexicalResolvePass, ResolverPass, SemanticDiagnostic, TypecheckPass,
 };
-pub use hir::{lower_script_to_hir, AstHirLowerer, HirLowerError, HirScript, HirType, LowerToHir};
-pub use session::CompilerSession;
+pub use hir::{
+    lower_script_to_hir, lower_script_to_hir_in_bump, AstHirLowerer, HirLowerError, HirScript,
+    HirType, LowerToHir,
+};
+pub use session::{CompilerSession, SemanticDefSite};
 pub use visitor::AstVisitor;
 
 use chumsky::Parser;
@@ -127,9 +130,7 @@ pub fn compile_script_to_wasm_v0(script: &Script) -> Result<Vec<u8>, AnalyzeErro
         .hir
         .as_ref()
         .expect("hir present after successful hir lowering");
-    codegen::emit_hir_guest_wasm(hir).map_err(|e| {
-        AnalyzeError::single(e.to_string(), crate::frontend::ast::Span::DUMMY)
-    })
+    codegen::emit_hir_guest_wasm(hir).map_err(|e| AnalyzeError::single(e.message, e.span))
 }
 
 /// Parse failure ([`CompileError`]) or post-parse semantic failure ([`AnalyzeError`]).

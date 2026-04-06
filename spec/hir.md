@@ -29,6 +29,10 @@ Your language is Pine Script-inspired for trading agents, so it has several doma
 2. **series<T> semantics**  
    → `close + open`, `ta.sma(close, 14)`, `close[1]`, `nz()`, `na()` handling, bar-state awareness. All of these need explicit representation.
 
+#### Typing notes: equality and `na`
+
+Semantic typing for **`==` / `!=`** (before HIR lowering) lives in the typechecker: `type_compatible_eq` in [`crates/agentscript-compiler/src/semantic/passes/typecheck.rs`](../crates/agentscript-compiler/src/semantic/passes/typecheck.rs). Two operands type-check together if either side is assignable to the other **or** both are **numeric** (so comparisons like `close == na` work when `na` is modeled as a float special and `close` is series float). This is an explicit **QAS / compiler policy**; TradingView Pine has additional dynamic rules—if we tighten behavior later, update this paragraph and the helper in `typecheck.rs` together.
+
 3. **Builtins** (`ta.*`, `strategy.*`, `plot`, `alert`, `input.*`)  
    → Many should become intrinsics or special nodes so codegen can map them directly to optimized WASM instructions.
 

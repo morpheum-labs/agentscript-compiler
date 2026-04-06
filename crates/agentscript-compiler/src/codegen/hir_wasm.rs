@@ -7,9 +7,7 @@ use wasm_encoder::{
     FunctionSection, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
-use crate::frontend::ast::BinOp;
-use crate::frontend::ast::PrimitiveType;
-use crate::frontend::ast::Type as AstType;
+use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
 use crate::hir::{
     BuiltinKind, HirExpr, HirId, HirLiteral, HirScript, HirStmt, HirType, SymbolId,
 };
@@ -36,15 +34,35 @@ pub const GUEST_EXPORT_STEP_LEGACY: &str = "on_bar";
 pub const GUEST_EXPORT_INIT_ABI: &str = "aether_strategy_init";
 pub const GUEST_EXPORT_STEP_ABI: &str = "aether_strategy_step";
 
+/// Wasm codegen failed for this HIR; [`Self::span`] is the best source range (often the offending expression).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum HirWasmError {
-    #[error("HIR wasm: {0}")]
-    Msg(String),
+#[error("HIR wasm: {message}")]
+pub struct HirWasmError {
+    pub message: String,
+    pub span: Span,
 }
 
 impl HirWasmError {
-    fn unsupported(msg: impl Into<String>) -> Self {
-        Self::Msg(msg.into())
+    fn at(span: Span, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+        }
+    }
+
+    fn dummy(message: impl Into<String>) -> Self {
+        Self::at(Span::DUMMY, message)
+    }
+}
+
+fn expr_span(hir: &HirScript, id: HirId) -> Span {
+    if hir.expr_spans.len() == hir.exprs.len() {
+        hir.expr_spans
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(Span::DUMMY)
+    } else {
+        Span::DUMMY
     }
 }
 
@@ -79,7 +97,7 @@ fn hir_ty_to_val(ty: &HirType) -> Result<ValType, HirWasmError> {
         HirType::Simple(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::I32),
         HirType::Simple(AstType::Primitive(PrimitiveType::Float))
         | HirType::Series(AstType::Primitive(PrimitiveType::Float)) => Ok(ValType::F64),
-        _ => Err(HirWasmError::unsupported(
+        _ => Err(HirWasmError::dummy(
             "only i32 and f64 HIR types are supported in wasm codegen",
         )),
     }
@@ -104,13 +122,15 @@ fn collect_strings(hir: &HirScript, pool: &mut StringPool) -> Result<(), HirWasm
 }
 
 fn require_string_literal(hir: &HirScript, id: HirId) -> Result<String, HirWasmError> {
+    let span = expr_span(hir, id);
     let ex = hir
         .exprs
         .get(id.0 as usize)
-        .ok_or_else(|| HirWasmError::unsupported("bad HirId"))?;
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
     match ex {
         HirExpr::Literal(HirLiteral::String(s), _) => Ok(s.clone()),
-        _ => Err(HirWasmError::unsupported(
+        _ => Err(HirWasmError::at(
+            span,
             "request.security symbol/timeframe must be string literals for wasm codegen",
         )),
     }
@@ -122,7 +142,7 @@ fn collect_lets(body: &[HirStmt], out: &mut Vec<(SymbolId, HirId)>) -> Result<()
             HirStmt::Let { symbol, value } => out.push((*symbol, *value)),
             HirStmt::Block(inner) => collect_lets(inner, out)?,
             HirStmt::If { .. } => {
-                return Err(HirWasmError::unsupported(
+                return Err(HirWasmError::dummy(
                     "`if` in script body is not supported in wasm codegen v0",
                 ));
             }
@@ -133,10 +153,11 @@ fn collect_lets(body: &[HirStmt], out: &mut Vec<(SymbolId, HirId)>) -> Result<()
 }
 
 fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmError> {
+    let span = expr_span(hir, value);
     let ex = hir
         .exprs
         .get(value.0 as usize)
-        .ok_or_else(|| HirWasmError::unsupported("bad HirId"))?;
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
     hir_ty_to_val(match ex {
         HirExpr::Literal(_, t) => t,
         HirExpr::Variable(_, t) => t,
@@ -146,7 +167,8 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         | HirExpr::SeriesAccess { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Plot { .. } => {
-            return Err(HirWasmError::unsupported(
+            return Err(HirWasmError::at(
+                span,
                 "plot expression shape not supported as let value",
             ));
         }
@@ -174,17 +196,18 @@ impl<'a> Ctx<'a> {
     }
 
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
+        let span = expr_span(self.hir, id);
         let ex = self
             .hir
             .exprs
             .get(id.0 as usize)
-            .ok_or_else(|| HirWasmError::unsupported("bad HirId"))?;
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
         match ex {
             HirExpr::Literal(lit, ty) => {
                 match (lit, ty) {
                     (HirLiteral::Int(n), HirType::Simple(AstType::Primitive(PrimitiveType::Int))) => {
                         func.instructions().i32_const(i32::try_from(*n).map_err(|_| {
-                            HirWasmError::unsupported("int literal out of i32 range")
+                            HirWasmError::at(span, "int literal out of i32 range")
                         })?);
                     }
                     (HirLiteral::Float(x), _) => {
@@ -194,7 +217,8 @@ impl<'a> Ctx<'a> {
                         func.instructions().i32_const(if *b { 1 } else { 0 });
                     }
                     _ => {
-                        return Err(HirWasmError::unsupported(
+                        return Err(HirWasmError::at(
+                            span,
                             "literal type not supported in wasm codegen",
                         ));
                     }
@@ -203,7 +227,7 @@ impl<'a> Ctx<'a> {
             HirExpr::Variable(sym, _) => {
                 let name = self
                     .symbol_name(*sym)
-                    .ok_or_else(|| HirWasmError::unsupported("unknown symbol"))?;
+                    .ok_or_else(|| HirWasmError::at(span, "unknown symbol"))?;
                 if name == "close" {
                     func.instructions().call(IMPORT_SERIES_CLOSE);
                 } else if let Some(idx) = self.input_index(name) {
@@ -211,9 +235,10 @@ impl<'a> Ctx<'a> {
                 } else if let Some(&li) = self.sym_to_local.get(sym) {
                     func.instructions().local_get(li);
                 } else {
-                    return Err(HirWasmError::unsupported(format!(
-                        "unresolved variable `{name}`"
-                    )));
+                    return Err(HirWasmError::at(
+                        span,
+                        format!("unresolved variable `{name}`"),
+                    ));
                 }
             }
             HirExpr::Binary {
@@ -222,8 +247,9 @@ impl<'a> Ctx<'a> {
                 rhs,
                 ty,
             } => {
-                if hir_ty_to_val(ty)? != ValType::F64 {
-                    return Err(HirWasmError::unsupported("only f64 binary ops for wasm"));
+                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
+                {
+                    return Err(HirWasmError::at(span, "only f64 binary ops for wasm"));
                 }
                 self.emit_expr(func, *lhs)?;
                 self.emit_expr(func, *rhs)?;
@@ -234,7 +260,8 @@ impl<'a> Ctx<'a> {
                     BinOp::Mul => ins.f64_mul(),
                     BinOp::Div => ins.f64_div(),
                     _ => {
-                        return Err(HirWasmError::unsupported(
+                        return Err(HirWasmError::at(
+                            span,
                             "binary operator not supported in wasm codegen",
                         ));
                     }
@@ -247,14 +274,14 @@ impl<'a> Ctx<'a> {
             } => match kind {
                 BuiltinKind::InputInt => {
                     if args.len() != 1 {
-                        return Err(HirWasmError::unsupported("input.int arity"));
+                        return Err(HirWasmError::at(span, "input.int arity"));
                     }
                     self.emit_expr(func, args[0])?;
                     // stack: i32 default — for surface `input.int(14)` expr
                 }
                 BuiltinKind::TaSma => {
                     if args.len() != 2 {
-                        return Err(HirWasmError::unsupported("ta.sma arity"));
+                        return Err(HirWasmError::at(span, "ta.sma arity"));
                     }
                     // Host uses primary series; pass period only (second arg).
                     self.emit_expr(func, args[1])?;
@@ -262,15 +289,18 @@ impl<'a> Ctx<'a> {
                 }
                 BuiltinKind::TaEma => {
                     if args.len() != 2 {
-                        return Err(HirWasmError::unsupported("ta.ema arity"));
+                        return Err(HirWasmError::at(span, "ta.ema arity"));
                     }
                     self.emit_expr(func, args[1])?;
                     func.instructions().call(IMPORT_TA_EMA);
                 }
             },
             HirExpr::SeriesAccess { base, offset, ty } => {
-                if hir_ty_to_val(ty)? != ValType::F64 {
-                    return Err(HirWasmError::unsupported(
+                let base_span = expr_span(self.hir, *base);
+                if hir_ty_to_val(ty).map_err(|e| HirWasmError::at(span, e.message))? != ValType::F64
+                {
+                    return Err(HirWasmError::at(
+                        span,
                         "series history wasm codegen expects f64 series element type",
                     ));
                 }
@@ -278,37 +308,43 @@ impl<'a> Ctx<'a> {
                     .hir
                     .exprs
                     .get(base.0 as usize)
-                    .ok_or_else(|| HirWasmError::unsupported("bad HirId in SeriesAccess"))?;
+                    .ok_or_else(|| HirWasmError::at(base_span, "bad HirId in SeriesAccess"))?;
                 let HirExpr::Variable(sym, _) = base_ex else {
-                    return Err(HirWasmError::unsupported(
+                    return Err(HirWasmError::at(
+                        base_span,
                         "series history for non-variable base is not supported in wasm codegen yet",
                     ));
                 };
                 let name = self
                     .symbol_name(*sym)
-                    .ok_or_else(|| HirWasmError::unsupported("unknown symbol in SeriesAccess"))?;
+                    .ok_or_else(|| HirWasmError::at(base_span, "unknown symbol in SeriesAccess"))?;
                 if name != "close" {
-                    return Err(HirWasmError::unsupported(format!(
-                        "series history for `{name}` is not supported in wasm codegen yet (only `close`)"
-                    )));
+                    return Err(HirWasmError::at(
+                        span,
+                        format!(
+                            "series history for `{name}` is not supported in wasm codegen yet (only `close`)"
+                        ),
+                    ));
                 }
                 func.instructions().i32_const(*offset);
                 func.instructions().call(IMPORT_SERIES_HIST);
             }
             HirExpr::Security(sec) => {
+                let sym_span = expr_span(self.hir, sec.symbol);
+                let tf_span = expr_span(self.hir, sec.timeframe);
                 let (so, sl) = {
                     let s = require_string_literal(self.hir, sec.symbol)?;
                     self.pool
                         .get(&s)
                         .copied()
-                        .ok_or_else(|| HirWasmError::unsupported("missing string pool entry"))?
+                        .ok_or_else(|| HirWasmError::at(sym_span, "missing string pool entry"))?
                 };
                 let (to, tl) = {
                     let s = require_string_literal(self.hir, sec.timeframe)?;
                     self.pool
                         .get(&s)
                         .copied()
-                        .ok_or_else(|| HirWasmError::unsupported("missing string pool entry"))?
+                        .ok_or_else(|| HirWasmError::at(tf_span, "missing string pool entry"))?
                 };
                 func
                     .instructions()
@@ -320,12 +356,14 @@ impl<'a> Ctx<'a> {
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
             HirExpr::UserCall { .. } => {
-                return Err(HirWasmError::unsupported(
+                return Err(HirWasmError::at(
+                    span,
                     "user function calls are not supported in wasm codegen v0",
                 ));
             }
             HirExpr::Plot { .. } => {
-                return Err(HirWasmError::unsupported(
+                return Err(HirWasmError::at(
+                    span,
                     "nested plot expression not supported",
                 ));
             }
@@ -335,15 +373,16 @@ impl<'a> Ctx<'a> {
 
     fn emit_stmt(&self, func: &mut Function, stmt: &HirStmt) -> Result<(), HirWasmError> {
         match stmt {
-            HirStmt::If { .. } => Err(HirWasmError::unsupported(
+            HirStmt::If { .. } => Err(HirWasmError::dummy(
                 "`if` statements are not supported in wasm codegen v0",
             )),
             HirStmt::Let { symbol, value } => {
+                let vspan = expr_span(self.hir, *value);
                 self.emit_expr(func, *value)?;
                 let li = *self
                     .sym_to_local
                     .get(symbol)
-                    .ok_or_else(|| HirWasmError::unsupported("let without local slot"))?;
+                    .ok_or_else(|| HirWasmError::at(vspan, "let without local slot"))?;
                 func.instructions().local_set(li);
                 Ok(())
             }

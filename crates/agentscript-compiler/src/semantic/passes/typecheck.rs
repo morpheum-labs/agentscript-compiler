@@ -71,17 +71,20 @@ impl<'a> Checker<'a> {
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.session.push_symbol_scope();
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.session.pop_symbol_scope();
     }
 
-    fn define(&mut self, name: impl Into<String>, ty: HirType) {
+    fn define_at(&mut self, span: Span, name: impl Into<String>, ty: HirType) {
         let name = name.into();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name.clone(), ty.clone());
         }
+        self.session.record_symbol_def(span, &name, ty);
     }
 
     fn resolve_local(&self, name: &str) -> Option<HirType> {
@@ -113,16 +116,18 @@ impl<'a> Checker<'a> {
             match item {
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
                     let ty = fn_decl_type(f);
-                    self.define(&f.name, ty);
+                    self.define_at(f.span, &f.name, ty);
                 }
                 Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
-                    self.define(
+                    self.define_at(
+                        e.span,
                         &e.name,
                         HirType::Simple(AstType::Named(e.name.clone())),
                     );
                 }
                 Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
-                    self.define(
+                    self.define_at(
+                        t.span,
                         &t.name,
                         HirType::Simple(AstType::Named(t.name.clone())),
                     );
@@ -166,7 +171,7 @@ impl<'a> Checker<'a> {
         self.push_scope();
         for p in &f.params {
             let ty = param_hir_type(p);
-            self.define(&p.name, ty.clone());
+            self.define_at(f.span, &p.name, ty.clone());
             if let Some(d) = &p.default {
                 let dt = match self.type_expr(d) {
                     Ok(t) => t,
@@ -183,15 +188,20 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        match &f.body {
-            FnBody::Expr(e) => {
-                let _ = self.type_expr(e);
-            }
+        let inferred_ret = match &f.body {
+            FnBody::Expr(e) => match self.type_expr(e) {
+                Ok(t) => t,
+                Err(()) => default_fn_return_hir(),
+            },
             FnBody::Block(stmts) => {
                 for s in stmts {
                     self.check_stmt(s);
                 }
+                infer_return_from_block(self, stmts)
             }
+        };
+        if let Some(sig) = self.fn_sigs.get_mut(&f.name) {
+            sig.ret = inferred_ret;
         }
         self.pop_scope();
     }
@@ -221,7 +231,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                         None => {
-                            self.define(name, rhs);
+                            self.define_at(s.span, name, rhs);
                         }
                     }
                 }
@@ -306,7 +316,7 @@ impl<'a> Checker<'a> {
                                         );
                                     }
                                 }
-                                None => self.define(n, rhs.clone()),
+                                None => self.define_at(s.span, n, rhs.clone()),
                             }
                         }
                     }
@@ -368,7 +378,11 @@ impl<'a> Checker<'a> {
                     let _ = self.type_expr(b);
                 }
                 self.push_scope();
-                self.define(var, HirType::Simple(AstType::Primitive(PrimitiveType::Int)));
+                self.define_at(
+                    s.span,
+                    var,
+                    HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
+                );
                 for x in body {
                     self.check_stmt(x);
                 }
@@ -383,11 +397,19 @@ impl<'a> Checker<'a> {
                 self.push_scope();
                 match pattern {
                     crate::frontend::ast::ForInPattern::Name(n) => {
-                        self.define(n, HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+                        self.define_at(
+                            s.span,
+                            n,
+                            HirType::Series(AstType::Primitive(PrimitiveType::Float)),
+                        );
                     }
                     crate::frontend::ast::ForInPattern::Pair(i, v) => {
-                        self.define(i, HirType::Simple(AstType::Primitive(PrimitiveType::Int)));
-                        self.define(v, HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+                        self.define_at(s.span, i, HirType::Simple(AstType::Primitive(PrimitiveType::Int)));
+                        self.define_at(
+                            s.span,
+                            v,
+                            HirType::Series(AstType::Primitive(PrimitiveType::Float)),
+                        );
                     }
                 }
                 for x in body {
@@ -481,7 +503,7 @@ impl<'a> Checker<'a> {
         let rhs = match self.type_expr(&v.value) {
             Ok(t) => t,
             Err(_) => {
-                self.define(&v.name, binding);
+                self.define_at(decl_span, &v.name, binding);
                 return;
             }
         };
@@ -500,7 +522,7 @@ impl<'a> Checker<'a> {
                 };
             self.err(decl_span, msg);
         }
-        self.define(&v.name, binding);
+        self.define_at(decl_span, &v.name, binding);
     }
 
     fn type_expr(&mut self, e: &Expr) -> Result<HirType, ()> {
@@ -524,8 +546,19 @@ impl<'a> Checker<'a> {
                 args,
             } => self.type_call(callee.as_ref(), args, e.span)?,
             ExprKind::Index { base, index } => {
-                let base_ty = self.type_expr(base)?;
-                let idx_ty = self.type_expr(index)?;
+                let base_res = self.type_expr(base);
+                let idx_res = self.type_expr(index);
+                let base_failed = base_res.is_err();
+                let idx_failed = idx_res.is_err();
+                let base_ty = base_res.unwrap_or_else(|_| {
+                    HirType::Series(AstType::Primitive(PrimitiveType::Float))
+                });
+                let idx_ty = idx_res.unwrap_or_else(|_| {
+                    HirType::Simple(AstType::Primitive(PrimitiveType::Int))
+                });
+                if base_failed || idx_failed {
+                    return Err(());
+                }
                 if !is_integral(&idx_ty) {
                     self.err(e.span, "series index must be integral");
                 }
@@ -543,9 +576,22 @@ impl<'a> Checker<'a> {
                         PrimitiveType::Float,
                     ))))
                 } else {
-                    let mut first = self.type_expr(&elts[0])?;
-                    for x in &elts[1..] {
-                        let u = self.type_expr(x)?;
+                    let mut tys: Vec<HirType> = Vec::with_capacity(elts.len());
+                    let mut failed = false;
+                    for x in elts {
+                        match self.type_expr(x) {
+                            Ok(t) => tys.push(t),
+                            Err(()) => {
+                                failed = true;
+                                tys.push(HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+                            }
+                        }
+                    }
+                    if failed {
+                        return Err(());
+                    }
+                    let mut first = tys[0].clone();
+                    for u in tys.into_iter().skip(1) {
                         first = match binary_meet(&first, &u) {
                             Some(t) => t,
                             None => {
@@ -579,8 +625,19 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Binary { op, left, right } => {
-                let l = self.type_expr(left)?;
-                let r = self.type_expr(right)?;
+                let l_res = self.type_expr(left);
+                let r_res = self.type_expr(right);
+                let l_failed = l_res.is_err();
+                let r_failed = r_res.is_err();
+                let l = l_res.unwrap_or_else(|_| {
+                    HirType::Series(AstType::Primitive(PrimitiveType::Float))
+                });
+                let r = r_res.unwrap_or_else(|_| {
+                    HirType::Series(AstType::Primitive(PrimitiveType::Float))
+                });
+                if l_failed || r_failed {
+                    return Err(());
+                }
                 self.type_binary(*op, l, r, e.span)?
             }
             ExprKind::Ternary {
@@ -601,8 +658,15 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
-                let t = self.type_expr(then_b)?;
-                let u = self.type_expr(else_b)?;
+                let t_res = self.type_expr(then_b);
+                let u_res = self.type_expr(else_b);
+                let t_failed = t_res.is_err();
+                let u_failed = u_res.is_err();
+                let t = t_res.unwrap_or_else(|_| default_fn_return_hir());
+                let u = u_res.unwrap_or_else(|_| default_fn_return_hir());
+                if t_failed || u_failed {
+                    return Err(());
+                }
                 match binary_meet(&t, &u) {
                     Some(ty) => ty,
                     None => {
@@ -639,6 +703,29 @@ impl<'a> Checker<'a> {
         Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
     }
 
+    /// Type every call argument (so later args still get `expr_types` / errors if an earlier arg fails).
+    fn collect_call_arg_types(
+        &mut self,
+        args: &[(Option<String>, Expr)],
+    ) -> Result<Vec<HirType>, ()> {
+        let mut v = Vec::with_capacity(args.len());
+        let mut failed = false;
+        for (_, e) in args {
+            match self.type_expr(e) {
+                Ok(t) => v.push(t),
+                Err(()) => {
+                    failed = true;
+                    v.push(HirType::Series(AstType::Primitive(PrimitiveType::Float)));
+                }
+            }
+        }
+        if failed {
+            Err(())
+        } else {
+            Ok(v)
+        }
+    }
+
     fn type_call(
         &mut self,
         callee: &Expr,
@@ -647,10 +734,7 @@ impl<'a> Checker<'a> {
     ) -> Result<HirType, ()> {
         let name = dotted_name(callee).unwrap_or_default();
         let cspan = callee.span;
-        let mut arg_tys = Vec::with_capacity(args.len());
-        for (_, e) in args {
-            arg_tys.push(self.type_expr(e)?);
-        }
+        let arg_tys = self.collect_call_arg_types(args)?;
 
         if let Some(entry) = builtin_registry::lookup_dotted(name.as_str()) {
             if arg_tys.len() < entry.min_args {
@@ -903,17 +987,36 @@ impl<'a> Checker<'a> {
                         "`request.security`: timeframe must be `string` or `series string`",
                     );
                 }
-                for (nm, ex) in args.iter().skip(3) {
-                    let need_check = match nm.as_deref() {
-                        Some("gaps") | Some("lookahead") => true,
-                        None => true,
-                        _ => false,
-                    };
-                    if need_check && !is_valid_security_gaps_lookahead_arg(ex) {
-                        self.err(
-                            ex.span,
-                            "`request.security`: `gaps` / `lookahead` (and positional merge args) must be `barmerge.*` or a boolean literal",
-                        );
+                for (i, (nm, ex)) in args.iter().enumerate().skip(3) {
+                    let arg_ty = arg_tys.get(i);
+                    match nm.as_deref() {
+                        Some("gaps") | Some("lookahead") => {
+                            if !is_valid_security_gaps_lookahead_arg(ex) {
+                                self.err(
+                                    ex.span,
+                                    "`request.security`: `gaps` / `lookahead` must be `barmerge.*` or a boolean literal",
+                                );
+                            }
+                        }
+                        Some("ignore_invalid_symbol") => {
+                            if let Some(t) = arg_ty {
+                                if !is_bool_like(t) {
+                                    self.err(
+                                        ex.span,
+                                        "`request.security`: `ignore_invalid_symbol` must be bool or series bool",
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            if !is_valid_security_gaps_lookahead_arg(ex) {
+                                self.err(
+                                    ex.span,
+                                    "`request.security`: positional merge args must be `barmerge.*` or a boolean literal",
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Ok(request_security_result_type(&arg_tys[2]))
@@ -943,6 +1046,18 @@ impl<'a> Checker<'a> {
                         args[2].1.span,
                         "`request.financial`: period must be `string` or `series string`",
                     );
+                }
+                for (i, (nm, ex)) in args.iter().enumerate().skip(3) {
+                    if nm.as_deref() == Some("ignore_invalid_symbol") {
+                        if let Some(t) = arg_tys.get(i) {
+                            if !is_bool_like(t) {
+                                self.err(
+                                    ex.span,
+                                    "`request.financial`: `ignore_invalid_symbol` must be bool or series bool",
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
             }
@@ -1023,6 +1138,25 @@ impl<'a> Checker<'a> {
     }
 }
 
+fn default_fn_return_hir() -> HirType {
+    HirType::Series(AstType::Primitive(PrimitiveType::Float))
+}
+
+fn infer_return_from_block(checker: &mut Checker, stmts: &[Stmt]) -> HirType {
+    for s in stmts.iter().rev() {
+        if let StmtKind::Expr(e) = &s.kind {
+            let i = e.id.0 as usize;
+            if let Some(t) = checker.session.expr_types.get(i).and_then(|x| x.as_ref()) {
+                return t.clone();
+            }
+            return checker
+                .type_expr(e)
+                .unwrap_or_else(|_| default_fn_return_hir());
+        }
+    }
+    default_fn_return_hir()
+}
+
 fn fn_decl_type(_f: &FnDecl) -> HirType {
     HirType::Simple(AstType::Primitive(PrimitiveType::Float))
 }
@@ -1030,7 +1164,7 @@ fn fn_decl_type(_f: &FnDecl) -> HirType {
 fn fn_sig_from_decl(f: &FnDecl) -> FnSig {
     FnSig {
         params: f.params.iter().map(param_hir_type).collect(),
-        ret: fn_decl_type(f),
+        ret: default_fn_return_hir(),
     }
 }
 
@@ -1283,8 +1417,11 @@ fn index_result_type(base: &HirType) -> Result<HirType, ()> {
     }
 }
 
+// Equality operand compatibility; see spec `spec/hir.md` ("Typing notes: equality and `na`").
 fn type_compatible_eq(a: &HirType, b: &HirType) -> bool {
-    assignable(a, b) || assignable(b, a)
+    assignable(a, b)
+        || assignable(b, a)
+        || (is_numeric(a) && is_numeric(b))
 }
 
 fn assignable(from: &HirType, to: &HirType) -> bool {
@@ -1316,11 +1453,29 @@ fn assignable(from: &HirType, to: &HirType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::typecheck_script;
-    use crate::frontend::ast::{PrimitiveType, Type as AstType};
+    use super::{typecheck_script, typecheck_script_in_session};
+    use crate::frontend::ast::{
+        ExprKind, Item, NodeId, PrimitiveType, Script, StmtKind, Type as AstType,
+    };
     use crate::hir::HirType;
     use crate::parse_script;
+    use crate::session::CompilerSession;
     use crate::Compiler;
+
+    fn float_literal_id_in_first_binary_assign_rhs(script: &Script) -> NodeId {
+        for item in &script.items {
+            if let Item::Stmt(st) = item {
+                if let StmtKind::Assign { value, .. } = &st.kind {
+                    if let ExprKind::Binary { right, .. } = &value.kind {
+                        if matches!(right.kind, ExprKind::Float(_)) {
+                            return right.id;
+                        }
+                    }
+                }
+            }
+        }
+        panic!("expected script shape: x = <bad> + <float literal>");
+    }
 
     #[test]
     fn typecheck_ok_indicator_arithmetic() {
@@ -1534,6 +1689,25 @@ mod tests {
                 .any(|t| t.as_ref() == Some(&float_series)),
             "expected at least one Series(float) in {:?}",
             c.session.expr_types
+        );
+    }
+
+    /// When the left operand of `+` fails, the right-hand literal is still typed (IDE / partial maps).
+    #[test]
+    fn binary_rhs_expr_type_recorded_when_lhs_fails() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nx = no_such_identifier + 2.5\n",
+        )
+        .unwrap();
+        let rhs_id = float_literal_id_in_first_binary_assign_rhs(&s);
+        let mut session = CompilerSession::new();
+        session.prepare_analysis(&s);
+        assert!(typecheck_script_in_session(&mut session, &s).is_err());
+        let i = rhs_id.0 as usize;
+        assert_eq!(
+            session.expr_types.get(i).and_then(|t| t.as_ref()),
+            Some(&HirType::Simple(AstType::Primitive(PrimitiveType::Float))),
         );
     }
 }
