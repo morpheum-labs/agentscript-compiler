@@ -53,6 +53,10 @@ Use when the user assumes TradingView Pine behavior or indentation-based syntax.
   * **Content:** Braced blocks only, resolver/script-kind constraints at a high level, pointer to parity table and parser status.  
   * **Keywords:** braces, QAS, Pine parity.
 
+* **[`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md)**  
+  * **Content:** Tables of TV-accurate behaviors vs this compiler: what **`parse_and_analyze` / `check_script`** typically does (pass vs fail), separate from WASM emit and TV runtime parity.  
+  * **Keywords:** TradingView, validation, builtins, `strategy.*`, `request.*`.
+
 ---
 
 ## 4. Not covered here (see other paths)
@@ -69,3 +73,4 @@ Use when the user assumes TradingView Pine behavior or indentation-based syntax.
 * **IF** the user asks which `//@version=` values are valid → **`reference/directives.md`**.
 * **IF** the user asks about `switch` with no scrutinee or `for … in` → **`reference/keywords.md`** (and EBNF in `agentscripts-v1.md` §§ for exact productions).
 * **IF** the user asks why a script fails inside `strategy.*` in an `indicator()` → **`concepts/dialect-and-limitations.md`** and resolver notes in [`ROADMAP.md`](../../ROADMAP.md).
+* **IF** the user asks what TradingView allows that AgentScript does not, or whether a script “validates” vs TV → **`concepts/tv-vs-agentscript-validation.md`**.

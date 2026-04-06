@@ -38,6 +38,8 @@ For a **feature-by-feature** comparison between bundled TV manual paths and this
 
 Bar-by-bar execution, full `var` / `varip` semantics, and historical series behavior are **runtime / IR** concerns. They are not described here as identical to TradingView; see ROADMAP Phase 2+ and Aether documentation.
 
+For **which TV-accepted constructs pass `parse_and_analyze` vs fail**, see [`tv-vs-agentscript-validation.md`](tv-vs-agentscript-validation.md).
+
 ---
 
 ## Annotations

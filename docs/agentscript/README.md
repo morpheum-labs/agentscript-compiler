@@ -22,6 +22,7 @@ This directory is the **compiler-grounded** syntax reference for **AgentScript /
 | [`reference/types.md`](reference/types.md) | Type syntax |
 | [`reference/operators.md`](reference/operators.md) | Unary, binary, assignment, ternary, `if` expression |
 | [`concepts/dialect-and-limitations.md`](concepts/dialect-and-limitations.md) | Braced dialect, intentional gaps vs TV Pine |
+| [`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md) | TV vs AgentScript: what works on TV, what validates here (`check_script`) |
 
 ## Related (not syntax)
 
