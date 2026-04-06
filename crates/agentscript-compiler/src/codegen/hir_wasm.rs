@@ -354,9 +354,7 @@ impl<'a> Ctx<'a> {
                 // (Pine `cond ? a : b` → `v1` = then, `v2` = else).
                 self.emit_expr(func, *then_b)?;
                 self.emit_expr(func, *else_b)?;
-                self.emit_expr(func, *cond)?;
-                func.instructions().f64_const(0.0.into());
-                func.instructions().f64_ne();
+                self.emit_select_condition_i32(func, *cond, span)?;
                 func.instructions().select();
             }
             HirExpr::BuiltinCall {
@@ -461,6 +459,32 @@ impl<'a> Ctx<'a> {
                     span,
                     "nested plot expression not supported",
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `select` expects an **`i32`** condition. Boolean literals push `i32` directly; float-shaped
+    /// bools (comparisons, `f64` 0/1) use `f64.ne` against `0.0`.
+    fn emit_select_condition_i32(
+        &self,
+        func: &mut Function,
+        cond: HirId,
+        span: Span,
+    ) -> Result<(), HirWasmError> {
+        let ex = self
+            .hir
+            .exprs
+            .get(cond.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId in select cond"))?;
+        match ex {
+            HirExpr::Literal(HirLiteral::Bool(b), _) => {
+                func.instructions().i32_const(i32::from(*b));
+            }
+            _ => {
+                self.emit_expr(func, cond)?;
+                func.instructions().f64_const(0.0.into());
+                func.instructions().f64_ne();
             }
         }
         Ok(())
