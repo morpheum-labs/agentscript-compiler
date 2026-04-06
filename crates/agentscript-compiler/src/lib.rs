@@ -157,6 +157,69 @@ plot(htf)
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
+    /// Contract: imports (`aether`, …), dual exports (`init` + `aether_strategy_init`, etc.), and `series_hist` when HIR uses `close[k]`.
+    #[test]
+    fn compile_script_to_wasm_v0_guest_abi_contract() {
+        use wasmparser::{Parser, Payload};
+
+        const WITH_CLOSE_HIST: &str = r#"//@version=6
+indicator("t")
+plot(close[1])
+"#;
+
+        let script = parse_script("t", WITH_CLOSE_HIST).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+
+        let mut imports: Vec<(String, String)> = Vec::new();
+        let mut exports: Vec<String> = Vec::new();
+        for payload in Parser::new(0).parse_all(&wasm) {
+            let Ok(p) = payload else { continue };
+            match p {
+                Payload::ImportSection(reader) => {
+                    for imp in reader {
+                        let Ok(i) = imp else { continue };
+                        imports.push((i.module.to_string(), i.name.to_string()));
+                    }
+                }
+                Payload::ExportSection(reader) => {
+                    for exp in reader {
+                        let Ok(e) = exp else { continue };
+                        exports.push(e.name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for (module, name) in [
+            ("aether", "series_close"),
+            ("aether", "input_int"),
+            ("aether", "ta_sma"),
+            ("aether", "request_security"),
+            ("aether", "plot"),
+            ("aether", "series_hist"),
+        ] {
+            assert!(
+                imports.iter().any(|(m, n)| m == module && n == name),
+                "missing import `{module}::{name}`, have {imports:?}"
+            );
+        }
+
+        for name in [
+            "memory",
+            "init",
+            "on_bar",
+            "aether_strategy_init",
+            "aether_strategy_step",
+        ] {
+            assert!(
+                exports.iter().any(|e| e == name),
+                "missing export `{name}`, have {exports:?}"
+            );
+        }
+    }
+
     #[test]
     fn agentscript_source_extensions_recognize_pine_and_qas_case_insensitive() {
         assert!(is_agentscript_source_path("x.pine"));

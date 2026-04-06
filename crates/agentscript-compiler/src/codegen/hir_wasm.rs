@@ -20,6 +20,16 @@ pub const IMPORT_INPUT_INT: u32 = 1;
 pub const IMPORT_TA_SMA: u32 = 2;
 pub const IMPORT_REQUEST_SECURITY: u32 = 3;
 pub const IMPORT_PLOT: u32 = 4;
+/// Primary series value `offset` bars ago (`close[offset]`); v0 supports [`close`] only in HIR.
+pub const IMPORT_SERIES_HIST: u32 = 5;
+
+/// Legacy / CLI-friendly export names (same function indices as [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`]).
+pub const GUEST_EXPORT_INIT_LEGACY: &str = "init";
+pub const GUEST_EXPORT_STEP_LEGACY: &str = "on_bar";
+
+/// Names aligned with `aether_common::guest_abi` (dual-exported with legacy names).
+pub const GUEST_EXPORT_INIT_ABI: &str = "aether_strategy_init";
+pub const GUEST_EXPORT_STEP_ABI: &str = "aether_strategy_step";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HirWasmError {
@@ -239,10 +249,32 @@ impl<'a> Ctx<'a> {
                     func.instructions().call(IMPORT_TA_SMA);
                 }
             },
-            HirExpr::SeriesAccess { .. } => {
-                return Err(HirWasmError::unsupported(
-                    "series history access not supported in wasm codegen",
-                ));
+            HirExpr::SeriesAccess { base, offset, ty } => {
+                if hir_ty_to_val(ty)? != ValType::F64 {
+                    return Err(HirWasmError::unsupported(
+                        "series history wasm codegen expects f64 series element type",
+                    ));
+                }
+                let base_ex = self
+                    .hir
+                    .exprs
+                    .get(base.0 as usize)
+                    .ok_or_else(|| HirWasmError::unsupported("bad HirId in SeriesAccess"))?;
+                let HirExpr::Variable(sym, _) = base_ex else {
+                    return Err(HirWasmError::unsupported(
+                        "series history for non-variable base is not supported in wasm codegen yet",
+                    ));
+                };
+                let name = self
+                    .symbol_name(*sym)
+                    .ok_or_else(|| HirWasmError::unsupported("unknown symbol in SeriesAccess"))?;
+                if name != "close" {
+                    return Err(HirWasmError::unsupported(format!(
+                        "series history for `{name}` is not supported in wasm codegen yet (only `close`)"
+                    )));
+                }
+                func.instructions().i32_const(*offset);
+                func.instructions().call(IMPORT_SERIES_HIST);
             }
             HirExpr::Security(sec) => {
                 let (so, sl) = {
@@ -312,6 +344,10 @@ impl<'a> Ctx<'a> {
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
 /// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Strings in guest memory |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
+/// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
+///
+/// Exports: `memory`, legacy [`GUEST_EXPORT_INIT_LEGACY`] / [`GUEST_EXPORT_STEP_LEGACY`], and
+/// [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`] (same func indices as `init` / `on_bar`).
 #[must_use]
 pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let mut pool = StringPool::new();
@@ -344,6 +380,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     );
     let t_plot = types.len();
     types.ty().function([ValType::F64], []);
+    let t_series_hist = types.len();
+    types.ty().function([ValType::I32], [ValType::F64]);
     let t_void = types.len();
     types.ty().function([], []);
 
@@ -361,6 +399,11 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         EntityType::Function(t_sec),
     );
     imports.import("aether", "plot", EntityType::Function(t_plot));
+    imports.import(
+        "aether",
+        "series_hist",
+        EntityType::Function(t_series_hist),
+    );
 
     let mut functions = FunctionSection::new();
     functions.function(t_void);
@@ -375,13 +418,15 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         page_size_log2: None,
     });
 
-    let fn_init = IMPORT_PLOT + 1;
+    let fn_init = IMPORT_SERIES_HIST + 1;
     let fn_on_bar = fn_init + 1;
 
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
-    exports.export("init", ExportKind::Func, fn_init);
-    exports.export("on_bar", ExportKind::Func, fn_on_bar);
+    exports.export(GUEST_EXPORT_INIT_LEGACY, ExportKind::Func, fn_init);
+    exports.export(GUEST_EXPORT_STEP_LEGACY, ExportKind::Func, fn_on_bar);
+    exports.export(GUEST_EXPORT_INIT_ABI, ExportKind::Func, fn_init);
+    exports.export(GUEST_EXPORT_STEP_ABI, ExportKind::Func, fn_on_bar);
 
     let mut code = CodeSection::new();
     // init
