@@ -31,8 +31,8 @@ pub use semantic::{
     HirLowerPass, LexicalResolvePass, ResolverPass, SemanticDiagnostic, TypecheckPass,
 };
 pub use hir::{
-    lower_script_to_hir, lower_script_to_hir_in_bump, AstHirLowerer, HirLowerError, HirScript,
-    HirType, LowerToHir,
+    lower_script_to_hir, lower_script_to_hir_in_bump, lower_script_to_hir_in_bump_with_session,
+    AstHirLowerer, HirLowerError, HirScript, HirType, LowerToHir,
 };
 pub use session::{CompilerSession, SemanticDefSite};
 pub use visitor::AstVisitor;

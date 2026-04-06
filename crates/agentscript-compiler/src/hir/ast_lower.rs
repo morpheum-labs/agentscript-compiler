@@ -9,10 +9,12 @@ use std::collections::{HashMap, HashSet};
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
 
+use crate::bindings::NameBinding;
 use crate::frontend::ast::{
-    AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item,
+    AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item, NodeId,
     PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind, Type, VarQualifier,
 };
+use crate::session::CompilerSession;
 
 use super::builtin::BuiltinKind;
 use super::expr::HirExpr;
@@ -72,12 +74,30 @@ pub fn lower_script_to_hir_in_bump(
     bump: &Bump,
     script: &Script,
 ) -> Result<HirScript, HirLowerError> {
-    let mut lower = LowerCtx::new(bump);
+    lower_script_to_hir_in_bump_with_session(bump, script, None)
+}
+
+/// Lower with optional [`CompilerSession`] from the semantic pipeline (lexical + typecheck).
+/// When `session` is `Some`, lowering aligns [`crate::bindings::SemanticSymbolId`] with HIR
+/// [`super::ids::SymbolId`] via [`CompilerSession::def_semantic_ids`] and uses `expr_types` /
+/// `name_bindings` for variable metadata.
+pub fn lower_script_to_hir_in_bump_with_session(
+    bump: &Bump,
+    script: &Script,
+    session: Option<&CompilerSession>,
+) -> Result<HirScript, HirLowerError> {
+    let mut lower = LowerCtx::new(bump, session);
     lower.lower_script(script)
 }
 
-struct LowerCtx<'a> {
+struct LowerCtx<'a, 'sess> {
     bump: &'a Bump,
+    session: Option<&'sess CompilerSession>,
+    /// Index into [`CompilerSession::def_semantic_ids`] (hoisted defs consumed in pass 1, then walk order).
+    def_idx: usize,
+    sid_to_hir: HashMap<crate::bindings::SemanticSymbolId, super::ids::SymbolId>,
+    /// Locals / block-scoped names when lowering with a session (Pine-style shadowing).
+    scope_stack: Vec<HashMap<String, super::ids::SymbolId>>,
     exprs: BumpVec<'a, HirExpr>,
     expr_spans: BumpVec<'a, Span>,
     symbols: SymbolTable,
@@ -88,10 +108,19 @@ struct LowerCtx<'a> {
     user_fn_arity: HashMap<String, usize>,
 }
 
-impl<'a> LowerCtx<'a> {
-    fn new(bump: &'a Bump) -> Self {
+impl<'a, 'sess> LowerCtx<'a, 'sess> {
+    fn new(bump: &'a Bump, session: Option<&'sess CompilerSession>) -> Self {
+        let scope_stack = if session.is_some() {
+            vec![HashMap::new()]
+        } else {
+            Vec::new()
+        };
         Self {
             bump,
+            session,
+            def_idx: 0,
+            sid_to_hir: HashMap::new(),
+            scope_stack,
             exprs: BumpVec::new_in(bump),
             expr_spans: BumpVec::new_in(bump),
             symbols: SymbolTable::new(),
@@ -99,6 +128,81 @@ impl<'a> LowerCtx<'a> {
             input_int_names: HashSet::new(),
             user_fn_arity: HashMap::new(),
         }
+    }
+
+    fn next_def_sid(&mut self, span: Span) -> Result<Option<crate::bindings::SemanticSymbolId>, HirLowerError> {
+        let Some(sess) = self.session else {
+            return Ok(None);
+        };
+        let sid = sess
+            .def_semantic_ids
+            .get(self.def_idx)
+            .copied()
+            .ok_or_else(|| {
+                HirLowerError::at(
+                    span,
+                    "internal: def semantic id queue underflow (lexical vs HIR mismatch)",
+                )
+            })?;
+        self.def_idx += 1;
+        Ok(Some(sid))
+    }
+
+    fn resolve_var_symbol(&self, name: &str) -> Option<super::ids::SymbolId> {
+        if self.session.is_some() {
+            for sc in self.scope_stack.iter().rev() {
+                if let Some(s) = sc.get(name) {
+                    return Some(*s);
+                }
+            }
+        }
+        self.names.get(name).copied()
+    }
+
+    fn declare_local(&mut self, name: &str, span: Span) -> Result<super::ids::SymbolId, HirLowerError> {
+        let sid = self
+            .next_def_sid(span)?
+            .ok_or_else(|| HirLowerError::at(span, "internal: session missing for local declaration"))?;
+        let sym = self.alloc_fresh_symbol(name);
+        self.sid_to_hir.insert(sid, sym);
+        if self.session.is_some() {
+            self.scope_stack
+                .last_mut()
+                .expect("scope stack")
+                .insert(name.to_string(), sym);
+        } else {
+            self.names.insert(name.to_string(), sym);
+        }
+        Ok(sym)
+    }
+
+    fn push_scope(&mut self) {
+        if self.session.is_some() {
+            self.scope_stack.push(HashMap::new());
+        }
+    }
+
+    fn pop_scope(&mut self) {
+        if self.session.is_some() {
+            let _ = self.scope_stack.pop();
+        }
+    }
+
+    fn variable_hir_type(&self, name: &str, expr: &Expr) -> HirType {
+        if let Some(sess) = self.session {
+            if expr.id != NodeId::UNASSIGNED {
+                if let Some(t) = sess.expr_types.get(expr.id.0 as usize).and_then(|x| x.as_ref()) {
+                    return t.clone();
+                }
+            }
+        }
+        if name == "close" {
+            return HirType::Series(Type::Primitive(PrimitiveType::Float));
+        }
+        if self.input_int_names.contains(name) {
+            return HirType::Simple(Type::Primitive(PrimitiveType::Int));
+        }
+        HirType::Series(Type::Primitive(PrimitiveType::Float))
     }
 
     fn register_user_fn(&mut self, f: &FnDecl) -> Result<(), HirLowerError> {
@@ -114,7 +218,10 @@ impl<'a> LowerCtx<'a> {
                 format!("duplicate function `{}` in HIR lowering", f.name),
             ));
         }
-        self.intern_name(&f.name);
+        let sym = self.intern_name(&f.name);
+        if let Some(sid) = self.next_def_sid(f.span)? {
+            self.sid_to_hir.insert(sid, sym);
+        }
         Ok(())
     }
 
@@ -166,16 +273,13 @@ impl<'a> LowerCtx<'a> {
         // Builtin series names used by the tiny subset (Pine `close`, …).
         self.intern_name("close");
 
-        let mut user_fn_order: Vec<&FnDecl> = Vec::new();
         for item in &script.items {
-            match item {
-                Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
-                    self.register_user_fn(f)?;
-                    user_fn_order.push(f);
-                }
-                _ => {}
+            if let Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) = item {
+                self.register_user_fn(f)?;
             }
         }
+
+        let mut user_functions: Vec<HirUserFunction> = Vec::new();
 
         for item in &script.items {
             match item {
@@ -191,7 +295,9 @@ impl<'a> LowerCtx<'a> {
                         "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
                     ));
                 }
-                Item::FnDecl(_) | Item::Export(ExportDecl::Fn(_)) => {}
+                Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
+                    user_functions.push(self.lower_user_function(f)?);
+                }
                 Item::Enum(e) => {
                     return Err(HirLowerError::at(
                         e.span,
@@ -225,11 +331,6 @@ impl<'a> LowerCtx<'a> {
             }
         }
 
-        let mut user_functions = Vec::with_capacity(user_fn_order.len());
-        for f in &user_fn_order {
-            user_functions.push(self.lower_user_function(f)?);
-        }
-
         Ok(HirScript {
             version,
             declaration,
@@ -253,12 +354,37 @@ impl<'a> LowerCtx<'a> {
                 format!("internal: function `{}` missing from HIR symbol map", f.name),
             )
         })?;
+        if self.session.is_some() {
+            let saved_stack = std::mem::take(&mut self.scope_stack);
+            self.scope_stack = vec![HashMap::new()];
+            let mut params = Vec::with_capacity(f.params.len());
+            for p in &f.params {
+                let sid = self
+                    .next_def_sid(f.span)?
+                    .ok_or_else(|| HirLowerError::at(f.span, "internal: missing param semantic id"))?;
+                let pid = self.alloc_fresh_symbol(&p.name);
+                self.sid_to_hir.insert(sid, pid);
+                self.scope_stack[0].insert(p.name.clone(), pid);
+                params.push(pid);
+            }
+            let (body_stmts, result) = match &f.body {
+                FnBody::Expr(e) => (Vec::new(), self.lower_expr(e)?),
+                FnBody::Block(stmts) => self.lower_fn_block_stmts(f.span, stmts)?,
+            };
+            self.scope_stack = saved_stack;
+            return Ok(HirUserFunction {
+                symbol: sym,
+                params,
+                body_stmts,
+                result,
+            });
+        }
         let saved_names = self.names.clone();
         let mut params = Vec::with_capacity(f.params.len());
         for p in &f.params {
-            let sid = self.alloc_fresh_symbol(&p.name);
-            self.names.insert(p.name.clone(), sid);
-            params.push(sid);
+            let pid = self.alloc_fresh_symbol(&p.name);
+            self.names.insert(p.name.clone(), pid);
+            params.push(pid);
         }
         let (body_stmts, result) = match &f.body {
             FnBody::Expr(e) => (Vec::new(), self.lower_expr(e)?),
@@ -346,7 +472,10 @@ impl<'a> LowerCtx<'a> {
                         default_int: def,
                     });
                     self.register_input_int(&v.name);
-                    self.intern_name(&v.name);
+                    let sym = self.intern_name(&v.name);
+                    if let Some(sid) = self.next_def_sid(v.span)? {
+                        self.sid_to_hir.insert(sid, sym);
+                    }
                     return Ok(());
                 }
                 if v.qualifier.is_some() || v.ty.is_some() {
@@ -355,7 +484,11 @@ impl<'a> LowerCtx<'a> {
                         "only plain `name = expr` or `input …` declarations are supported",
                     ));
                 }
-                let sym = self.intern_name(&v.name);
+                let sym = if self.session.is_some() {
+                    self.declare_local(&v.name, v.span)?
+                } else {
+                    self.intern_name(&v.name)
+                };
                 let value = self.lower_expr(&v.value)?;
                 body.push(HirStmt::Let {
                     symbol: sym,
@@ -374,10 +507,21 @@ impl<'a> LowerCtx<'a> {
                         default_int: n,
                     });
                     self.register_input_int(name);
-                    self.intern_name(name);
+                    let sym = self.intern_name(name);
+                    if let Some(sid) = self.next_def_sid(stmt.span)? {
+                        self.sid_to_hir.insert(sid, sym);
+                    }
                     return Ok(());
                 }
-                let sym = self.intern_name(name);
+                let sym = if self.session.is_some() {
+                    if let Some(s) = self.resolve_var_symbol(name) {
+                        s
+                    } else {
+                        self.declare_local(name, stmt.span)?
+                    }
+                } else {
+                    self.intern_name(name)
+                };
                 let hir = self.lower_expr(value)?;
                 body.push(HirStmt::Let { symbol: sym, value: hir });
                 Ok(())
@@ -394,10 +538,12 @@ impl<'a> LowerCtx<'a> {
             }
             StmtKind::If(i) => self.lower_if_stmt(i, inputs, body),
             StmtKind::Block(stmts) => {
+                self.push_scope();
                 let mut inner = Vec::new();
                 for s in stmts {
                     self.lower_stmt_into(s, inputs, &mut inner)?;
                 }
+                self.pop_scope();
                 body.push(HirStmt::Block(inner));
                 Ok(())
             }
@@ -415,17 +561,21 @@ impl<'a> LowerCtx<'a> {
         body: &mut Vec<HirStmt>,
     ) -> Result<(), HirLowerError> {
         let cond = self.lower_expr(&i.cond)?;
+        self.push_scope();
         let mut then_branch = Vec::new();
         for s in &i.then_body {
             self.lower_stmt_into(s, inputs, &mut then_branch)?;
         }
+        self.pop_scope();
         let else_branch = match &i.else_body {
             None => None,
             Some(ElseBody::Block(stmts)) => {
+                self.push_scope();
                 let mut v = Vec::new();
                 for s in stmts {
                     self.lower_stmt_into(s, inputs, &mut v)?;
                 }
+                self.pop_scope();
                 Some(v)
             }
             Some(ElseBody::If(inner)) => {
@@ -494,7 +644,7 @@ impl<'a> LowerCtx<'a> {
                     e.span,
                 ))
             }
-            ExprKind::IdentPath(path) => self.lower_ident_path(path, e.span),
+            ExprKind::IdentPath(path) => self.lower_ident_path(path, e.span, e),
             ExprKind::Binary { op, left, right } => {
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {}
@@ -537,19 +687,51 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    fn lower_ident_path(&mut self, path: &[String], span: Span) -> Result<HirId, HirLowerError> {
+    fn lower_ident_path(
+        &mut self,
+        path: &[String],
+        span: Span,
+        expr: &Expr,
+    ) -> Result<HirId, HirLowerError> {
         if path.len() == 1 {
             let name = &path[0];
-            let id = *self.names.get(name.as_str()).ok_or_else(|| {
+            if let Some(sess) = self.session {
+                if expr.id != NodeId::UNASSIGNED {
+                    if let Some(b) = sess
+                        .name_bindings
+                        .get(expr.id.0 as usize)
+                        .and_then(|x| x.as_ref())
+                    {
+                        match b {
+                            NameBinding::Local(sid) => {
+                                if let Some(id) = self.sid_to_hir.get(sid).copied() {
+                                    let ty = self.variable_hir_type(name, expr);
+                                    return Ok(self.alloc_expr(HirExpr::Variable(id, ty), span));
+                                }
+                            }
+                            NameBinding::UnqualifiedBuiltin(bn) => {
+                                if let Some(id) = self.resolve_var_symbol(bn.as_str()) {
+                                    let ty = self.variable_hir_type(bn.as_str(), expr);
+                                    return Ok(self.alloc_expr(HirExpr::Variable(id, ty), span));
+                                }
+                            }
+                            NameBinding::QualifiedPath(_) => {
+                                return Err(HirLowerError::at(
+                                    span,
+                                    format!(
+                                        "qualified identifier `{}` not supported as HIR value",
+                                        path.join(".")
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            let id = self.resolve_var_symbol(name.as_str()).ok_or_else(|| {
                 HirLowerError::at(span, format!("unknown identifier `{name}`"))
             })?;
-            let ty = if name == "close" {
-                HirType::Series(Type::Primitive(PrimitiveType::Float))
-            } else if self.input_int_names.contains(name) {
-                HirType::Simple(Type::Primitive(PrimitiveType::Int))
-            } else {
-                HirType::Series(Type::Primitive(PrimitiveType::Float))
-            };
+            let ty = self.variable_hir_type(name, expr);
             return Ok(self.alloc_expr(HirExpr::Variable(id, ty), span));
         }
         Err(HirLowerError::at(
