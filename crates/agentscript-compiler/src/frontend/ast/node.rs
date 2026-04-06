@@ -2,6 +2,15 @@
 
 use std::ops::Range;
 
+/// Dense handle for side maps in [`crate::session::CompilerSession`] (resolution, future types).
+/// `0` means unassigned; parsers leave this until [`super::assign_node_ids`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct NodeId(pub u32);
+
+impl NodeId {
+    pub const UNASSIGNED: Self = Self(0);
+}
+
 /// Byte offsets into the original source (`start` inclusive, `end` exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {

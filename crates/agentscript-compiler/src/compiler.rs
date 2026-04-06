@@ -1,7 +1,7 @@
 //! Thin orchestration: parse hook + ordered semantic passes.
 
 use crate::frontend::ast::Script;
-use crate::semantic::passes::{default_passes, CompilerPass};
+use crate::semantic::passes::{default_passes, default_passes_with_hir, CompilerPass};
 use crate::semantic::AnalyzeError;
 use crate::session::CompilerSession;
 
@@ -28,8 +28,19 @@ impl Compiler {
         }
     }
 
+    /// Semantic pipeline plus [`crate::semantic::passes::HirLowerPass`] (AST → HIR for the supported subset).
+    #[must_use]
+    pub fn with_hir_lowering() -> Self {
+        Self {
+            session: CompilerSession::new(),
+            passes: default_passes_with_hir(),
+        }
+    }
+
     /// Run all registered semantic passes.
     pub fn run_semantic_passes(&mut self, script: &Script) -> Result<(), AnalyzeError> {
+        self.session.hir = None;
+        self.session.prepare_analysis(script);
         for p in &mut self.passes {
             p.run(&mut self.session, script)?;
         }

@@ -1,6 +1,6 @@
 //! Expression AST with spans (parser phase; typecheck later).
 
-use super::node::Span;
+use super::node::{NodeId, Span};
 use super::types::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +30,7 @@ pub enum BinOp {
 /// Expression with source span.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
+    pub id: NodeId,
     pub span: Span,
     pub kind: ExprKind,
 }
@@ -38,6 +39,7 @@ impl Expr {
     #[must_use]
     pub fn new(span: impl Into<Span>, kind: ExprKind) -> Self {
         Self {
+            id: NodeId::UNASSIGNED,
             span: span.into(),
             kind,
         }
@@ -47,6 +49,7 @@ impl Expr {
     #[must_use]
     pub fn synthetic(kind: ExprKind) -> Self {
         Self {
+            id: NodeId::UNASSIGNED,
             span: Span::DUMMY,
             kind,
         }

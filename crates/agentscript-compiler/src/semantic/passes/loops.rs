@@ -4,7 +4,7 @@ use crate::frontend::ast::{
     ElseBody, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, Stmt, StmtKind,
 };
 
-use super::super::AnalyzeError;
+use super::super::{AnalyzeError, SemanticDiagnostic};
 
 pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
@@ -24,13 +24,11 @@ pub fn check_break_continue(script: &Script) -> Result<(), AnalyzeError> {
     if issues.is_empty() {
         Ok(())
     } else {
-        Err(AnalyzeError {
-            message: issues.join("\n"),
-        })
+        Err(AnalyzeError::new(issues))
     }
 }
 
-fn walk_fn(f: &FnDecl, issues: &mut Vec<String>) {
+fn walk_fn(f: &FnDecl, issues: &mut Vec<SemanticDiagnostic>) {
     if let FnBody::Block(stmts) = &f.body {
         for s in stmts {
             walk_stmt(s, 0, issues);
@@ -38,7 +36,7 @@ fn walk_fn(f: &FnDecl, issues: &mut Vec<String>) {
     }
 }
 
-fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
+fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<SemanticDiagnostic>) {
     match &s.kind {
         StmtKind::Break | StmtKind::Continue => {
             if loop_depth == 0 {
@@ -47,9 +45,12 @@ fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
                     StmtKind::Continue => "continue",
                     _ => unreachable!(),
                 };
-                issues.push(format!(
-                    "`{kw}` is only valid inside a `for` or `while` loop",
-                ));
+                issues.push(SemanticDiagnostic {
+                    message: format!(
+                        "`{kw}` is only valid inside a `for` or `while` loop",
+                    ),
+                    span: s.span,
+                });
             }
         }
         StmtKind::Block(stmts) => {
@@ -87,7 +88,7 @@ fn walk_stmt(s: &Stmt, loop_depth: u32, issues: &mut Vec<String>) {
     }
 }
 
-fn walk_if(i: &IfStmt, loop_depth: u32, issues: &mut Vec<String>) {
+fn walk_if(i: &IfStmt, loop_depth: u32, issues: &mut Vec<SemanticDiagnostic>) {
     for x in &i.then_body {
         walk_stmt(x, loop_depth, issues);
     }
@@ -122,7 +123,7 @@ mod tests {
     fn break_at_top_level_rejected() {
         let s = parse_script("t.pine", "indicator(\"x\")\nbreak\n").unwrap();
         let e = check_break_continue(&s).unwrap_err();
-        assert!(e.message.contains("break"));
+        assert!(e.message().contains("break"));
     }
 
     #[test]

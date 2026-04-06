@@ -5,28 +5,40 @@
 use std::collections::HashMap;
 
 use crate::frontend::ast::{
-    BinOp, ElseBody, Expr, ExprKind, FnBody, FnDecl, FnParam, IfStmt, Item, Script, ScriptDeclaration,
-    Stmt, StmtKind, Type as AstType, UnaryOp, VarDecl, VarQualifier,
+    BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, FnParam, IfStmt, Item, NodeId,
+    Script, ScriptDeclaration, Span, Stmt, StmtKind, Type as AstType, UnaryOp, VarDecl, VarQualifier,
 };
 use crate::frontend::ast::PrimitiveType;
 use crate::hir::HirType;
-use crate::semantic::AnalyzeError;
+use crate::semantic::{AnalyzeError, SemanticDiagnostic};
+use crate::session::CompilerSession;
 
 /// Run type checking on a script (after earlier semantic passes).
 pub fn typecheck_script(script: &Script) -> Result<(), AnalyzeError> {
-    let mut c = Checker::new(script);
+    let mut session = CompilerSession::new();
+    session.prepare_analysis(script);
+    typecheck_script_in_session(&mut session, script)
+}
+
+/// Infer types and store them on `session.expr_types` indexed by expression [`NodeId`].
+pub fn typecheck_script_in_session(
+    session: &mut CompilerSession,
+    script: &Script,
+) -> Result<(), AnalyzeError> {
+    let mut c = Checker::new(script, session);
     c.check_script(script)
 }
 
-struct Checker {
+struct Checker<'a> {
     /// Import aliases — names exist but have unknown types until library typing exists.
     import_aliases: HashMap<String, HirType>,
     scopes: Vec<HashMap<String, HirType>>,
-    issues: Vec<String>,
+    issues: Vec<SemanticDiagnostic>,
+    session: &'a mut CompilerSession,
 }
 
-impl Checker {
-    fn new(script: &Script) -> Self {
+impl<'a> Checker<'a> {
+    fn new(script: &Script, session: &'a mut CompilerSession) -> Self {
         let mut import_aliases = HashMap::new();
         for item in &script.items {
             if let Item::Import(i) = item {
@@ -37,6 +49,7 @@ impl Checker {
             import_aliases,
             scopes: vec![HashMap::new()],
             issues: Vec::new(),
+            session,
         }
     }
 
@@ -64,24 +77,39 @@ impl Checker {
         None
     }
 
-    fn err(&mut self, msg: impl Into<String>) {
-        self.issues.push(msg.into());
+    fn err(&mut self, span: Span, msg: impl Into<String>) {
+        self.issues.push(SemanticDiagnostic {
+            message: msg.into(),
+            span,
+        });
     }
 
     fn check_script(&mut self, script: &Script) -> Result<(), AnalyzeError> {
-        self.collect_top_level_functions(script);
+        self.collect_top_level_definitions(script);
         for item in &script.items {
             self.check_item(item);
         }
         self.finish_result()
     }
 
-    fn collect_top_level_functions(&mut self, script: &Script) {
+    fn collect_top_level_definitions(&mut self, script: &Script) {
         for item in &script.items {
             match item {
-                Item::FnDecl(f) | Item::Export(crate::frontend::ast::ExportDecl::Fn(f)) => {
+                Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
                     let ty = fn_decl_type(f);
                     self.define(&f.name, ty);
+                }
+                Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
+                    self.define(
+                        &e.name,
+                        HirType::Simple(AstType::Named(e.name.clone())),
+                    );
+                }
+                Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
+                    self.define(
+                        &t.name,
+                        HirType::Simple(AstType::Named(t.name.clone())),
+                    );
                 }
                 _ => {}
             }
@@ -93,7 +121,7 @@ impl Checker {
             Item::Stmt(s) => {
                 self.check_stmt(s);
             }
-            Item::FnDecl(f) | Item::Export(crate::frontend::ast::ExportDecl::Fn(f)) => {
+            Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
                 self.check_fn_decl(f);
             }
             Item::ScriptDecl(ScriptDeclaration { args, .. }) => {
@@ -101,18 +129,18 @@ impl Checker {
                     let _ = self.type_expr(e);
                 }
             }
-            Item::Enum(e) | Item::Export(crate::frontend::ast::ExportDecl::Enum(e)) => {
+            Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
                 for v in &e.variants {
                     let _ = self.type_expr(&v.value);
                 }
             }
-            Item::TypeDef(t) | Item::Export(crate::frontend::ast::ExportDecl::TypeDef(t)) => {
+            Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
                 for field in &t.fields {
                     let _ = self.type_expr(&field.default);
                 }
             }
-            Item::Export(crate::frontend::ast::ExportDecl::Var(v)) => {
-                self.check_var_decl(v);
+            Item::Export(ExportDecl::Var(v)) => {
+                self.check_var_decl(v, Span::DUMMY);
             }
             Item::Import(_) => {}
         }
@@ -129,10 +157,13 @@ impl Checker {
                     Err(_) => continue,
                 };
                 if !assignable(&dt, &ty) {
-                    self.err(format!(
-                        "default for parameter `{}` does not match parameter type",
-                        p.name
-                    ));
+                    self.err(
+                        d.span,
+                        format!(
+                            "default for parameter `{}` does not match parameter type",
+                            p.name
+                        ),
+                    );
                 }
             }
         }
@@ -151,7 +182,7 @@ impl Checker {
 
     fn check_stmt(&mut self, s: &Stmt) {
         match &s.kind {
-            StmtKind::VarDecl(v) => self.check_var_decl(v),
+            StmtKind::VarDecl(v) => self.check_var_decl(v, s.span),
             StmtKind::Assign { name, value, .. } => {
                 let rhs = match self.type_expr(value) {
                     Ok(t) => t,
@@ -160,9 +191,12 @@ impl Checker {
                 match self.resolve_local(name) {
                     Some(lhs) => {
                         if !assignable(&rhs, &lhs) {
-                            self.err(format!(
-                                "assignment to `{name}`: value type does not match binding"
-                            ));
+                            self.err(
+                                s.span,
+                                format!(
+                                    "assignment to `{name}`: value type does not match binding"
+                                ),
+                            );
                         }
                     }
                     None => {
@@ -180,9 +214,12 @@ impl Checker {
                     match self.resolve_local(n) {
                         Some(lhs) => {
                             if !assignable(&rhs, &lhs) {
-                                self.err(format!(
-                                    "tuple assignment: value type does not match `{n}`"
-                                ));
+                                self.err(
+                                    s.span,
+                                    format!(
+                                        "tuple assignment: value type does not match `{n}`"
+                                    ),
+                                );
                             }
                         }
                         None => self.define(n, rhs.clone()),
@@ -289,7 +326,7 @@ impl Checker {
         }
     }
 
-    fn check_var_decl(&mut self, v: &VarDecl) {
+    fn check_var_decl(&mut self, v: &VarDecl, decl_span: Span) {
         let binding = var_decl_binding_type(v);
         let rhs = match self.type_expr(&v.value) {
             Ok(t) => t,
@@ -299,10 +336,13 @@ impl Checker {
             }
         };
         if !assignable(&rhs, &binding) {
-            self.err(format!(
-                "variable `{}`: initializer type does not match binding",
-                v.name
-            ));
+            self.err(
+                decl_span,
+                format!(
+                    "variable `{}`: initializer type does not match binding",
+                    v.name
+                ),
+            );
         }
         self.define(&v.name, binding);
     }
@@ -317,7 +357,7 @@ impl Checker {
             ExprKind::Color(_) | ExprKind::HexColor(_) => {
                 HirType::Simple(AstType::Primitive(PrimitiveType::Color))
             }
-            ExprKind::IdentPath(path) => self.type_ident_path(path)?,
+            ExprKind::IdentPath(path) => self.type_ident_path(path, e.span)?,
             ExprKind::Member { base, field: _ } => {
                 let _base = self.type_expr(base)?;
                 HirType::Series(AstType::Primitive(PrimitiveType::Float))
@@ -326,12 +366,12 @@ impl Checker {
                 callee,
                 type_args: _,
                 args,
-            } => self.type_call(callee.as_ref(), args)?,
+            } => self.type_call(callee.as_ref(), args, e.span)?,
             ExprKind::Index { base, index } => {
                 let base_ty = self.type_expr(base)?;
                 let idx_ty = self.type_expr(index)?;
                 if !is_integral(&idx_ty) {
-                    self.err("series index must be integral");
+                    self.err(e.span, "series index must be integral");
                 }
                 index_result_type(&base_ty)?
             }
@@ -352,13 +392,13 @@ impl Checker {
                 match op {
                     UnaryOp::Pos | UnaryOp::Neg => {
                         if !is_numeric(&inner) {
-                            self.err("unary +/- expects a numeric operand");
+                            self.err(e.span, "unary +/- expects a numeric operand");
                         }
                         inner
                     }
                     UnaryOp::Not => {
                         if !is_bool_like(&inner) {
-                            self.err("unary not expects a boolean operand");
+                            self.err(e.span, "unary not expects a boolean operand");
                         }
                         match inner {
                             HirType::Series(_) => HirType::Series(AstType::Primitive(PrimitiveType::Bool)),
@@ -370,7 +410,7 @@ impl Checker {
             ExprKind::Binary { op, left, right } => {
                 let l = self.type_expr(left)?;
                 let r = self.type_expr(right)?;
-                self.type_binary(*op, l, r)?
+                self.type_binary(*op, l, r, e.span)?
             }
             ExprKind::Ternary {
                 cond,
@@ -388,16 +428,19 @@ impl Checker {
                 match binary_meet(&t, &u) {
                     Some(ty) => ty,
                     None => {
-                        self.err("branches of conditional have incompatible types");
+                        self.err(e.span, "branches of conditional have incompatible types");
                         return Err(());
                     }
                 }
             }
         };
+        if e.id != NodeId::UNASSIGNED {
+            self.session.set_expr_type(e.id, t.clone());
+        }
         Ok(t)
     }
 
-    fn type_ident_path(&mut self, path: &[String]) -> Result<HirType, ()> {
+    fn type_ident_path(&mut self, path: &[String], span: Span) -> Result<HirType, ()> {
         if path.len() == 1 {
             let name = &path[0];
             if let Some(t) = self.resolve_local(name) {
@@ -409,7 +452,7 @@ impl Checker {
             if let Some(t) = builtin_ident(name) {
                 return Ok(t);
             }
-            self.err(format!("unknown identifier `{name}`"));
+            self.err(span, format!("unknown identifier `{name}`"));
             return Err(());
         }
         if let Some(t) = builtin_global(path) {
@@ -422,8 +465,10 @@ impl Checker {
         &mut self,
         callee: &Expr,
         args: &[(Option<String>, Expr)],
+        call_span: Span,
     ) -> Result<HirType, ()> {
         let name = dotted_name(callee).unwrap_or_default();
+        let cspan = callee.span;
         let mut arg_tys = Vec::with_capacity(args.len());
         for (_, e) in args {
             arg_tys.push(self.type_expr(e)?);
@@ -432,76 +477,82 @@ impl Checker {
         match name.as_str() {
             "ta.sma" | "ta.ema" | "ta.wma" | "ta.rma" => {
                 if arg_tys.len() < 2 {
-                    self.err(format!("`{name}` expects at least two arguments"));
+                    self.err(
+                        cspan,
+                        format!("`{name}` expects at least two arguments"),
+                    );
                     return Err(());
                 }
                 let src = promote_numeric_series(coerce_simple_to_series(arg_tys[0].clone()));
                 if !is_numeric(&src) {
-                    self.err(format!("`{name}`: first argument must be numeric"));
+                    self.err(
+                        cspan,
+                        format!("`{name}`: first argument must be numeric"),
+                    );
                     return Err(());
                 }
                 if !is_integral(&arg_tys[1]) {
-                    self.err(format!("`{name}`: length must be integral"));
+                    self.err(cspan, format!("`{name}`: length must be integral"));
                     return Err(());
                 }
                 Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
             }
             "math.abs" | "math.sqrt" | "math.log" | "math.exp" => {
                 if arg_tys.len() != 1 {
-                    self.err(format!("`{name}` expects one argument"));
+                    self.err(cspan, format!("`{name}` expects one argument"));
                     return Err(());
                 }
                 let a = arg_tys[0].clone();
                 if !is_numeric(&a) {
-                    self.err(format!("`{name}` expects a numeric argument"));
+                    self.err(cspan, format!("`{name}` expects a numeric argument"));
                     return Err(());
                 }
                 Ok(a)
             }
             "math.max" | "math.min" => {
                 if arg_tys.len() != 2 {
-                    self.err(format!("`{name}` expects two arguments"));
+                    self.err(cspan, format!("`{name}` expects two arguments"));
                     return Err(());
                 }
                 match binary_numeric_result(&arg_tys[0], &arg_tys[1]) {
                     Ok(t) => Ok(t),
                     Err(m) => {
-                        self.err(m);
+                        self.err(cspan, m);
                         Err(())
                     }
                 }
             }
             "input.int" => {
                 if arg_tys.len() != 1 {
-                    self.err("`input.int` expects one default argument");
+                    self.err(cspan, "`input.int` expects one default argument");
                     return Err(());
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Int)))
             }
             "input.float" => {
                 if arg_tys.len() != 1 {
-                    self.err("`input.float` expects one default argument");
+                    self.err(cspan, "`input.float` expects one default argument");
                     return Err(());
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
             }
             "input.bool" => {
                 if arg_tys.len() != 1 {
-                    self.err("`input.bool` expects one default argument");
+                    self.err(cspan, "`input.bool` expects one default argument");
                     return Err(());
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Bool)))
             }
             "input.string" => {
                 if arg_tys.len() != 1 {
-                    self.err("`input.string` expects one default argument");
+                    self.err(cspan, "`input.string` expects one default argument");
                     return Err(());
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::String)))
             }
             "nz" => {
                 if arg_tys.is_empty() {
-                    self.err("`nz` expects at least one argument");
+                    self.err(cspan, "`nz` expects at least one argument");
                     return Err(());
                 }
                 Ok(arg_tys[0].clone())
@@ -509,14 +560,28 @@ impl Checker {
             s if s.starts_with("plot.") || s == "plot" => {
                 for (i, t) in arg_tys.iter().enumerate().take(3) {
                     if i == 0 && !is_numeric(t) {
-                        self.err("`plot`: first argument should be numeric");
+                        self.err(call_span, "`plot`: first argument should be numeric");
                     }
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
             }
             "request.security" => {
-                for a in &arg_tys {
-                    let _ = a;
+                if arg_tys.len() < 3 {
+                    self.err(
+                        call_span,
+                        "`request.security` expects at least three arguments (symbol, timeframe, expression)",
+                    );
+                    return Err(());
+                }
+                Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
+            }
+            "request.financial" => {
+                if arg_tys.len() < 3 {
+                    self.err(
+                        call_span,
+                        "`request.financial` expects at least three arguments (symbol, financial id, period)",
+                    );
+                    return Err(());
                 }
                 Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
             }
@@ -530,25 +595,31 @@ impl Checker {
                 Ok(HirType::Series(AstType::Primitive(PrimitiveType::Float)))
             }
             _ => {
-                self.err("invalid call callee");
+                self.err(call_span, "invalid call callee");
                 Err(())
             }
         }
     }
 
-    fn type_binary(&mut self, op: BinOp, l: HirType, r: HirType) -> Result<HirType, ()> {
+    fn type_binary(
+        &mut self,
+        op: BinOp,
+        l: HirType,
+        r: HirType,
+        span: Span,
+    ) -> Result<HirType, ()> {
         use BinOp::*;
         match op {
             Add | Sub | Mul | Div | Mod => match binary_numeric_result(&l, &r) {
                 Ok(t) => Ok(t),
                 Err(m) => {
-                    self.err(m);
+                    self.err(span, m);
                     Err(())
                 }
             },
             Eq | Ne => {
                 if !type_compatible_eq(&l, &r) {
-                    self.err("equality operands have incompatible types");
+                    self.err(span, "equality operands have incompatible types");
                     return Err(());
                 }
                 Ok(if is_series_shape(&l) || is_series_shape(&r) {
@@ -559,7 +630,7 @@ impl Checker {
             }
             Lt | Le | Gt | Ge => {
                 if !is_numeric(&l) || !is_numeric(&r) {
-                    self.err("comparison expects numeric operands");
+                    self.err(span, "comparison expects numeric operands");
                     return Err(());
                 }
                 Ok(if is_series_shape(&l) || is_series_shape(&r) {
@@ -570,7 +641,7 @@ impl Checker {
             }
             And | Or => {
                 if !is_bool_like(&l) || !is_bool_like(&r) {
-                    self.err("logical operator expects boolean operands");
+                    self.err(span, "logical operator expects boolean operands");
                     return Err(());
                 }
                 Ok(if is_series_shape(&l) || is_series_shape(&r) {
@@ -586,9 +657,7 @@ impl Checker {
         if self.issues.is_empty() {
             Ok(())
         } else {
-            Err(AnalyzeError {
-                message: std::mem::take(&mut self.issues).join("\n"),
-            })
+            Err(AnalyzeError::new(std::mem::take(&mut self.issues)))
         }
     }
 }
@@ -798,7 +867,7 @@ mod tests {
     fn typecheck_rejects_bad_initializer() {
         let s = parse_script("t", "indicator(\"x\")\nfloat y = \"no\"\n").unwrap();
         let e = typecheck_script(&s).unwrap_err();
-        assert!(e.message.contains("initializer"), "{}", e.message);
+        assert!(e.message().contains("initializer"), "{}", e.message());
     }
 
     #[test]
@@ -809,5 +878,40 @@ mod tests {
         )
         .unwrap();
         typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn request_security_requires_three_args() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.security(\"SYM\", \"D\", close)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.security(\"SYM\", \"D\")\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(e.message().contains("request.security"), "{}", e.message());
+        assert!(e.message().contains("three"), "{}", e.message());
+    }
+
+    #[test]
+    fn request_financial_requires_three_args() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.financial(\"SYM\", \"TOTAL_REVENUE\", \"FY\")\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+        let bad = parse_script(
+            "t",
+            "indicator(\"x\")\ny = request.financial(\"SYM\", \"TOTAL_REVENUE\")\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&bad).unwrap_err();
+        assert!(e.message().contains("request.financial"), "{}", e.message());
     }
 }

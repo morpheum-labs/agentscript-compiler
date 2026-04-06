@@ -2,27 +2,43 @@
 
 use std::collections::HashSet;
 
+use crate::bindings::NameBinding;
 use crate::frontend::ast::{
-    ElseBody, Expr, ExprKind, ExportDecl, FnBody, FnDecl, IfStmt, Item, Script, ScriptDeclaration,
-    ScriptKind, Stmt, StmtKind, Type,
+    ElseBody, Expr, ExprKind, ExportDecl, FnBody, FnDecl, IfStmt, Item, NodeId, Script,
+    ScriptDeclaration, ScriptKind, Stmt, StmtKind, Type,
 };
 
-use super::super::builtins::builtin_namespace_roots;
-use super::super::AnalyzeError;
+use crate::frontend::ast::Span;
+use crate::session::CompilerSession;
 
-struct ResolveCtx {
+use super::super::builtins::builtin_namespace_roots;
+use super::super::{AnalyzeError, SemanticDiagnostic};
+
+struct ResolveCtx<'a> {
     script_kind: Option<ScriptKind>,
     import_aliases: HashSet<String>,
+    user_type_roots: HashSet<String>,
     builtins: HashSet<&'static str>,
-    issues: Vec<String>,
+    issues: Vec<SemanticDiagnostic>,
+    session: &'a mut CompilerSession,
 }
 
-impl ResolveCtx {
-    fn new(script: &Script) -> Self {
+impl<'a> ResolveCtx<'a> {
+    fn new(script: &Script, session: &'a mut CompilerSession) -> Self {
         let mut import_aliases = HashSet::new();
+        let mut user_type_roots = HashSet::new();
         for item in &script.items {
             if let Item::Import(i) = item {
                 import_aliases.insert(i.alias.clone());
+            }
+            match item {
+                Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
+                    user_type_roots.insert(e.name.clone());
+                }
+                Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
+                    user_type_roots.insert(t.name.clone());
+                }
+                _ => {}
             }
         }
         Self {
@@ -34,38 +50,55 @@ impl ResolveCtx {
                     _ => None,
                 }),
             import_aliases,
+            user_type_roots,
             builtins: builtin_namespace_roots(),
             issues: Vec::new(),
+            session,
         }
     }
 
     fn root_ok(&self, root: &str) -> bool {
-        self.builtins.contains(root) || self.import_aliases.contains(root)
+        self.builtins.contains(root)
+            || self.import_aliases.contains(root)
+            || self.user_type_roots.contains(root)
     }
 
-    fn check_ident_path(&mut self, path: &[String], context: &str) {
+    fn check_ident_path(&mut self, path: &[String], context: &str, span: Span, expr_id: NodeId) {
         if path.len() < 2 {
             return;
         }
         let root = path[0].as_str();
-        if root == "strategy"
-            && self.script_kind != Some(ScriptKind::Strategy)
-        {
-            self.issues.push(format!(
-                "`strategy.*` is only valid in `strategy()` scripts ({context})"
-            ));
+        let mut strategy_mismatch = false;
+        if root == "strategy" && self.script_kind != Some(ScriptKind::Strategy) {
+            strategy_mismatch = true;
+            self.issues.push(SemanticDiagnostic {
+                message: format!(
+                    "`strategy.*` is only valid in `strategy()` scripts ({context})"
+                ),
+                span,
+            });
         }
         if !self.root_ok(root) {
-            self.issues.push(format!(
-                "unknown namespace or import alias `{root}` in `{path}` ({context})",
-                path = path.join(".")
-            ));
+            self.issues.push(SemanticDiagnostic {
+                message: format!(
+                    "unknown namespace or import alias `{root}` in `{path}` ({context})",
+                    path = path.join(".")
+                ),
+                span,
+            });
+            return;
+        }
+        if !strategy_mismatch && expr_id != NodeId::UNASSIGNED {
+            self.session.set_name_binding(
+                expr_id,
+                NameBinding::QualifiedPath(path.join(".")),
+            );
         }
     }
 
     fn walk_expr(&mut self, e: &Expr, context: &str) {
         match &e.kind {
-            ExprKind::IdentPath(p) => self.check_ident_path(p, context),
+            ExprKind::IdentPath(p) => self.check_ident_path(p, context, e.span, e.id),
             ExprKind::Member { base, .. } => self.walk_expr(base, context),
             ExprKind::Call {
                 callee,
@@ -126,7 +159,7 @@ impl ResolveCtx {
 
     fn walk_callee(&mut self, e: &Expr, context: &str) {
         match &e.kind {
-            ExprKind::IdentPath(p) => self.check_ident_path(p, context),
+            ExprKind::IdentPath(p) => self.check_ident_path(p, context, e.span, e.id),
             ExprKind::Member { base, .. } => self.walk_expr(base, context),
             _ => self.walk_expr(e, context),
         }
@@ -257,7 +290,17 @@ impl ResolveCtx {
 
 /// Reject unknown dotted roots and misplaced `strategy.*` (Phase 1 — no full symbol table yet).
 pub fn resolve_script(script: &Script) -> Result<(), AnalyzeError> {
-    let mut c = ResolveCtx::new(script);
+    let mut session = CompilerSession::new();
+    session.prepare_analysis(script);
+    resolve_script_in_session(&mut session, script)
+}
+
+/// Same as [`resolve_script`], but records [`NameBinding::QualifiedPath`] on `session` for valid paths.
+pub fn resolve_script_in_session(
+    session: &mut CompilerSession,
+    script: &Script,
+) -> Result<(), AnalyzeError> {
+    let mut c = ResolveCtx::new(script, session);
     for item in &script.items {
         match item {
             Item::ScriptDecl(ScriptDeclaration { args, .. }) => {
@@ -291,9 +334,7 @@ pub fn resolve_script(script: &Script) -> Result<(), AnalyzeError> {
     if c.issues.is_empty() {
         Ok(())
     } else {
-        Err(AnalyzeError {
-            message: c.issues.join("\n"),
-        })
+        Err(AnalyzeError::new(c.issues))
     }
 }
 
@@ -310,7 +351,7 @@ mod tests {
         )
         .unwrap();
         let e = resolve_script(&s).unwrap_err();
-        assert!(e.message.contains("strategy"));
+        assert!(e.message().contains("strategy"));
     }
 
     #[test]
@@ -331,7 +372,7 @@ mod tests {
         )
         .unwrap();
         let e = resolve_script(&s).unwrap_err();
-        assert!(e.message.contains("not_a_real_ns"));
+        assert!(e.message().contains("not_a_real_ns"));
     }
 
     #[test]
@@ -339,6 +380,16 @@ mod tests {
         let s = parse_script(
             "t.pine",
             "import User/Lib/1 as m\nindicator(\"x\")\ny = m.sin(1.0)\n",
+        )
+        .unwrap();
+        resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn user_enum_namespace_root_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\nenum Side { buy = 1 }\ny = Side.buy\n",
         )
         .unwrap();
         resolve_script(&s).unwrap();

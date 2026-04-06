@@ -442,4 +442,14 @@ plot(htf)
         let hir = lower_script_to_hir(&script).expect("lower");
         assert_debug_snapshot!(hir);
     }
+
+    #[test]
+    fn hir_pipeline_sets_session_hir() {
+        let script = parse_script("test", SAMPLE).expect("parse");
+        let c = crate::analyze_to_hir_compiler(&script).expect("analyze + hir");
+        assert!(
+            c.session.hir.is_some(),
+            "tiny indicator should lower into HIR when HirLowerPass runs"
+        );
+    }
 }

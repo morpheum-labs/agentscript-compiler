@@ -2,94 +2,169 @@
 //! functions, import aliases, or known single-segment builtins.
 //!
 //! Walk order matches the minimal typechecker (implicit declaration via first `=` assign).
+//! Successful resolutions are recorded on [`crate::session::CompilerSession::name_bindings`]
+//! keyed by expression [`crate::frontend::ast::NodeId`].
 
-use std::collections::HashSet;
+use indexmap::IndexMap;
 
+use crate::bindings::{NameBinding, SemanticSymbolId};
 use crate::frontend::ast::{
-    ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item, Script, ScriptDeclaration,
-    Stmt, StmtKind, Type,
+    ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item, NodeId, Script,
+    ScriptDeclaration, Span, Stmt, StmtKind, Type,
 };
+use crate::session::CompilerSession;
 
 use super::super::builtins::is_unqualified_builtin_ident;
-use super::super::AnalyzeError;
+use super::super::{AnalyzeError, SemanticDiagnostic};
 
-struct LexicalCtx {
+struct LexicalCtx<'a> {
     /// Innermost scope last. Hoisted names live in the root frame.
-    scopes: Vec<HashSet<String>>,
-    issues: Vec<String>,
+    scopes: Vec<IndexMap<String, SemanticSymbolId>>,
+    next_symbol: u32,
+    issues: Vec<SemanticDiagnostic>,
+    session: &'a mut CompilerSession,
 }
 
-impl LexicalCtx {
-    fn new(script: &Script) -> Self {
-        let mut root = HashSet::new();
+impl<'a> LexicalCtx<'a> {
+    fn new(script: &Script, session: &'a mut CompilerSession) -> Self {
+        let mut next_symbol: u32 = 1;
+        let mut root = IndexMap::new();
         for item in &script.items {
             if let Item::Import(i) = item {
-                root.insert(i.alias.clone());
+                root.insert(
+                    i.alias.clone(),
+                    SemanticSymbolId({
+                        let id = next_symbol;
+                        next_symbol += 1;
+                        id
+                    }),
+                );
             }
             match item {
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
-                    root.insert(f.name.clone());
+                    root.entry(f.name.clone()).or_insert_with(|| {
+                        let id = SemanticSymbolId(next_symbol);
+                        next_symbol += 1;
+                        id
+                    });
+                }
+                Item::Enum(e) | Item::Export(ExportDecl::Enum(e)) => {
+                    root.entry(e.name.clone()).or_insert_with(|| {
+                        let id = SemanticSymbolId(next_symbol);
+                        next_symbol += 1;
+                        id
+                    });
+                }
+                Item::TypeDef(t) | Item::Export(ExportDecl::TypeDef(t)) => {
+                    root.entry(t.name.clone()).or_insert_with(|| {
+                        let id = SemanticSymbolId(next_symbol);
+                        next_symbol += 1;
+                        id
+                    });
                 }
                 _ => {}
             }
         }
         Self {
             scopes: vec![root],
+            next_symbol,
             issues: Vec::new(),
+            session,
         }
     }
 
+    fn alloc_sym(&mut self) -> SemanticSymbolId {
+        let id = SemanticSymbolId(self.next_symbol);
+        self.next_symbol += 1;
+        id
+    }
+
     fn push_scope(&mut self) {
-        self.scopes.push(HashSet::new());
+        self.scopes.push(IndexMap::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
     }
 
+    fn lookup(&self, name: &str) -> Option<SemanticSymbolId> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(id) = scope.get(name) {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
     fn name_in_any_scope(&self, name: &str) -> bool {
-        self.scopes.iter().rev().any(|s| s.contains(name))
+        self.lookup(name).is_some()
     }
 
     /// Pine-style first assignment introduces `name` in the innermost scope.
     fn define_implicit(&mut self, name: &str) {
+        let need = self
+            .scopes
+            .last()
+            .is_some_and(|s| !s.contains_key(name));
+        if !need {
+            return;
+        }
+        let id = self.alloc_sym();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string());
+            scope.insert(name.to_string(), id);
         }
     }
 
-    fn define_var_decl(&mut self, name: &str, ctx: &str) {
+    fn define_var_decl(&mut self, name: &str, ctx: &str, span: Span) {
+        let dup = self.scopes.last().is_some_and(|s| s.contains_key(name));
+        if dup {
+            self.issues.push(SemanticDiagnostic {
+                message: format!("duplicate declaration of `{name}` ({ctx})"),
+                span,
+            });
+            return;
+        }
+        let id = self.alloc_sym();
         if let Some(scope) = self.scopes.last_mut() {
-            if !scope.insert(name.to_string()) {
-                self.issues
-                    .push(format!("duplicate declaration of `{name}` ({ctx})"));
-            }
+            scope.insert(name.to_string(), id);
         }
     }
 
     fn define_param(&mut self, name: &str) {
+        let id = self.alloc_sym();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string());
+            scope.insert(name.to_string(), id);
         }
     }
 
-    fn resolve_ident(&mut self, name: &str, context: &str) {
-        if self.name_in_any_scope(name) {
+    fn resolve_ident(&mut self, name: &str, context: &str, expr: &Expr) {
+        if let Some(sid) = self.lookup(name) {
+            if expr.id != NodeId::UNASSIGNED {
+                self.session
+                    .set_name_binding(expr.id, NameBinding::Local(sid));
+            }
             return;
         }
         if is_unqualified_builtin_ident(name) {
+            if expr.id != NodeId::UNASSIGNED {
+                self.session.set_name_binding(
+                    expr.id,
+                    NameBinding::UnqualifiedBuiltin(name.to_string()),
+                );
+            }
             return;
         }
-        self.issues.push(format!(
-            "unknown identifier `{name}` ({context})"
-        ));
+        self.issues.push(SemanticDiagnostic {
+            message: format!("unknown identifier `{name}` ({context})"),
+            span: expr.span,
+        });
     }
 
     fn walk_expr(&mut self, e: &Expr, context: &str) {
         match &e.kind {
             ExprKind::IdentPath(p) => {
                 if p.len() == 1 {
-                    self.resolve_ident(&p[0], context);
+                    self.resolve_ident(&p[0], context, e);
                 }
             }
             ExprKind::Member { base, .. } => self.walk_expr(base, context),
@@ -153,7 +228,7 @@ impl LexicalCtx {
     fn walk_callee(&mut self, e: &Expr, context: &str) {
         match &e.kind {
             ExprKind::IdentPath(p) if p.len() == 1 => {
-                self.resolve_ident(&p[0], context);
+                self.resolve_ident(&p[0], context, e);
             }
             ExprKind::Member { base, .. } => self.walk_expr(base, context),
             _ => self.walk_expr(e, context),
@@ -186,7 +261,7 @@ impl LexicalCtx {
                     self.walk_type(ty, context);
                 }
                 self.walk_expr(&v.value, context);
-                self.define_var_decl(&v.name, context);
+                self.define_var_decl(&v.name, context, s.span);
             }
             StmtKind::Assign { name, value, .. } => {
                 self.walk_expr(value, context);
@@ -333,7 +408,7 @@ impl LexicalCtx {
                     self.walk_type(ty, "export var");
                 }
                 self.walk_expr(&v.value, "export var");
-                self.define_var_decl(&v.name, "export var");
+                self.define_var_decl(&v.name, "export var", Span::DUMMY);
             }
             Item::Export(ExportDecl::Enum(e)) | Item::Enum(e) => {
                 for v in &e.variants {
@@ -351,18 +426,26 @@ impl LexicalCtx {
     }
 }
 
-/// Resolve unqualified identifiers; reject unknown locals (Phase 1 lexical groundwork).
+/// Resolve unqualified identifiers using a fresh session slice (no binding table retained).
 pub fn lexical_resolve_script(script: &Script) -> Result<(), AnalyzeError> {
-    let mut c = LexicalCtx::new(script);
+    let mut session = CompilerSession::new();
+    session.prepare_analysis(script);
+    lexical_resolve_script_in_session(&mut session, script)
+}
+
+/// Resolve unqualified identifiers; fills `session.name_bindings` for expression nodes.
+pub fn lexical_resolve_script_in_session(
+    session: &mut CompilerSession,
+    script: &Script,
+) -> Result<(), AnalyzeError> {
+    let mut c = LexicalCtx::new(script, session);
     for item in &script.items {
         c.walk_item(item);
     }
     if c.issues.is_empty() {
         Ok(())
     } else {
-        Err(AnalyzeError {
-            message: c.issues.join("\n"),
-        })
+        Err(AnalyzeError::new(c.issues))
     }
 }
 
@@ -370,6 +453,7 @@ pub fn lexical_resolve_script(script: &Script) -> Result<(), AnalyzeError> {
 mod tests {
     use super::*;
     use crate::parse_script;
+    use crate::Compiler;
 
     #[test]
     fn unknown_identifier_rejected() {
@@ -379,7 +463,7 @@ mod tests {
         )
         .unwrap();
         let e = lexical_resolve_script(&s).unwrap_err();
-        assert!(e.message.contains("nope"), "{}", e.message);
+        assert!(e.message().contains("nope"), "{}", e.message());
     }
 
     #[test]
@@ -396,7 +480,7 @@ mod tests {
     fn hoisted_fn_call_before_decl_ok() {
         let s = parse_script(
             "t.pine",
-            "indicator(\"x\")\na = inc(1)\nf inc(x) => x + 1\n",
+            "indicator(\"x\")\na = inc(1.0)\ninc(float x) => x + 1.0\n",
         )
         .unwrap();
         lexical_resolve_script(&s).unwrap();
@@ -420,8 +504,28 @@ mod tests {
         )
         .unwrap();
         let e = lexical_resolve_script(&s).unwrap_err();
-        assert!(e.message.contains("duplicate"), "{}", e.message);
-        assert!(e.message.contains('a'), "{}", e.message);
+        assert!(e.message().contains("duplicate"), "{}", e.message());
+        assert!(e.message().contains('a'), "{}", e.message());
+    }
+
+    #[test]
+    fn hoisted_enum_name_as_value_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\nenum E { a = 1 }\nx = E\n",
+        )
+        .unwrap();
+        lexical_resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn nz_call_ok() {
+        let s = parse_script(
+            "t.pine",
+            "indicator(\"x\")\ny = nz(close, 0.0)\n",
+        )
+        .unwrap();
+        lexical_resolve_script(&s).unwrap();
     }
 
     #[test]
@@ -432,5 +536,23 @@ mod tests {
         )
         .unwrap();
         lexical_resolve_script(&s).unwrap();
+    }
+
+    #[test]
+    fn compiler_records_close_binding() {
+        let s = parse_script("t.pine", "indicator(\"x\")\ny = close + 1\n").unwrap();
+        let mut c = Compiler::new();
+        c.run_semantic_passes(&s).unwrap();
+        let bound: Vec<_> = c
+            .session
+            .name_bindings
+            .iter()
+            .filter_map(|b| b.as_ref())
+            .collect();
+        assert!(
+            bound.iter().any(|b| matches!(b, NameBinding::UnqualifiedBuiltin(n) if n == "close")),
+            "expected close in {:?}",
+            bound
+        );
     }
 }

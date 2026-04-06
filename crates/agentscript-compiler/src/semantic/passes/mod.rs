@@ -1,6 +1,7 @@
 //! Single-responsibility semantic passes (Phase 1 groundwork).
 
-use crate::frontend::ast::Script;
+use crate::frontend::ast::{Script, Span};
+use crate::hir::lower_script_to_hir;
 use crate::session::CompilerSession;
 
 use super::AnalyzeError;
@@ -12,7 +13,7 @@ mod resolver;
 mod typecheck;
 
 pub use early::analyze_script;
-pub use lexical::lexical_resolve_script;
+pub use lexical::{lexical_resolve_script, lexical_resolve_script_in_session};
 pub use resolver::resolve_script;
 pub use typecheck::typecheck_script;
 
@@ -69,8 +70,8 @@ impl CompilerPass for LexicalResolvePass {
         "lexical_resolve"
     }
 
-    fn run(&mut self, _session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
-        lexical::lexical_resolve_script(script)
+    fn run(&mut self, session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        lexical::lexical_resolve_script_in_session(session, script)
     }
 }
 
@@ -87,7 +88,27 @@ impl CompilerPass for TypecheckPass {
     }
 }
 
-/// Default Phase-0 semantic pipeline (order matters).
+/// AST → HIR for the supported lowering subset; fails the pipeline if lowering is not implemented yet.
+pub struct HirLowerPass;
+
+impl CompilerPass for HirLowerPass {
+    fn name(&self) -> &'static str {
+        "hir_lower"
+    }
+
+    fn run(&mut self, session: &mut CompilerSession, script: &Script) -> Result<(), AnalyzeError> {
+        match lower_script_to_hir(script) {
+            Ok(hir) => {
+                session.hir = Some(hir);
+                Ok(())
+            }
+            Err(e) => Err(AnalyzeError::single(e.to_string(), Span::DUMMY)),
+        }
+    }
+}
+
+/// Default Phase-1 semantic pipeline (order matters). Does **not** run [`HirLowerPass`] so
+/// [`check_script`] stays usable for scripts outside the current HIR subset.
 pub fn default_passes() -> Vec<Box<dyn CompilerPass>> {
     vec![
         Box::new(EarlyAnalyzePass),
@@ -96,4 +117,11 @@ pub fn default_passes() -> Vec<Box<dyn CompilerPass>> {
         Box::new(LexicalResolvePass),
         Box::new(TypecheckPass),
     ]
+}
+
+/// Same as [`default_passes`] plus HIR lowering (Phase 2 driver).
+pub fn default_passes_with_hir() -> Vec<Box<dyn CompilerPass>> {
+    let mut v = default_passes();
+    v.push(Box::new(HirLowerPass));
+    v
 }

@@ -1,7 +1,7 @@
 //! Statements with spans.
 
 use super::expr::Expr;
-use super::node::Span;
+use super::node::{NodeId, Span};
 use super::types::{Type, VarQualifier};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,6 +18,7 @@ pub enum AssignOp {
 /// Statement with source span.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stmt {
+    pub id: NodeId,
     pub span: Span,
     pub kind: StmtKind,
 }
@@ -26,6 +27,7 @@ impl Stmt {
     #[must_use]
     pub fn new(span: impl Into<Span>, kind: StmtKind) -> Self {
         Self {
+            id: NodeId::UNASSIGNED,
             span: span.into(),
             kind,
         }

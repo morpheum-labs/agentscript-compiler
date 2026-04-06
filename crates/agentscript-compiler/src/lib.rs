@@ -3,6 +3,8 @@
 //! Development progress: see repository root `ROADMAP.md`. Planned path: full typechecker, IR,
 //! codegen, and `wasm32` output aligned with the Aether strategy guest ABI.
 
+mod bindings;
+mod codegen;
 mod compiler;
 mod error;
 mod frontend;
@@ -12,17 +14,21 @@ mod session;
 mod visitor;
 
 pub use compiler::Compiler;
+pub use bindings::{NameBinding, SemanticSymbolId};
 pub use frontend::ast::{
-    AssignOp, BinOp, ElseBody, EnumDef, EnumVariant, ExportDecl, Expr, ExprKind, FnBody, FnDecl,
-    FnParam, ForInPattern, IfStmt, ImportDecl, Item, PrimitiveType, Script, ScriptDeclaration,
-    ScriptKind, Span, Spanned, Stmt, StmtKind, Type, UdtField, UnaryOp, UserTypeDef, VarDecl,
-    VarQualifier,
+    assign_node_ids, max_node_id, AssignOp, BinOp, ElseBody, EnumDef, EnumVariant, ExportDecl, Expr,
+    ExprKind, FnBody, FnDecl, FnParam, ForInPattern, IfStmt, ImportDecl, Item, NodeId,
+    PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Spanned, Stmt, StmtKind, Type,
+    UdtField, UnaryOp, UserTypeDef, VarDecl, VarQualifier,
 };
 pub use error::{CompileError, ParseFileError};
 pub use frontend::parser::script_parser;
+pub use codegen::emit_minimal_guest_wasm_v0;
 pub use semantic::{
-    analyze_script, check_script, resolve_script, typecheck_script, AnalyzeError,
-    BreakContinuePass, CompilerPass, EarlyAnalyzePass, ResolverPass, TypecheckPass, default_passes,
+    analyze_script, check_script, default_passes, default_passes_with_hir, lexical_resolve_script,
+    lexical_resolve_script_in_session, resolve_script, typecheck_script, AnalyzeError,
+    BreakContinuePass, CompilerPass, EarlyAnalyzePass, HirLowerPass, LexicalResolvePass, ResolverPass,
+    SemanticDiagnostic, TypecheckPass,
 };
 pub use hir::{lower_script_to_hir, AstHirLowerer, HirLowerError, HirScript, LowerToHir};
 pub use session::CompilerSession;
@@ -69,14 +75,18 @@ pub fn parse_script(src_name: impl AsRef<str>, source: &str) -> Result<Script, C
         ));
     }
     match script_parser().parse(owned.as_str()) {
-        Ok(ast) => Ok(ast),
+        Ok(mut ast) => {
+            crate::frontend::ast::assign_node_ids(&mut ast);
+            Ok(ast)
+        }
         Err(errs) => Err(error::compile_error_from_parse_errors(
             src_name, owned, errs,
         )),
     }
 }
 
-/// Parse and run [`check_script`] (early checks, resolver, minimal typecheck).
+/// Parse and run [`check_script`] (early checks, resolver, minimal typecheck). For HIR + WASM use
+/// [`Compiler::with_hir_lowering`] or [`compile_script_to_wasm_v0`].
 pub fn parse_and_analyze(
     src_name: impl AsRef<str>,
     source: &str,
@@ -84,6 +94,28 @@ pub fn parse_and_analyze(
     let script = parse_script(src_name.as_ref(), source)?;
     check_script(&script).map_err(CompileOrAnalyzeError::Analyze)?;
     Ok(script)
+}
+
+/// Run [`Compiler::run_semantic_passes`] with the default semantic pipeline (no HIR).
+pub fn analyze_to_compiler(script: &Script) -> Result<Compiler, AnalyzeError> {
+    let mut c = Compiler::new();
+    c.run_semantic_passes(script)?;
+    Ok(c)
+}
+
+/// Semantic passes plus HIR lowering; on success [`CompilerSession::hir`] is set.
+pub fn analyze_to_hir_compiler(script: &Script) -> Result<Compiler, AnalyzeError> {
+    let mut c = Compiler::with_hir_lowering();
+    c.run_semantic_passes(script)?;
+    Ok(c)
+}
+
+/// Lower + emit the Phase 2 stub guest module (`init` / `on_bar`). Requires the current HIR subset.
+pub fn compile_script_to_wasm_v0(script: &Script) -> Result<Vec<u8>, AnalyzeError> {
+    let mut c = Compiler::with_hir_lowering();
+    c.run_semantic_passes(script)?;
+    debug_assert!(c.session.hir.is_some());
+    Ok(codegen::emit_minimal_guest_wasm_v0())
 }
 
 /// Parse failure ([`CompileError`]) or post-parse semantic failure ([`AnalyzeError`]).
@@ -101,6 +133,22 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TINY_INDICATOR: &str = r#"//@version=6
+indicator("Test Agent")
+
+len = input.int(14)
+sma = ta.sma(close, len)
+htf = request.security("AAPL", "D", sma)
+plot(htf)
+"#;
+
+    #[test]
+    fn compile_script_to_wasm_v0_smoke() {
+        let script = parse_script("t", TINY_INDICATOR).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+    }
 
     #[test]
     fn agentscript_source_extensions_recognize_pine_and_qas_case_insensitive() {

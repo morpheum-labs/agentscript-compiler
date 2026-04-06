@@ -201,10 +201,12 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                     (UnaryOp::Neg, Expr {
                         span,
                         kind: ExprKind::Int(n),
+                        ..
                     }) => Expr::new(span, ExprKind::Int(-n)),
                     (UnaryOp::Neg, Expr {
                         span,
                         kind: ExprKind::Float(x),
+                        ..
                     }) => Expr::new(span, ExprKind::Float(-x)),
                     (op, acc) => Expr::new(
                         acc.span,

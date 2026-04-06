@@ -63,5 +63,9 @@ pub fn is_unqualified_builtin_ident(name: &str) -> bool {
             | "timenow"
             | "true"
             | "false"
+            // Bare `plot(x)` at statement / call sites (see typecheck `type_call`).
+            | "plot"
+            // Same for `nz(x, …)` (handled in `typecheck` for calls).
+            | "nz"
     )
 }

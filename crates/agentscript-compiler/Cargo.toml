@@ -12,9 +12,11 @@ chumsky = "0.9"
 indexmap = "2"
 miette = { version = "7", features = ["fancy"] }
 thiserror = "2"
+wasm-encoder = "0.240"
 
 [dev-dependencies]
 insta = "1"
+wasmparser = "0.240"
 
 [[bin]]
 name = "agentscriptc"

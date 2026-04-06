@@ -3,9 +3,11 @@
 use indexmap::IndexMap;
 use std::collections::HashSet;
 
-use crate::frontend::ast::{EnumDef, ExportDecl, FnDecl, Item, Script, UserTypeDef};
+use crate::frontend::ast::{
+    EnumDef, ExportDecl, FnDecl, Item, Script, ScriptKind, Span, UserTypeDef,
+};
 
-use super::super::AnalyzeError;
+use super::super::{AnalyzeError, SemanticDiagnostic};
 
 pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     let mut issues = Vec::new();
@@ -41,16 +43,36 @@ pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
 
     for (name, n) in &def_counts {
         if *n > 1 {
-            issues.push(format!(
-                "duplicate top-level definition `{name}` ({n} declarations)"
-            ));
+            issues.push(SemanticDiagnostic {
+                message: format!(
+                    "duplicate top-level definition `{name}` ({n} declarations)"
+                ),
+                span: Span::DUMMY,
+            });
         }
     }
     for (alias, n) in &import_counts {
         if *n > 1 {
-            issues.push(format!(
-                "duplicate import alias `{alias}` ({n} imports)"
-            ));
+            issues.push(SemanticDiagnostic {
+                message: format!("duplicate import alias `{alias}` ({n} imports)"),
+                span: Span::DUMMY,
+            });
+        }
+    }
+
+    let primary_kind = script.items.iter().find_map(|it| match it {
+        Item::ScriptDecl(d) => Some(d.kind),
+        _ => None,
+    });
+    if primary_kind == Some(ScriptKind::Library) {
+        for item in &script.items {
+            if matches!(item, Item::Stmt(_)) {
+                issues.push(SemanticDiagnostic {
+                    message: "top-level executable statements are not allowed in `library()` scripts; use `export`"
+                        .into(),
+                    span: Span::DUMMY,
+                });
+            }
         }
     }
 
@@ -71,44 +93,51 @@ pub fn analyze_script(script: &Script) -> Result<(), AnalyzeError> {
     if issues.is_empty() {
         Ok(())
     } else {
-        Err(AnalyzeError {
-            message: issues.join("\n"),
-        })
+        Err(AnalyzeError::new(issues))
     }
 }
 
-fn check_fn_params(f: &FnDecl, issues: &mut Vec<String>) {
+fn check_fn_params(f: &FnDecl, issues: &mut Vec<SemanticDiagnostic>) {
     let mut seen = HashSet::new();
     for p in &f.params {
         if !seen.insert(&p.name) {
-            issues.push(format!(
-                "duplicate parameter `{}` in function `{}`",
-                p.name, f.name
-            ));
+            issues.push(SemanticDiagnostic {
+                message: format!(
+                    "duplicate parameter `{}` in function `{}`",
+                    p.name, f.name
+                ),
+                span: Span::DUMMY,
+            });
         }
     }
 }
 
-fn check_enum_variants(e: &EnumDef, issues: &mut Vec<String>) {
+fn check_enum_variants(e: &EnumDef, issues: &mut Vec<SemanticDiagnostic>) {
     let mut seen = HashSet::new();
     for v in &e.variants {
         if !seen.insert(&v.name) {
-            issues.push(format!(
-                "duplicate variant `{}` in enum `{}`",
-                v.name, e.name
-            ));
+            issues.push(SemanticDiagnostic {
+                message: format!(
+                    "duplicate variant `{}` in enum `{}`",
+                    v.name, e.name
+                ),
+                span: Span::DUMMY,
+            });
         }
     }
 }
 
-fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<String>) {
+fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<SemanticDiagnostic>) {
     let mut seen = HashSet::new();
     for f in &t.fields {
         if !seen.insert(&f.name) {
-            issues.push(format!(
-                "duplicate field `{}` in type `{}`",
-                f.name, t.name
-            ));
+            issues.push(SemanticDiagnostic {
+                message: format!(
+                    "duplicate field `{}` in type `{}`",
+                    f.name, t.name
+                ),
+                span: Span::DUMMY,
+            });
         }
     }
 }
@@ -135,8 +164,8 @@ mod tests {
         )
         .unwrap();
         let e = analyze_script(&s).unwrap_err();
-        assert!(e.message.contains("duplicate"));
-        assert!(e.message.contains("a"));
+        assert!(e.message().contains("duplicate"));
+        assert!(e.message().contains("a"));
     }
 
     #[test]
@@ -151,8 +180,8 @@ f dup() => 2
         )
         .unwrap();
         let e = analyze_script(&s).unwrap_err();
-        assert!(e.message.contains("duplicate"), "{}", e.message);
-        assert!(e.message.contains("dup"));
+        assert!(e.message().contains("duplicate"), "{}", e.message());
+        assert!(e.message().contains("dup"));
     }
 
     #[test]
@@ -163,8 +192,23 @@ f dup() => 2
         )
         .unwrap();
         let e = analyze_script(&s).unwrap_err();
-        assert!(e.message.contains("import"));
-        assert!(e.message.contains("x"));
+        assert!(e.message().contains("import"));
+        assert!(e.message().contains("x"));
+    }
+
+    #[test]
+    fn library_rejects_top_level_stmt() {
+        let s = parse_script(
+            "t",
+            r#"//@version=6
+library("L")
+x = 1
+"#,
+        )
+        .unwrap();
+        let e = analyze_script(&s).unwrap_err();
+        assert!(e.message().contains("library"), "{}", e.message());
+        assert!(e.message().contains("export"), "{}", e.message());
     }
 
     #[test]
@@ -200,7 +244,7 @@ f dup() => 2
             ],
         };
         let e = analyze_script(&s).unwrap_err();
-        assert!(e.message.contains("parameter"));
-        assert!(e.message.contains('n'));
+        assert!(e.message().contains("parameter"));
+        assert!(e.message().contains('n'));
     }
 }
