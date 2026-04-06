@@ -37,6 +37,13 @@ pub enum HirExpr {
         offset: i32,
         ty: HirType,
     },
+    /// `cond ? a : b` / `if cond a else b` once lowered (lazy semantics deferred to runtime).
+    Select {
+        cond: HirId,
+        then_b: HirId,
+        else_b: HirId,
+        ty: HirType,
+    },
     Security(Box<SecurityCall>),
     /// Inline plot when lowered as an expression-shaped construct (if the surface allows).
     Plot {

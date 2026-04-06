@@ -12,7 +12,8 @@ use bumpalo::Bump;
 use crate::bindings::NameBinding;
 use crate::frontend::ast::{
     AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind, FnBody, FnDecl, IfStmt, Item, NodeId,
-    PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind, Type, VarQualifier,
+    PrimitiveType, Script, ScriptDeclaration, ScriptKind, Span, Stmt, StmtKind, Type, UnaryOp,
+    VarQualifier,
 };
 use crate::session::CompilerSession;
 
@@ -188,6 +189,21 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         }
     }
 
+    fn expr_ty_from_session_or_float_series(&self, e: &Expr) -> HirType {
+        self.session
+            .and_then(|s| {
+                if e.id != NodeId::UNASSIGNED {
+                    s.expr_types
+                        .get(e.id.0 as usize)
+                        .and_then(|x| x.as_ref())
+                        .cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| HirType::Series(Type::Primitive(PrimitiveType::Float)))
+    }
+
     fn variable_hir_type(&self, name: &str, expr: &Expr) -> HirType {
         if let Some(sess) = self.session {
             if expr.id != NodeId::UNASSIGNED {
@@ -258,6 +274,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             HirExpr::BuiltinCall { ty, .. } => ty.clone(),
             HirExpr::UserCall { ty, .. } => ty.clone(),
             HirExpr::SeriesAccess { ty, .. } => ty.clone(),
+            HirExpr::Select { ty, .. } => ty.clone(),
             HirExpr::Security(sec) => sec.ty.clone(),
             HirExpr::Plot { .. } => HirType::Series(Type::Primitive(PrimitiveType::Float)),
         }
@@ -498,6 +515,14 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             }
             StmtKind::Assign {
                 name,
+                op: AssignOp::ColonEq,
+                ..
+            } => Err(HirLowerError::at(
+                stmt.span,
+                "`:=` reassignment is not supported in this HIR lowering pass",
+            )),
+            StmtKind::Assign {
+                name,
                 op: AssignOp::Eq,
                 value,
             } => {
@@ -524,6 +549,46 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 };
                 let hir = self.lower_expr(value)?;
                 body.push(HirStmt::Let { symbol: sym, value: hir });
+                Ok(())
+            }
+            StmtKind::Assign {
+                name,
+                op,
+                value,
+            } => {
+                let bin_op = match op {
+                    AssignOp::PlusEq => BinOp::Add,
+                    AssignOp::MinusEq => BinOp::Sub,
+                    AssignOp::StarEq => BinOp::Mul,
+                    AssignOp::SlashEq => BinOp::Div,
+                    AssignOp::PercentEq => BinOp::Mod,
+                    AssignOp::Eq | AssignOp::ColonEq => unreachable!("handled above"),
+                };
+                let sym = self.resolve_var_symbol(name).ok_or_else(|| {
+                    HirLowerError::at(
+                        stmt.span,
+                        format!("unknown variable `{name}` for compound assignment"),
+                    )
+                })?;
+                let v_ty = HirType::Series(Type::Primitive(PrimitiveType::Float));
+                let lhs = self.alloc_expr(
+                    HirExpr::Variable(sym, v_ty.clone()),
+                    stmt.span,
+                );
+                let rhs = self.lower_expr(value)?;
+                let merged = self.alloc_expr(
+                    HirExpr::Binary {
+                        op: bin_op,
+                        lhs,
+                        rhs,
+                        ty: v_ty,
+                    },
+                    stmt.span,
+                );
+                body.push(HirStmt::Let {
+                    symbol: sym,
+                    value: merged,
+                });
                 Ok(())
             }
             StmtKind::Expr(e) => {
@@ -645,24 +710,69 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 ))
             }
             ExprKind::IdentPath(path) => self.lower_ident_path(path, e.span, e),
-            ExprKind::Binary { op, left, right } => {
+            ExprKind::Unary { op, expr } => {
+                let inner = self.lower_expr(expr.as_ref())?;
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {}
-                    _ => {
-                        return Err(HirLowerError::at(
+                    UnaryOp::Pos => Ok(inner),
+                    UnaryOp::Neg => {
+                        let z = self.alloc_expr(
+                            HirExpr::Literal(
+                                HirLiteral::Float(0.0),
+                                HirType::Simple(Type::Primitive(PrimitiveType::Float)),
+                            ),
                             e.span,
-                            "binary operator not supported by this HIR lowering pass",
-                        ));
+                        );
+                        let ty = self.expr_ty_from_session_or_float_series(e);
+                        Ok(self.alloc_expr(
+                            HirExpr::Binary {
+                                op: BinOp::Sub,
+                                lhs: z,
+                                rhs: inner,
+                                ty,
+                            },
+                            e.span,
+                        ))
                     }
+                    UnaryOp::Not => Err(HirLowerError::at(
+                        e.span,
+                        "unary `not` is not supported in this HIR lowering pass",
+                    )),
                 }
+            }
+            ExprKind::Binary { op, left, right } => {
                 let lhs = self.lower_expr(left.as_ref())?;
                 let rhs = self.lower_expr(right.as_ref())?;
+                let ty = self.expr_ty_from_session_or_float_series(e);
                 Ok(self.alloc_expr(
                     HirExpr::Binary {
                         op: *op,
                         lhs,
                         rhs,
-                        ty: HirType::Series(Type::Primitive(PrimitiveType::Float)),
+                        ty,
+                    },
+                    e.span,
+                ))
+            }
+            ExprKind::Ternary {
+                cond,
+                then_b,
+                else_b,
+            }
+            | ExprKind::IfExpr {
+                cond,
+                then_b,
+                else_b,
+            } => {
+                let c = self.lower_expr(cond.as_ref())?;
+                let t = self.lower_expr(then_b.as_ref())?;
+                let u = self.lower_expr(else_b.as_ref())?;
+                let ty = self.expr_ty_from_session_or_float_series(e);
+                Ok(self.alloc_expr(
+                    HirExpr::Select {
+                        cond: c,
+                        then_b: t,
+                        else_b: u,
+                        ty,
                     },
                     e.span,
                 ))

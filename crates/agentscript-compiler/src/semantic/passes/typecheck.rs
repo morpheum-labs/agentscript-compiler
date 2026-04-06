@@ -753,6 +753,35 @@ impl<'a> Checker<'a> {
             self.err(span, format!("unknown identifier `{name}`"));
             return Err(());
         }
+        if path.len() == 2 {
+            let root = path[0].as_str();
+            let field = path[1].as_str();
+            if let Some(base_ty) = self.resolve_local(root) {
+                if let HirType::Simple(AstType::Named(n)) | HirType::Series(AstType::Named(n)) = &base_ty
+                {
+                    if let Some(vm) = self.enum_variants.get(n) {
+                        if let Some(t) = vm.get(field) {
+                            return Ok(t.clone());
+                        }
+                        self.err(
+                            span,
+                            format!("unknown enum variant `{field}` for `{n}`"),
+                        );
+                        return Err(());
+                    }
+                    if let Some(fm) = self.udt_fields.get(n) {
+                        if let Some(t) = fm.get(field) {
+                            return Ok(t.clone());
+                        }
+                        self.err(
+                            span,
+                            format!("unknown field `{field}` on user type `{n}`"),
+                        );
+                        return Err(());
+                    }
+                }
+            }
+        }
         if let Some(t) = builtin_global(path) {
             return Ok(t);
         }
