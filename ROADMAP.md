@@ -33,7 +33,7 @@
 | **`strategy.*` builtins** | Orders, position, PnL, trade stats | **None** | Lowered to host imports; host implements semantics. |
 | **`math.*` builtins** | Scalar math, rounding policy | **Partial** | `max`/`min`/`abs`/`sqrt`/`round`/`ceil`/`floor`/`trunc` (native `f64.*`) + `log`/`exp`/`pow` (HIR + WASM; `log`/`exp`/`pow` via `aether` imports). Remaining `math.*` still open. |
 | **`syminfo.*` / `timeframe.*`** | Symbol / timeframe metadata | **Partial** | Typecheck: limited two-segment `syminfo.*` paths (e.g. `ticker`) as series string ([`builtin_global`](crates/agentscript-compiler/src/semantic/passes/typecheck.rs)); no HIR/WASM surface beyond generic typing. `timeframe.*` and full syminfo parity still **None**. |
-| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **Partial** | HIR [`SecurityCall`](crates/agentscript-compiler/src/hir/security.rs) with `gaps` / `lookahead` from `barmerge.*` or booleans; typecheck validates optional args. WASM v0: `aether.request_security` (string literals + inner expr); `aether-mwvm` stub passes through inner `f64`. Dynamic symbol / full MTF merge / real host feed still open. |
+| **`request.security`** | MTF / foreign series, gaps, lookahead, dynamic symbol rules | **Partial** | HIR [`SecurityCall`](crates/agentscript-compiler/src/hir/security.rs) with `gaps` / `lookahead` from `barmerge.*` or booleans; typecheck validates optional args. WASM v0: `aether.request_security` (literals, `let` chains, **`?:` trees of literals** → pool + `i32.select` per bar; same import); `aether-mwvm` stub passes through inner `f64`. **Still open:** series-string symbol/timeframe (e.g. `syminfo.ticker`), full MTF merge / real host feed. |
 | **`request.financial`** | Financial series by id/period | **Partial** | Typecheck + HIR [`FinancialCall`](crates/agentscript-compiler/src/hir/financial.rs) (`gaps`, `currency`, `ignore`); WASM v0: `aether.request_financial` **`(i32×10)->f64`** (symbol/id/period/currency string literals; `gaps` / `ignore` flags; default currency `-1`,`0`). Dynamic args / full host still open. |
 | **Other `request.*`** | e.g. economic, dividend, … | **None** | Same pattern as security/financial when prioritized. |
 | **`mcp.*` builtins** | `call`, `discover`, `emit`, quotas | **None** | QAS-specific; host MCP proxy. |
@@ -114,7 +114,8 @@ Spec and economics context: **`vaulted-knowledge-protocol/backtesting-infra`**.
 - [x] **ABI v1 (2026-04):** `aether_strategy_init` **`() -> i32`**; `aether_strategy_step` **`(i32 bar_index) -> i32`**; `guest_abi::VERSION` **2**; docs + [`validate_guest_abi_v1`](crates/agentscript-compiler/src/codegen/wasm/abi.rs); wasmtime **`init`/`step`** smoke.
 - [ ] **Next ABI bump (optional):** `step` gains pointer/length or struct for OHLCV/context in linear memory per [`aether/docs/agentscript-guest-abi.md`](../../aether/docs/agentscript-guest-abi.md); increment `guest_abi::VERSION` when shipped.
 - [ ] **Import table discipline:** any new/changed `aether` import updates [`codegen/wasm/abi.rs`](crates/agentscript-compiler/src/codegen/wasm/abi.rs) (`GUEST_ABI_V0_IMPORTS`), **Aether/MWVM** linker stubs, [`tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs), and the guest ABI doc in lockstep.
-- [x] **`request.security` (static string slice):** symbol/timeframe may be string literals **or** `let`-bound chains resolving to literals (merged script + user-fn `let` map); same Wasm import. **Still open:** runtime / series-string symbol & timeframe, prefetch/determinism.
+- [x] **`request.security` (static string slice):** symbol/timeframe may be string literals **or** `let`-bound chains resolving to literals (merged script + user-fn `let` map); same Wasm import.
+- [x] **`request.security` (per-bar literal choice):** `?:` / nested `?:` whose leaves are only the above (no wasm string locals); offsets/lengths chosen with `i32.select`. **Still open:** series-string / runtime-built symbol & timeframe, prefetch/determinism.
 - [ ] **`request.financial` / other `request.*`:** dynamic args and production host semantics as needed.
 
 ### Slice definition of done
@@ -140,6 +141,7 @@ A slice counts as **done** when: emitted WASM validates; the import table matche
 - [x] AST types for what the parser accepts: [`crates/agentscript-compiler/src/frontend/ast/`](crates/agentscript-compiler/src/frontend/ast/).
 - [x] **Spec EBNF alignment (§§1–13)** with intentional exclusions: unbraced TV **`enum` / `type`** bodies out of scope; **`map.from`** TBD in §11 until reference + tests lock it.
 - [ ] **Remaining grammar/spec work (optional tracks):** Pine-indent bodies vs braces; finalize **`map.from`** in §11; grammar export for external tooling.
+- [x] **Syntax documentation (human + LLM):** [`docs/agentscript/`](docs/agentscript/) mirrors the `spec/pinescriptv6/` navigation pattern with compiler-grounded pages; normative EBNF remains [`spec/agentscripts-v1.md`](spec/agentscripts-v1.md).
 - [ ] **Test and UX polish:** larger fixtures, corpus samples, fuzz, sharper errors for common mistakes. *(In progress: one real-style script [`examples/uptrend.pine`](examples/uptrend.pine) covered by [`examples_uptrend_pine_parse_and_analyze`](crates/agentscript-compiler/tests/parse_smoke.rs).)*
 
 ### Pine v6 parity vs bundled docs (`pinescriptv6/`)
@@ -224,4 +226,5 @@ The folder **`pinescriptv6/`** mirrors TradingView’s Pine Script® v6 manual (
 | wasmtime instantiate smoke (v0 imports) | [`crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs`](crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs) |
 | GitHub issue / PR stubs from ROADMAP | [`docs/github-backlog.md`](docs/github-backlog.md) |
 | Example `.pine` sources (manual / integration-test fixtures) | `examples/` (e.g. [`examples/uptrend.pine`](examples/uptrend.pine)) |
-| Pine v6 manual (reference corpus) | `pinescriptv6/` (`LLM_MANIFEST.md`, `reference/`, `concepts/`, `visuals/`) |
+| Pine v6 manual (reference corpus) | `spec/pinescriptv6/` (`LLM_MANIFEST.md`, `reference/`, `concepts/`, `visuals/`) |
+| AgentScript syntax manual (compiler + EBNF) | [`docs/agentscript/`](docs/agentscript/) (`README.md`, `LLM_MANIFEST.md`, `reference/`, `concepts/`, `syntax/`) |

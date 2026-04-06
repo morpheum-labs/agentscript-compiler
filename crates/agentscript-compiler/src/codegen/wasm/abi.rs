@@ -46,9 +46,19 @@ pub const IMPORT_MATH_EXP: u32 = 20;
 pub const IMPORT_MATH_POW: u32 = 21;
 /// `(i32×10) -> f64` — `sym`/`id`/`period`/`currency` string slices in guest memory; `gaps` `0`/`1` (`gaps_off`/`gaps_on`); `ignore` `0`/`1`; `currency` `-1`,`0` = default.
 pub const IMPORT_REQUEST_FINANCIAL: u32 = 22;
+/// `(i32 kind, i32 dst_off, i32 max_len) -> i32` — host writes UTF-8 series string for current bar; returns byte length (truncates to `max_len`; **`-1`** = na / empty).
+pub const IMPORT_SERIES_STRING_UTF8: u32 = 23;
 
 /// First function index defined in the guest module (after all `aether` imports).
-pub const GUEST_FUNC_BASE: u32 = IMPORT_REQUEST_FINANCIAL + 1;
+pub const GUEST_FUNC_BASE: u32 = IMPORT_SERIES_STRING_UTF8 + 1;
+
+/// [`IMPORT_SERIES_STRING_UTF8`] `kind` argument: `syminfo.ticker`.
+pub const SERIES_STRING_KIND_SYMINFO_TICKER: i32 = 0;
+/// [`IMPORT_SERIES_STRING_UTF8`] `kind` argument: `syminfo.prefix`.
+pub const SERIES_STRING_KIND_SYMINFO_PREFIX: i32 = 1;
+
+/// Max bytes host may write per `request.security` symbol or timeframe scratch slot ([`emit_hir_guest_wasm`] pads linear memory).
+pub const SERIES_STRING_SCRATCH_SLOT_MAX: i32 = 512;
 
 /// `ta_sma` / `ta_ema` first argument: host moving-average source stream.
 pub const MA_SRC_CLOSE: i32 = 0;
@@ -101,6 +111,7 @@ pub static GUEST_ABI_V0_IMPORTS: &[(&str, &str)] = &[
     ("aether", "math_exp"),
     ("aether", "math_pow"),
     ("aether", "request_financial"),
+    ("aether", "series_string_utf8"),
 ];
 
 /// Required export names for a full guest strategy module from [`crate::codegen::emit_hir_guest_wasm`].

@@ -1146,6 +1146,26 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 span,
             ));
         }
+        if path == ["syminfo", "ticker"] {
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::SyminfoTicker,
+                    args: vec![],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::String)),
+                },
+                span,
+            ));
+        }
+        if path == ["syminfo", "prefix"] {
+            return Ok(self.alloc_expr(
+                HirExpr::BuiltinCall {
+                    kind: BuiltinKind::SyminfoPrefix,
+                    args: vec![],
+                    ty: HirType::Series(Type::Primitive(PrimitiveType::String)),
+                },
+                span,
+            ));
+        }
         if path.len() == 1 {
             let name = &path[0];
             if matches!(name.as_str(), "hl2" | "hlc3" | "ohlc4" | "hlcc4") {

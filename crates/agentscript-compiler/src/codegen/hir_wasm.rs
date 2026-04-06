@@ -16,11 +16,12 @@ pub use crate::codegen::wasm::abi::{
     GUEST_EXPORT_INIT_ABI, GUEST_EXPORT_INIT_LEGACY, GUEST_EXPORT_STEP_ABI,
     GUEST_EXPORT_STEP_LEGACY, GUEST_FUNC_BASE, IMPORT_INPUT_FLOAT, IMPORT_INPUT_INT, IMPORT_MATH_EXP,
     IMPORT_MATH_LOG, IMPORT_MATH_POW, IMPORT_NZ, IMPORT_PLOT, IMPORT_REQUEST_FINANCIAL,
-    IMPORT_REQUEST_SECURITY,
+    IMPORT_REQUEST_SECURITY, IMPORT_SERIES_STRING_UTF8,
     IMPORT_SERIES_CLOSE, IMPORT_SERIES_HIGH, IMPORT_SERIES_HIST, IMPORT_SERIES_HIST_AT,
     IMPORT_SERIES_LOW, IMPORT_SERIES_OPEN, IMPORT_SERIES_TIME, IMPORT_SERIES_VOLUME, IMPORT_TA_ATR,
     IMPORT_TA_CROSSOVER, IMPORT_TA_CROSSUNDER, IMPORT_TA_EMA, IMPORT_TA_SMA, IMPORT_TA_TR,
-    MA_SRC_CLOSE, MA_SRC_TRUE_RANGE, series_hist_kind,
+    MA_SRC_CLOSE, MA_SRC_TRUE_RANGE, SERIES_STRING_KIND_SYMINFO_PREFIX,
+    SERIES_STRING_KIND_SYMINFO_TICKER, SERIES_STRING_SCRATCH_SLOT_MAX, series_hist_kind,
 };
 
 use crate::frontend::ast::{BinOp, PrimitiveType, Span, Type as AstType};
@@ -66,6 +67,50 @@ impl StringPool {
         self.map.insert(s.to_string(), (off, len));
         (off, len)
     }
+}
+
+fn align_up(n: usize, align: usize) -> usize {
+    (n + align - 1) / align * align
+}
+
+#[derive(Clone, Copy)]
+enum SecurityStringSlot {
+    Symbol,
+    Timeframe,
+}
+
+/// Whether `id` is or references `syminfo.ticker` / `syminfo.prefix` (for `?:` + syminfo exclusion).
+fn contains_syminfo_subexpr(
+    hir: &HirScript,
+    id: HirId,
+    lets: &HashMap<SymbolId, HirId>,
+    visiting: &mut HashSet<HirId>,
+) -> bool {
+    if !visiting.insert(id) {
+        return false;
+    }
+    let Some(ex) = hir.exprs.get(id.0 as usize) else {
+        visiting.remove(&id);
+        return false;
+    };
+    let out = match ex {
+        HirExpr::BuiltinCall { kind, .. } => {
+            matches!(
+                kind,
+                BuiltinKind::SyminfoTicker | BuiltinKind::SyminfoPrefix
+            )
+        }
+        HirExpr::Variable(sym, _) => lets
+            .get(sym)
+            .is_some_and(|init| contains_syminfo_subexpr(hir, *init, lets, visiting)),
+        HirExpr::Select { then_b, else_b, .. } => {
+            contains_syminfo_subexpr(hir, *then_b, lets, visiting)
+                || contains_syminfo_subexpr(hir, *else_b, lets, visiting)
+        }
+        _ => false,
+    };
+    visiting.remove(&id);
+    out
 }
 
 fn hir_expr_ty<'a>(hir: &'a HirScript, id: HirId) -> Result<&'a HirType, HirWasmError> {
@@ -147,6 +192,44 @@ fn resolve_security_string(
     resolve_security_string_inner(hir, id, lets, &mut visiting)
 }
 
+/// `request.security` symbol/timeframe args we can lower without a wasm string local: compile-time
+/// literals / `let` chains, or `?:` / nested `?:` whose leaves are only those forms.
+fn security_string_arg_supported(
+    hir: &HirScript,
+    id: HirId,
+    lets: &HashMap<SymbolId, HirId>,
+) -> bool {
+    if resolve_security_string(hir, id, lets).is_ok() {
+        return true;
+    }
+    let Some(ex) = hir.exprs.get(id.0 as usize) else {
+        return false;
+    };
+    match ex {
+        HirExpr::BuiltinCall { kind, .. } => {
+            matches!(
+                kind,
+                BuiltinKind::SyminfoTicker | BuiltinKind::SyminfoPrefix
+            )
+        }
+        HirExpr::Variable(sym, _) => lets
+            .get(sym)
+            .is_some_and(|init| security_string_arg_supported(hir, *init, lets)),
+        HirExpr::Select { then_b, else_b, .. } => {
+            let mut vis = HashSet::new();
+            if contains_syminfo_subexpr(hir, *then_b, lets, &mut vis)
+                || contains_syminfo_subexpr(hir, *else_b, lets, &mut vis)
+            {
+                // `?:` + `syminfo.*` needs paired off/len emission; not implemented in v0.
+                return false;
+            }
+            security_string_arg_supported(hir, *then_b, lets)
+                && security_string_arg_supported(hir, *else_b, lets)
+        }
+        _ => false,
+    }
+}
+
 fn resolve_security_string_inner(
     hir: &HirScript,
     id: HirId,
@@ -193,6 +276,60 @@ fn merged_let_bindings(hir: &HirScript) -> HashMap<SymbolId, HirId> {
     m
 }
 
+fn hir_uses_series_string_security(hir: &HirScript) -> bool {
+    let lets = merged_let_bindings(hir);
+    hir.exprs.iter().any(|e| {
+        if let HirExpr::Security(sec) = e {
+            let mut vis = HashSet::new();
+            contains_syminfo_subexpr(hir, sec.symbol, &lets, &mut vis)
+                || contains_syminfo_subexpr(hir, sec.timeframe, &lets, &mut vis)
+        } else {
+            false
+        }
+    })
+}
+
+fn collect_security_arg_string_literals(
+    hir: &HirScript,
+    id: HirId,
+    lets: &HashMap<SymbolId, HirId>,
+    pool: &mut StringPool,
+    visiting: &mut HashSet<HirId>,
+) -> Result<(), HirWasmError> {
+    let span = expr_span(hir, id);
+    if !visiting.insert(id) {
+        return Err(HirWasmError::at(
+            span,
+            "request.security: circular reference in string bindings",
+        ));
+    }
+    let ex = hir
+        .exprs
+        .get(id.0 as usize)
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+    match ex {
+        HirExpr::Literal(HirLiteral::String(s), _) => {
+            pool.intern(s);
+        }
+        HirExpr::Variable(sym, _) => {
+            if let Some(init) = lets.get(sym).copied() {
+                collect_security_arg_string_literals(hir, init, lets, pool, visiting)?;
+            }
+        }
+        HirExpr::Select { then_b, else_b, .. } => {
+            collect_security_arg_string_literals(hir, *then_b, lets, pool, visiting)?;
+            collect_security_arg_string_literals(hir, *else_b, lets, pool, visiting)?;
+        }
+        HirExpr::BuiltinCall {
+            kind: BuiltinKind::SyminfoTicker | BuiltinKind::SyminfoPrefix,
+            ..
+        } => {}
+        _ => {}
+    }
+    visiting.remove(&id);
+    Ok(())
+}
+
 fn collect_strings(
     hir: &HirScript,
     pool: &mut StringPool,
@@ -204,10 +341,10 @@ fn collect_strings(
                 pool.intern(s);
             }
             HirExpr::Security(sec) => {
-                let sym = resolve_security_string(hir, sec.symbol, all_lets)?;
-                let tf = resolve_security_string(hir, sec.timeframe, all_lets)?;
-                pool.intern(&sym);
-                pool.intern(&tf);
+                let mut v = HashSet::new();
+                collect_security_arg_string_literals(hir, sec.symbol, all_lets, pool, &mut v)?;
+                let mut v2 = HashSet::new();
+                collect_security_arg_string_literals(hir, sec.timeframe, all_lets, pool, &mut v2)?;
             }
             HirExpr::Financial(f) => {
                 for (id, label) in [
@@ -279,19 +416,18 @@ fn collect_lets(
     Ok(())
 }
 
-/// `let` value that resolves to a **static UTF-8 string** (literal or `let` chain) for
-/// `request.security` / codegen — no f64/i32 wasm local.
-fn let_value_is_static_security_string(
+/// `let` value that does not need a wasm local: compile-time static string, or a `?:` tree of
+/// string literals (see [`security_string_arg_supported`]) used only as `request.security` args.
+fn let_value_skips_local_for_security_string(
     hir: &HirScript,
     val: HirId,
     let_bindings: &HashMap<SymbolId, HirId>,
 ) -> bool {
-    resolve_security_string(hir, val, let_bindings).is_ok()
+    security_string_arg_supported(hir, val, let_bindings)
 }
 
 /// One wasm local per [`SymbolId`]; use the first `Let`'s value only to infer the local type.
-/// Skips `let` bindings whose value is a **compile-time static string** (see [`let_value_is_static_security_string`]):
-/// no wasm local; [`request.security`] resolves via [`merged_let_bindings`].
+/// Skips `let` bindings covered by [`let_value_skips_local_for_security_string`]: no wasm local.
 fn collect_lets_unique_symbols(
     hir: &HirScript,
     body: &[HirStmt],
@@ -314,7 +450,7 @@ fn collect_lets_unique_symbols(
         let val = *first_val
             .get(&sym)
             .expect("internal: collect_lets_unique_symbols order/first_val mismatch");
-        if let_value_is_static_security_string(hir, val, let_bindings) {
+        if let_value_skips_local_for_security_string(hir, val, let_bindings) {
             continue;
         }
         out.push((sym, val));
@@ -410,6 +546,12 @@ struct Ctx<'a> {
     scratch_r: u32,
     /// `var` / `varip`: `(inited_global, value_global)` wasm global indices.
     persist_globals: &'a HashMap<SymbolId, (u32, u32)>,
+    /// Base offsets for [`IMPORT_SERIES_STRING_UTF8`] scratch (symbol vs timeframe slot).
+    scratch_sym_off: i32,
+    scratch_tf_off: i32,
+    scratch_slot_max: i32,
+    /// Temp for UTF-8 length returned by [`IMPORT_SERIES_STRING_UTF8`].
+    scratch_i32: u32,
 }
 
 impl<'a> Ctx<'a> {
@@ -675,26 +817,20 @@ impl<'a> Ctx<'a> {
             HirExpr::Security(sec) => {
                 let sym_span = expr_span(self.hir, sec.symbol);
                 let tf_span = expr_span(self.hir, sec.timeframe);
-                let (so, sl) = {
-                    let s = resolve_security_string(self.hir, sec.symbol, self.let_bindings)?;
-                    self.pool
-                        .get(&s)
-                        .copied()
-                        .ok_or_else(|| HirWasmError::at(sym_span, "missing string pool entry"))?
-                };
-                let (to, tl) = {
-                    let s = resolve_security_string(self.hir, sec.timeframe, self.let_bindings)?;
-                    self.pool
-                        .get(&s)
-                        .copied()
-                        .ok_or_else(|| HirWasmError::at(tf_span, "missing string pool entry"))?
-                };
-                func
-                    .instructions()
-                    .i32_const(so)
-                    .i32_const(sl)
-                    .i32_const(to)
-                    .i32_const(tl);
+                if !security_string_arg_supported(self.hir, sec.symbol, self.let_bindings) {
+                    return Err(HirWasmError::at(
+                        sym_span,
+                        "request.security: unsupported symbol expression for wasm codegen",
+                    ));
+                }
+                if !security_string_arg_supported(self.hir, sec.timeframe, self.let_bindings) {
+                    return Err(HirWasmError::at(
+                        tf_span,
+                        "request.security: unsupported timeframe expression for wasm codegen",
+                    ));
+                }
+                self.emit_security_string_pair(func, sec.symbol, SecurityStringSlot::Symbol)?;
+                self.emit_security_string_pair(func, sec.timeframe, SecurityStringSlot::Timeframe)?;
                 self.emit_expr(func, sec.expression)?;
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
@@ -815,6 +951,189 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
+    /// UTF-8 pool offset for a `request.security` string arg (literal, `let` chain, or `?:` tree).
+    fn emit_security_off_i32(
+        &self,
+        func: &mut Function,
+        id: HirId,
+        visiting: &mut HashSet<HirId>,
+    ) -> Result<(), HirWasmError> {
+        let span = expr_span(self.hir, id);
+        if let Ok(s) = resolve_security_string(self.hir, id, self.let_bindings) {
+            let (o, _) = self
+                .pool
+                .get(&s)
+                .copied()
+                .ok_or_else(|| HirWasmError::at(span, "missing string pool entry"))?;
+            func.instructions().i32_const(o);
+            return Ok(());
+        }
+        if !visiting.insert(id) {
+            return Err(HirWasmError::at(
+                span,
+                "request.security: circular reference in string bindings",
+            ));
+        }
+        let ex = self
+            .hir
+            .exprs
+            .get(id.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+        let r = match ex {
+            HirExpr::Variable(sym, _) => {
+                let init = self.let_bindings.get(sym).copied().ok_or_else(|| {
+                    HirWasmError::at(
+                        span,
+                        "request.security: unknown symbol for string arg (expected `let` or literal/`?:` tree)",
+                    )
+                })?;
+                self.emit_security_off_i32(func, init, visiting)
+            }
+            HirExpr::Select {
+                cond,
+                then_b,
+                else_b,
+                ..
+            } => {
+                self.emit_security_off_i32(func, *then_b, visiting)?;
+                self.emit_security_off_i32(func, *else_b, visiting)?;
+                self.emit_select_condition_i32(func, *cond, span)?;
+                func.instructions().select();
+                Ok(())
+            }
+            _ => Err(HirWasmError::at(
+                span,
+                "request.security: symbol/timeframe must be a string literal, `let`-bound static string, or `?:` among string literals for wasm codegen",
+            )),
+        };
+        visiting.remove(&id);
+        r
+    }
+
+    fn emit_security_len_i32(
+        &self,
+        func: &mut Function,
+        id: HirId,
+        visiting: &mut HashSet<HirId>,
+    ) -> Result<(), HirWasmError> {
+        let span = expr_span(self.hir, id);
+        if let Ok(s) = resolve_security_string(self.hir, id, self.let_bindings) {
+            let (_, l) = self
+                .pool
+                .get(&s)
+                .copied()
+                .ok_or_else(|| HirWasmError::at(span, "missing string pool entry"))?;
+            func.instructions().i32_const(l);
+            return Ok(());
+        }
+        if !visiting.insert(id) {
+            return Err(HirWasmError::at(
+                span,
+                "request.security: circular reference in string bindings",
+            ));
+        }
+        let ex = self
+            .hir
+            .exprs
+            .get(id.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+        let r = match ex {
+            HirExpr::Variable(sym, _) => {
+                let init = self.let_bindings.get(sym).copied().ok_or_else(|| {
+                    HirWasmError::at(
+                        span,
+                        "request.security: unknown symbol for string arg (expected `let` or literal/`?:` tree)",
+                    )
+                })?;
+                self.emit_security_len_i32(func, init, visiting)
+            }
+            HirExpr::Select {
+                cond,
+                then_b,
+                else_b,
+                ..
+            } => {
+                self.emit_security_len_i32(func, *then_b, visiting)?;
+                self.emit_security_len_i32(func, *else_b, visiting)?;
+                self.emit_select_condition_i32(func, *cond, span)?;
+                func.instructions().select();
+                Ok(())
+            }
+            _ => Err(HirWasmError::at(
+                span,
+                "request.security: symbol/timeframe must be a string literal, `let`-bound static string, or `?:` among string literals for wasm codegen",
+            )),
+        };
+        visiting.remove(&id);
+        r
+    }
+
+    fn emit_security_string_pair(
+        &self,
+        func: &mut Function,
+        id: HirId,
+        slot: SecurityStringSlot,
+    ) -> Result<(), HirWasmError> {
+        let span = expr_span(self.hir, id);
+        if let Ok(s) = resolve_security_string(self.hir, id, self.let_bindings) {
+            let (o, l) = self
+                .pool
+                .get(&s)
+                .copied()
+                .ok_or_else(|| HirWasmError::at(span, "missing string pool entry"))?;
+            func.instructions().i32_const(o).i32_const(l);
+            return Ok(());
+        }
+        let ex = self
+            .hir
+            .exprs
+            .get(id.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+        match ex {
+            HirExpr::BuiltinCall { kind, .. } => {
+                let kind_i32 = match kind {
+                    BuiltinKind::SyminfoTicker => SERIES_STRING_KIND_SYMINFO_TICKER,
+                    BuiltinKind::SyminfoPrefix => SERIES_STRING_KIND_SYMINFO_PREFIX,
+                    _ => {
+                        return Err(HirWasmError::at(
+                            span,
+                            "request.security: unsupported builtin for string arg",
+                        ));
+                    }
+                };
+                let dst = match slot {
+                    SecurityStringSlot::Symbol => self.scratch_sym_off,
+                    SecurityStringSlot::Timeframe => self.scratch_tf_off,
+                };
+                func.instructions().i32_const(kind_i32);
+                func.instructions().i32_const(dst);
+                func.instructions().i32_const(self.scratch_slot_max);
+                func.instructions().call(IMPORT_SERIES_STRING_UTF8);
+                func.instructions().local_set(self.scratch_i32);
+                func.instructions().i32_const(dst);
+                func.instructions().local_get(self.scratch_i32);
+                Ok(())
+            }
+            HirExpr::Variable(sym, _) => {
+                let init = self.let_bindings.get(sym).copied().ok_or_else(|| {
+                    HirWasmError::at(span, "request.security: unknown symbol for string arg")
+                })?;
+                self.emit_security_string_pair(func, init, slot)
+            }
+            HirExpr::Select { .. } => {
+                let mut v_off = HashSet::new();
+                self.emit_security_off_i32(func, id, &mut v_off)?;
+                let mut v_len = HashSet::new();
+                self.emit_security_len_i32(func, id, &mut v_len)?;
+                Ok(())
+            }
+            _ => Err(HirWasmError::at(
+                span,
+                "request.security: unsupported symbol/timeframe expression for wasm codegen",
+            )),
+        }
+    }
+
     /// `select` expects an **`i32`** condition. Boolean literals push `i32` directly; float-shaped
     /// bools (comparisons, `f64` 0/1) use `f64.ne` against `0.0`.
     fn emit_select_condition_i32(
@@ -864,8 +1183,8 @@ impl<'a> Ctx<'a> {
                 Ok(())
             }
             HirStmt::Let { symbol, value } => {
-                if let_value_is_static_security_string(self.hir, *value, self.let_bindings) {
-                    // No wasm local; `request.security` resolves via [`merged_let_bindings`].
+                if let_value_skips_local_for_security_string(self.hir, *value, self.let_bindings) {
+                    // No wasm local; `request.security` lowers via [`merged_let_bindings`] / `?:` trees.
                     return Ok(());
                 }
                 let vspan = expr_span(self.hir, *value);
@@ -955,6 +1274,8 @@ fn encode_user_function_body(
     user_fn_indices: &HashMap<SymbolId, u32>,
     persist_globals: &HashMap<SymbolId, (u32, u32)>,
     let_bindings: &HashMap<SymbolId, HirId>,
+    scratch_sym_off: i32,
+    scratch_tf_off: i32,
 ) -> Result<Function, HirWasmError> {
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
     collect_lets_unique_symbols(
@@ -981,6 +1302,8 @@ fn encode_user_function_body(
     local_defs.push((1, ValType::F64));
     let scratch_r = scratch_l + 1;
     local_defs.push((1, ValType::F64));
+    let scratch_i32 = scratch_r + 1;
+    local_defs.push((1, ValType::I32));
 
     let ctx = Ctx {
         hir,
@@ -991,6 +1314,10 @@ fn encode_user_function_body(
         scratch_l,
         scratch_r,
         persist_globals,
+        scratch_sym_off,
+        scratch_tf_off,
+        scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
+        scratch_i32,
     };
     let mut f = Function::new(local_defs);
     for s in &uf.body_stmts {
@@ -1011,7 +1338,7 @@ fn encode_user_function_body(
 /// | `input_int` | `(i32 idx) -> i32` | `idx` = index in [`HirScript::inputs`] |
 /// | `ta_sma` | `(i32 period) -> f64` | SMA of host close series |
 /// | `ta_ema` | `(i32 period) -> f64` | EMA of host close series |
-/// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Symbol/timeframe UTF-8 in guest memory (string literals or `let`-bound static strings resolved at compile time) |
+/// | `request_security` | `(i32 sym_off, i32 sym_len, i32 tf_off, i32 tf_len, f64 inner) -> f64` | Symbol/timeframe UTF-8 in guest memory (literals, `let` chains, or `?:` trees of literals; per-bar choice via `i32.select`) |
 /// | `request_financial` | `(sym×2, id×2, period×2, gaps, ignore, cur×2) -> f64` | `gaps`: `0`/`1`; `ignore`: `0`/`1`; `cur`: string pool or `-1`,`0`; v0 string + ignore bool literals |
 /// | `plot` | `(f64) -> ()` | Plot side effect |
 /// | `series_hist` | `(i32 offset) -> f64` | Primary series (`close`) value `offset` bars ago (v0) |
@@ -1021,6 +1348,7 @@ fn encode_user_function_body(
 /// | `math_log` | `(f64) -> f64` | Natural log (`math.log`); NaN/`na` policy on host |
 /// | `math_exp` | `(f64) -> f64` | `math.exp` |
 /// | `math_pow` | `(f64, f64) -> f64` | `math.pow` |
+/// | `series_string_utf8` | `(i32 kind, i32 dst_off, i32 max_len) -> i32` | Host writes series `string` UTF-8 (e.g. `syminfo.*`) at `dst_off`; returns length (**`-1`** = na) |
 ///
 /// Exports: `memory`, legacy [`GUEST_EXPORT_INIT_LEGACY`] / [`GUEST_EXPORT_STEP_LEGACY`], and
 /// [`GUEST_EXPORT_INIT_ABI`] / [`GUEST_EXPORT_STEP_ABI`] (same func indices as `init` / `on_bar`).
@@ -1034,6 +1362,26 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
     let all_lets = merged_let_bindings(hir);
     let mut pool = StringPool::new();
     collect_strings(hir, &mut pool, &all_lets)?;
+
+    let scratch_sym_off = align_up(pool.bytes.len(), 8) as i32;
+    let scratch_tf_off = scratch_sym_off + SERIES_STRING_SCRATCH_SLOT_MAX;
+    let needs_series_scratch = hir_uses_series_string_security(hir);
+    if needs_series_scratch {
+        let end = (scratch_tf_off + SERIES_STRING_SCRATCH_SLOT_MAX) as usize;
+        if pool.bytes.len() < end {
+            pool.bytes.resize(end, 0);
+        }
+    }
+    let scratch_sym_pass = if needs_series_scratch {
+        scratch_sym_off
+    } else {
+        0
+    };
+    let scratch_tf_pass = if needs_series_scratch {
+        scratch_tf_off
+    } else {
+        0
+    };
 
     let persist_pairs = build_persist_global_pairs(hir);
     let persist_globals: HashMap<SymbolId, (u32, u32)> = persist_pairs
@@ -1085,6 +1433,11 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             ValType::I32,
         ],
         [ValType::F64],
+    );
+    let t_series_str = types.len();
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
     );
     let t_init_export = types.len();
     types.ty().function([], [ValType::I32]);
@@ -1157,6 +1510,11 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         "aether",
         "request_financial",
         EntityType::Function(t_financial),
+    );
+    imports.import(
+        "aether",
+        "series_string_utf8",
+        EntityType::Function(t_series_str),
     );
 
     let fn_init = GUEST_FUNC_BASE;
@@ -1237,6 +1595,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         local_defs.push((1, ValType::F64));
         let scratch_r = scratch_l + 1;
         local_defs.push((1, ValType::F64));
+        let scratch_i32 = scratch_r + 1;
+        local_defs.push((1, ValType::I32));
 
         let ctx = Ctx {
             hir,
@@ -1247,6 +1607,10 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             scratch_l,
             scratch_r,
             persist_globals: &persist_globals,
+            scratch_sym_off: scratch_sym_pass,
+            scratch_tf_off: scratch_tf_pass,
+            scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
+            scratch_i32,
         };
         let mut f = Function::new(local_defs);
         for stmt in &hir.body {
@@ -1264,6 +1628,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             &user_fn_indices,
             &persist_globals,
             &all_lets,
+            scratch_sym_pass,
+            scratch_tf_pass,
         )?;
         code.function(&f);
     }

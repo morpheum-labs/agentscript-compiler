@@ -41,4 +41,8 @@ pub enum BuiltinKind {
     TaAtr,
     /// `nz(x, y)` — replacement value when `x` is na (host NaN policy).
     Nz,
+    /// `syminfo.ticker` — series string; wasm only as `request.security` arg (host fills scratch via `series_string_utf8`).
+    SyminfoTicker,
+    /// `syminfo.prefix` — series string; same restrictions as [`SyminfoTicker`].
+    SyminfoPrefix,
 }

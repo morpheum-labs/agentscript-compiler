@@ -56,6 +56,8 @@ fn link_aether_guest_abi_v0<T>(linker: &mut Linker<T>) -> wasmtime::Result<()> {
          _: i32|
          -> f64 { 0.0 },
     )?;
+    // wasmtime 24 `func_wrap` has no `Caller` here; return a fixed length (MWVM stubs write memory; see aether-mwvm).
+    linker.func_wrap("aether", "series_string_utf8", |_: i32, _: i32, _: i32| -> i32 { 4 })?;
     Ok(())
 }
 
@@ -102,6 +104,7 @@ fn guest_abi_v0_import_list_matches_stub_linker() {
         "series_high",
         "series_low",
         "series_open",
+        "series_string_utf8",
         "series_time",
         "series_volume",
         "ta_atr",
@@ -133,6 +136,29 @@ indicator("sec")
 sym = "AAPL"
 tf = "D"
 plot(request.security(sym, tf, close))
+"#;
+    let script = parse_script("t", SRC).expect("parse");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    instantiate_guest_wasm(&wasm);
+}
+
+#[test]
+fn wasmtime_instantiate_request_security_syminfo_ticker() {
+    const SRC: &str = r#"//@version=6
+indicator("sec_si")
+plot(request.security(syminfo.ticker, "D", close))
+"#;
+    let script = parse_script("t", SRC).expect("parse");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    instantiate_guest_wasm(&wasm);
+}
+
+#[test]
+fn wasmtime_instantiate_request_security_ternary_string_args() {
+    const SRC: &str = r#"//@version=6
+indicator("sec2")
+sym = close > 1.0 ? "AAPL" : "MSFT"
+plot(request.security(sym, "D", close))
 "#;
     let script = parse_script("t", SRC).expect("parse");
     let wasm = compile_script_to_wasm_v0(&script).expect("compile");

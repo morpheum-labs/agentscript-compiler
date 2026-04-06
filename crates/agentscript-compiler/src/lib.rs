@@ -301,6 +301,36 @@ plot(request.security(sym, tf, close))
         validate_guest_abi_v0(&wasm).expect("guest ABI");
     }
 
+    /// Per-bar symbol/timeframe via `?:` over string literals (no wasm string locals; pool + `select`).
+    #[test]
+    fn compile_request_security_ternary_string_args_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("sec_sel")
+sym = close > 1.0 ? "AAPL" : "MSFT"
+tf = close > 2.0 ? "D" : "240"
+plot(request.security(sym, tf, close))
+plot(request.security(close > 0.0 ? "QQQ" : "SPY", "60", close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
+    /// `syminfo.ticker` / `syminfo.prefix` as `request.security` args (host fills scratch via `series_string_utf8`).
+    #[test]
+    fn compile_request_security_syminfo_series_string_to_wasm_validates() {
+        const SRC: &str = r#"//@version=6
+indicator("sec_syminfo")
+plot(request.security(syminfo.ticker, "D", close))
+plot(request.security(syminfo.prefix, "60", close))
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+        validate_guest_abi_v0(&wasm).expect("guest ABI");
+    }
+
     #[test]
     fn compile_var_persist_to_wasm_validates() {
         const SRC: &str = r#"//@version=6

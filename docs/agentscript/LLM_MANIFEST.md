@@ -1,0 +1,71 @@
+# AgentScript documentation manifest
+
+**Purpose:** Route retrieval for tools and humans: pick the **smallest** file that answers the question, then open linked normative sources if needed.
+
+**Normative grammar:** [`spec/agentscripts-v1.md`](../../spec/agentscripts-v1.md) (QAS v1 EBNF §§1–13).
+
+**Implementation notes:** [`spec/qas-v1-parser-status.md`](../../spec/qas-v1-parser-status.md).
+
+**Roadmap / Pine checklist:** [`ROADMAP.md`](../../ROADMAP.md).
+
+---
+
+## 1. Syntax and program shape
+
+Use when the user asks how a script is structured, what may appear at top level, or how headers work.
+
+* **[`reference/program-structure.md`](reference/program-structure.md)**  
+  * **Content:** `indicator` / `strategy` / `library`, `import` / `export`, `enum` / `type`, user functions (`name() =>`, `f name() =>`, `method name() =>`), statements.  
+  * **Keywords:** `indicator`, `strategy`, `library`, `import`, `export`, `enum`, `type`, `method`, `f`.
+
+* **[`reference/directives.md`](reference/directives.md)**  
+  * **Content:** Pine `//@version=` (only `5` and `6`), optional `// @agentscript=<n>`, duplicate rules.  
+  * **Keywords:** version header, AgentScript header.
+
+* **[`syntax/grammar.md`](syntax/grammar.md)**  
+  * **Content:** Pointer to EBNF §§1–13 and the `frontend/parser/` modules that implement it.
+
+---
+
+## 2. Lexical and expression reference
+
+Use for tokens, operators, types, and keyword semantics at the **parser** level.
+
+* **[`reference/keywords.md`](reference/keywords.md)**  
+  * **Content:** Control flow, declarations, literals, `and` / `or` / `not`, function forms, and brief compiler status (parse vs typecheck vs HIR/WASM).  
+  * **Keywords:** `if`, `else`, `for`, `while`, `switch`, `var`, `varip`, `const`, `input`, `simple`, `series`, `break`, `continue`, `true`, `false`, `na`, and others listed there.
+
+* **[`reference/types.md`](reference/types.md)**  
+  * **Content:** Primitives, `float[]`-style arrays, `array<>` / `matrix<>` / `map<>`, object types, named UDT/enum types; known gaps (e.g. `footprint`).  
+  * **Keywords:** `int`, `float`, `bool`, `string`, `color`, `label`, `line`, `box`, …
+
+* **[`reference/operators.md`](reference/operators.md)**  
+  * **Content:** Precedence sketch, arithmetic and comparison, `and` / `or`, `? :`, Pine `if`–`else` expression, assignment and compound assignment, `:=`.  
+  * **Operators:** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `and`, `or`, `not`, `? :`, `=`, `:=`, `+=`, …
+
+---
+
+## 3. Dialect and limitations
+
+Use when the user assumes TradingView Pine behavior or indentation-based syntax.
+
+* **[`concepts/dialect-and-limitations.md`](concepts/dialect-and-limitations.md)**  
+  * **Content:** Braced blocks only, resolver/script-kind constraints at a high level, pointer to parity table and parser status.  
+  * **Keywords:** braces, QAS, Pine parity.
+
+---
+
+## 4. Not covered here (see other paths)
+
+* **Builtin libraries (`ta.*`, `strategy.*`, `request.*`, …):** not exhaustively documented in this tree; behavior and typing follow semantic passes and [`ROADMAP.md`](../../ROADMAP.md). The TV-shaped reference corpus remains under [`spec/pinescriptv6/reference/functions/`](../../spec/pinescriptv6/reference/functions/) as a **checklist**, not a guarantee of QAS semantics.
+* **Execution model (bar state, `var` persistence):** runtime and IR; see [`ROADMAP.md`](../../ROADMAP.md) and Aether docs, not duplicated as TV-identical prose here.
+* **WASM guest ABI:** [`docs/agentscript-guest-abi.md`](../agentscript-guest-abi.md).
+
+---
+
+## Routing logic (examples)
+
+* **IF** the user asks how to declare a user function or `export` in a library → **`reference/program-structure.md`**.
+* **IF** the user asks which `//@version=` values are valid → **`reference/directives.md`**.
+* **IF** the user asks about `switch` with no scrutinee or `for … in` → **`reference/keywords.md`** (and EBNF in `agentscripts-v1.md` §§ for exact productions).
+* **IF** the user asks why a script fails inside `strategy.*` in an `indicator()` → **`concepts/dialect-and-limitations.md`** and resolver notes in [`ROADMAP.md`](../../ROADMAP.md).

@@ -4,7 +4,7 @@ This file **mirrors** the canonical contract in the Aether repository:
 
 `aether/docs/agentscript-guest-abi.md`
 
-Keep them in sync when changing export signatures, import tables, or versioning. **`aether-common::guest_abi::VERSION`** is the numeric pin hosts may check.
+Keep them in sync when changing export signatures, import tables, or versioning. **`aether-common::guest_abi::VERSION`** is the numeric pin hosts may check (**3** adds required import **`series_string_utf8`** for series `string` in `request.security` args — see canonical Aether doc).
 
 ## Quick reference (guest ABI v1)
 

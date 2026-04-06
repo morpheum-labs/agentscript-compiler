@@ -465,6 +465,7 @@ fn handler(kind: BuiltinKind) -> &'static dyn BuiltinWasmEmit {
         BuiltinKind::TaTr => &TA_TR,
         BuiltinKind::TaAtr => &TA_ATR,
         BuiltinKind::Nz => &NZ,
+        BuiltinKind::SyminfoTicker | BuiltinKind::SyminfoPrefix => &INPUT_INT, // unreachable: filtered in emit_builtin_call
     }
 }
 
@@ -475,5 +476,14 @@ pub(crate) fn emit_builtin_call(
     span: Span,
     args: &[HirId],
 ) -> Result<(), HirWasmError> {
+    if matches!(
+        kind,
+        BuiltinKind::SyminfoTicker | BuiltinKind::SyminfoPrefix
+    ) {
+        return Err(HirWasmError::at(
+            span,
+            "`syminfo.ticker` / `syminfo.prefix` are only supported as `request.security` symbol/timeframe args in wasm codegen v0",
+        ));
+    }
     handler(kind).emit(ctx, func, span, args)
 }

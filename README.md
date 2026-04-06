@@ -23,6 +23,7 @@ cargo run -p agentscript-compiler -- path/to/script.qas --emit=hir
 |----------|---------|
 | [ROADMAP.md](ROADMAP.md) | Phases, semantics progress table, integration notes |
 | [spec/](spec/) | Language + HIR design |
+| [docs/agentscript/](docs/agentscript/) | AgentScript syntax manual (compiler-grounded; Pine-style layout) |
 | [docs/aether-integration-gap.md](docs/aether-integration-gap.md) | Compiler ↔ Aether checklist |
 
 ## Library API (crate `agentscript-compiler`)
@@ -37,5 +38,6 @@ cargo run -p agentscript-compiler -- path/to/script.qas --emit=hir
 | Path | Role |
 |------|------|
 | `crates/agentscript-compiler/` | Rust crate (parser, semantic, HIR, codegen) |
-| `pinescriptv6/` | Pine v6 manual mirror (reference checklist) |
+| `spec/pinescriptv6/` | Pine v6 manual mirror (reference checklist) |
+| `docs/agentscript/` | AgentScript syntax reference ([`LLM_MANIFEST.md`](docs/agentscript/LLM_MANIFEST.md)) |
 | `PinescriptV6-docs-crawler/` | Optional doc tooling for builtin metadata |
