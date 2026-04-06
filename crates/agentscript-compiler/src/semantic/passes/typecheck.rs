@@ -989,6 +989,23 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         }
 
         match name.as_str() {
+            // Pine `input(title=..., defval=…)` / `input(hl2, title=…)` (not only `input.int`).
+            "input" => {
+                if args.is_empty() {
+                    self.err(cspan, "`input` expects at least one argument");
+                    return Err(());
+                }
+                for (nm, ex) in args {
+                    if nm.as_deref() == Some("defval") {
+                        return self.type_expr(ex);
+                    }
+                }
+                let t0 = self.type_expr(&args[0].1)?;
+                if is_numeric(&t0) && is_series_shape(&t0) {
+                    return Ok(t0);
+                }
+                Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
+            }
             "input.int" => {
                 if arg_tys.len() != 1 {
                     self.err(cspan, "`input.int` expects one default argument");
@@ -997,11 +1014,23 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Int)))
             }
             "input.float" => {
-                if arg_tys.len() != 1 {
-                    self.err(cspan, "`input.float` expects one default argument");
+                if args.is_empty() {
+                    self.err(cspan, "`input.float` expects at least a defval");
                     return Err(());
                 }
-                Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
+                for (nm, ex) in args {
+                    if nm.as_deref() == Some("defval") {
+                        return self.type_expr(ex);
+                    }
+                }
+                if arg_tys.len() == 1 {
+                    return Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)));
+                }
+                self.err(
+                    cspan,
+                    "`input.float` with keyword args should include `defval=`",
+                );
+                Err(())
             }
             "input.bool" => {
                 if arg_tys.len() != 1 {

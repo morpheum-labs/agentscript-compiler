@@ -545,7 +545,10 @@ c = color.red
     let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
         panic!("expected assign");
     };
-    assert_eq!(value.kind, ExprKind::Color("red".into()));
+    assert_eq!(
+        value.kind,
+        ExprKind::IdentPath(vec!["color".into(), "red".into()])
+    );
 }
 
 #[test]

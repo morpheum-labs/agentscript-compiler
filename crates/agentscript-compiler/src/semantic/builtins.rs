@@ -46,6 +46,7 @@ pub fn builtin_namespace_roots() -> HashSet<&'static str> {
         "extend",
         "position",
         "shape",
+        "location",
         "display",
         "currency",
         "format",
@@ -70,5 +71,10 @@ pub fn is_unqualified_builtin_ident(name: &str) -> bool {
             | "plot"
             // Same for `nz(x, …)` (handled in `typecheck` for calls).
             | "nz"
+            // Pine-style `input(...)` overloads (not only `input.int` / `input.float`).
+            | "input"
+            | "plotshape"
+            | "fill"
+            | "alertcondition"
     )
 }

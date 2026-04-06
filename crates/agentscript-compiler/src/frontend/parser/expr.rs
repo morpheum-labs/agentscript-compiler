@@ -78,11 +78,6 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                 },
             );
 
-        let color_lit = text::keyword("color")
-            .ignore_then(just('.'))
-            .ignore_then(text::ident())
-            .map_with_span(|name, span| Expr::new(span, ExprKind::Color(name)));
-
         let paren = just('(')
             .ignore_then(pad())
             .then(expr.clone())
@@ -108,7 +103,6 @@ pub(super) fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             text::keyword("true").map_with_span(|_, span| Expr::new(span, ExprKind::Bool(true))),
             text::keyword("false").map_with_span(|_, span| Expr::new(span, ExprKind::Bool(false))),
             text::keyword("na").map_with_span(|_, span| Expr::new(span, ExprKind::Na)),
-            color_lit,
             array_lit,
             paren,
             call_or_ident,

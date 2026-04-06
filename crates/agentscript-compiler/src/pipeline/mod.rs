@@ -21,18 +21,11 @@ mod tests {
     use super::{compile_to_wasm, CompilerPipeline};
     use crate::{parse_script, session_hir};
 
-    const TINY_INDICATOR: &str = r#"//@version=6
-indicator("Test Agent")
-
-len = input.int(14)
-sma = ta.sma(close, len)
-htf = request.security("AAPL", "D", sma)
-plot(htf)
-"#;
+    const UPTREND_EXAMPLE: &str = include_str!("../../../../examples/uptrend.pine");
 
     #[test]
     fn compiler_pipeline_hir_smoke() {
-        let script = parse_script("t", TINY_INDICATOR).expect("parse");
+        let script = parse_script("examples/uptrend.pine", UPTREND_EXAMPLE).expect("parse");
         let mut c = CompilerPipeline::new()
             .with_hir_lowering()
             .build();
@@ -41,8 +34,8 @@ plot(htf)
     }
 
     #[test]
-    fn compile_to_wasm_matches_tiny_indicator() {
-        let wasm = compile_to_wasm("t", TINY_INDICATOR).expect("wasm");
+    fn compile_to_wasm_matches_uptrend_example() {
+        let wasm = compile_to_wasm("examples/uptrend.pine", UPTREND_EXAMPLE).expect("wasm");
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 }

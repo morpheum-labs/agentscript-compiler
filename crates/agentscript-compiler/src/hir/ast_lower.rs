@@ -656,6 +656,9 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     body.push(plot);
                     return Ok(());
                 }
+                if is_unlowered_viz_stmt(e) {
+                    return Ok(());
+                }
                 Err(HirLowerError::at(
                     stmt.span,
                     "only `plot(...)` expression statements are supported in this pass",
@@ -1315,6 +1318,17 @@ fn lookahead_from_expr(e: &Expr) -> Lookahead {
     } else {
         Lookahead::Off
     }
+}
+
+/// Drawing / alert calls accepted by typecheck but not emitted to HIR yet (skipped like comments).
+fn is_unlowered_viz_stmt(e: &Expr) -> bool {
+    let ExprKind::Call { callee, .. } = &e.kind else {
+        return false;
+    };
+    let ExprKind::IdentPath(p) = &callee.kind else {
+        return false;
+    };
+    p.len() == 1 && matches!(p[0].as_str(), "plotshape" | "fill" | "alertcondition")
 }
 
 fn try_plot_stmt(lower: &mut LowerCtx, e: &Expr) -> Result<Option<HirStmt>, HirLowerError> {
