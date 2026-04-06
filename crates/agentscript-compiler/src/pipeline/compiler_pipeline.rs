@@ -3,7 +3,7 @@ use crate::semantic::passes::{default_passes, default_passes_with_hir, CompilerP
 
 /// Builder for [`Compiler`] with the same defaults as [`Compiler::new`] and
 /// [`Compiler::with_hir_lowering`].
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct CompilerPipeline {
     passes: Option<Vec<Box<dyn CompilerPass>>>,
 }
