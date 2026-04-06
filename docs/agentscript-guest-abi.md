@@ -21,4 +21,4 @@ Keep them in sync when changing export signatures, import tables, or versioning.
 
 **Validation:** [`validate_guest_abi_v1`](../crates/agentscript-compiler/src/codegen/wasm/abi.rs) on emitted bytes (imports, exports, **export function signatures**).
 
-**Integration test:** `crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs` — must stay aligned with `aether-mwvm` `link_aether_guest_abi_v0` (import stubs).
+**Integration tests:** Compiler [`tests/wasmtime_guest_instantiate.rs`](../crates/agentscript-compiler/tests/wasmtime_guest_instantiate.rs); Aether [`aether/crates/aether-mwvm/tests/strategy_guest_smoke.rs`](../../aether/crates/aether-mwvm/tests/strategy_guest_smoke.rs) (pinned WASM + `init`/`step`). Import stubs must match `link_aether_guest_abi_v0` in both places.
