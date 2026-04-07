@@ -25,6 +25,7 @@ cargo run -p agentscript-compiler -- path/to/script.qas --emit=hir
 | [spec/](spec/) | Language + HIR design |
 | [docs/agentscript/](docs/agentscript/) | AgentScript syntax manual (compiler-grounded; Pine-style layout) |
 | [docs/aether-integration-gap.md](docs/aether-integration-gap.md) | Compiler ↔ Aether checklist |
+| [docs/stack-orchestration.md](docs/stack-orchestration.md) | Python / Rust / job-commitment orchestration (design) |
 
 ## Library API (crate `agentscript-compiler`)
 
