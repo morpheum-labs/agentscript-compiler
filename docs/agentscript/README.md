@@ -1,30 +1,32 @@
-# AgentScript syntax manual
+# AgentScript language manual
 
-This directory is the **compiler-grounded** syntax reference for **AgentScript / QAS** as implemented by [`agentscript-compiler`](../../crates/agentscript-compiler/). It uses the same *navigation pattern* as the bundled TradingView Pine v6 mirror ([`spec/pinescriptv6/`](../../spec/pinescriptv6/)), but the content reflects **this repository’s parser and AST**, not TradingView’s product manual.
+This directory is the **syntax and language reference** for **AgentScript / QAS** (QuantAgent Script). It describes what you can write in a script and how it is interpreted by the language rules—not how any particular toolchain is built.
 
-## What AgentScript is here
+TradingView’s Pine Script manuals ([`spec/pinescriptv6/`](../../spec/pinescriptv6/)) are useful for **vocabulary and examples** where AgentScript follows Pine. When this manual or the normative grammar disagrees with TV docs, **AgentScript’s grammar and checker** are the reference for this project until parity work closes the gap.
 
-- **Surface syntax** is Pine Script v5/v6–aligned (headers, many keywords, dotted builtins) plus QAS forms such as `f` user functions.
-- **File extensions** recognized by the library API: `.pine`, `.qas` (case-insensitive). See [`AGENTSCRIPT_SOURCE_EXTENSIONS`](../../crates/agentscript-compiler/src/lib.rs).
+## What AgentScript is
+
+- **Surface syntax** is Pine Script v5/v6–aligned in many places (headers, keywords, dotted builtins) plus QAS-specific forms such as `f` user functions.
+- **Typical source extensions:** `.pine`, `.qas` (case-insensitive).
 - **Normative grammar:** EBNF in [`spec/agentscripts-v1.md`](../../spec/agentscripts-v1.md) (§§1–13).
-- **Implementation tracker:** [`spec/qas-v1-parser-status.md`](../../spec/qas-v1-parser-status.md).
+- **Parser and semantics status:** [`spec/qas-v1-parser-status.md`](../../spec/qas-v1-parser-status.md).
 - **Pine parity and roadmap:** [`ROADMAP.md`](../../ROADMAP.md) (including the “Pine v6 parity vs bundled docs” table).
 
 ## Index
 
 | Document | Use when |
 |----------|----------|
-| [`LLM_MANIFEST.md`](LLM_MANIFEST.md) | Routing large prompts to the smallest relevant file |
-| [`syntax/grammar.md`](syntax/grammar.md) | Where the EBNF lives and which Rust modules implement it |
+| [`LLM_MANIFEST.md`](LLM_MANIFEST.md) | Finding the smallest page for a given question (including tooling retrieval) |
+| [`syntax/grammar.md`](syntax/grammar.md) | Where the formal EBNF lives and how it is organized |
 | [`reference/program-structure.md`](reference/program-structure.md) | Top-level script shape (`indicator`, imports, `export`, functions, statements) |
 | [`reference/directives.md`](reference/directives.md) | `//@version=` and `// @agentscript=` |
 | [`reference/keywords.md`](reference/keywords.md) | Reserved words and constructs |
 | [`reference/types.md`](reference/types.md) | Type syntax |
 | [`reference/operators.md`](reference/operators.md) | Unary, binary, assignment, ternary, `if` expression |
 | [`concepts/dialect-and-limitations.md`](concepts/dialect-and-limitations.md) | Braced dialect, intentional gaps vs TV Pine |
-| [`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md) | TV vs AgentScript: what works on TV, what validates here (`check_script`) |
+| [`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md) | TV vs AgentScript: what tends to pass the **checker** vs TV |
 
-## Related (not syntax)
+## Related (outside this manual)
 
 - Guest WASM ABI: [`docs/agentscript-guest-abi.md`](../agentscript-guest-abi.md)
 - HIR design: [`spec/hir.md`](../../spec/hir.md)

@@ -8,7 +8,9 @@ use crate::frontend::ast::{
     Type, UdtField, UserTypeDef, VarDecl, VarQualifier,
 };
 
-use super::assign_type::{assign_op, type_parser, type_parser_decl_root, var_qualifier};
+use super::assign_type::{
+    assign_op, type_parser, type_parser_decl_root, type_parser_fn_param_prefix, var_qualifier,
+};
 use super::expr::expr_parser;
 use super::lex::{
     agentscript_directive, fat_arrow, optional_semicolon, pad, pad_non_empty, version_directive,
@@ -508,7 +510,7 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
         .map(Item::TypeDef)
         .boxed();
 
-    let param = type_parser()
+    let param = type_parser_fn_param_prefix()
         .or_not()
         .then_ignore(pad())
         .then(text::ident())
@@ -518,7 +520,12 @@ pub fn script_parser() -> impl Parser<char, Script, Error = Simple<char>> {
                 .ignore_then(expr.clone())
                 .or_not(),
         )
-        .map(|((ty, name), default)| FnParam { ty, name, default });
+        .map_with_span(|((ty, name), default), span| FnParam {
+            span: span.into(),
+            ty,
+            name,
+            default,
+        });
 
     let param_list = param
         .separated_by(just(',').ignore_then(pad()))

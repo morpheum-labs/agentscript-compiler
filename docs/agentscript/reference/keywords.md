@@ -1,8 +1,10 @@
 # Keywords
 
-Chumsky’s `text::keyword` is used for reserved spellings in the parser. Identifiers use `text::ident()` and **must not** match these spellings in keyword positions. This page lists the **compiler-facing** keywords and notes **parser vs later phases** where relevant.
+These spellings are **reserved** in keyword positions (they cannot be used as ordinary identifiers where the grammar expects a keyword). Identifiers elsewhere follow the lexical rules in [`spec/agentscripts-v1.md`](../../../spec/agentscripts-v1.md).
 
-Sources: [`script.rs`](../../../crates/agentscript-compiler/src/frontend/parser/script.rs), [`expr.rs`](../../../crates/agentscript-compiler/src/frontend/parser/expr.rs), [`assign_type.rs`](../../../crates/agentscript-compiler/src/frontend/parser/assign_type.rs).
+This page lists language keywords and notes **partial vs TradingView** behavior where it matters.
+
+Sources for the exact grammar: [`spec/agentscripts-v1.md`](../../../spec/agentscripts-v1.md) and [`spec/qas-v1-parser-status.md`](../../../spec/qas-v1-parser-status.md).
 
 ---
 
@@ -12,7 +14,7 @@ Sources: [`script.rs`](../../../crates/agentscript-compiler/src/frontend/parser/
 
 Introduce a script declaration with a parenthesized argument list. See [program-structure.md](program-structure.md).
 
-**Compiler note:** Resolver restricts certain builtin namespaces by script kind (e.g. `strategy.*` in strategies). See [`ROADMAP.md`](../../../ROADMAP.md).
+**Note:** Script kind affects which builtin namespaces are valid (e.g. `strategy.*` in strategies). See [`ROADMAP.md`](../../../ROADMAP.md).
 
 ### `import`
 
@@ -44,15 +46,13 @@ QAS user-function introducer: `f` *name* `(` *params* `)` `=>` … or `{` … `}
 
 ### `method`
 
-`method` *name* `(` *params* `)` … — sets [`FnDecl.is_method`](../../../crates/agentscript-compiler/src/frontend/ast/decl.rs).
-
-**Compiler note:** Parser accepts methods; full dispatch and typechecking match Pine/TV only where implemented ([`ROADMAP.md`](../../../ROADMAP.md)).
+`method` *name* `(` *params* `)` … — method-style declaration. Parser and checker support may still lag TradingView in some cases ([`ROADMAP.md`](../../../ROADMAP.md)).
 
 ---
 
 ## Variable declarations
 
-Qualifiers ([`VarQualifier`](../../../crates/agentscript-compiler/src/frontend/ast/types.rs)):
+Qualifiers (see [types.md](types.md) for qualifier positions):
 
 | Keyword | Role |
 |---------|------|
@@ -78,18 +78,18 @@ Forms combine *qualifier?* *type?* *name* *assign_op* *expr*; see EBNF in [`spec
 | `in` | `for … in` only |
 | `while` | `while` *cond* `{` … `}` |
 | `switch` | `switch` *scrutinee?* `{` *arms* `}` — arms use `=>` (see below) |
-| `break` | Exits innermost `for` / `while` (semantic check: [`loops.rs`](../../../crates/agentscript-compiler/src/semantic/passes/loops.rs)) |
+| `break` | Exits innermost `for` / `while` (must appear inside a loop) |
 | `continue` | Next iteration of innermost `for` / `while` |
 
 ---
 
 ## Logical operators (expression keywords)
 
-| Keyword | AST |
-|---------|-----|
-| `not` | Unary [`UnaryOp::Not`](../../../crates/agentscript-compiler/src/frontend/ast/expr.rs) |
-| `and` | Binary [`BinOp::And`](../../../crates/agentscript-compiler/src/frontend/ast/expr.rs) |
-| `or` | Binary [`BinOp::Or`](../../../crates/agentscript-compiler/src/frontend/ast/expr.rs) |
+| Keyword | Role |
+|---------|------|
+| `not` | Logical not (unary) |
+| `and` | Logical and (short-circuiting) |
+| `or` | Logical or (short-circuiting) |
 
 ---
 
@@ -98,13 +98,13 @@ Forms combine *qualifier?* *type?* *name* *assign_op* *expr*; see EBNF in [`spec
 | Keyword | Meaning |
 |---------|---------|
 | `true`, `false` | Boolean literals |
-| `na` | “Not available” / null-like sentinel ([`ExprKind::Na`](../../../crates/agentscript-compiler/src/frontend/ast/expr.rs)) |
+| `na` | “Not available” / null-like sentinel |
 
 ---
 
 ## `switch` arms
 
-Switch bodies use **fat arrow** `=>` between condition and statement (see [`script.rs`](../../../crates/agentscript-compiler/src/frontend/parser/script.rs)): either *expr* `=>` *stmt*, or a default `=>` *stmt*. Scrutinee may be omitted for strategy-style switching.
+Switch bodies use **fat arrow** `=>` between condition and statement: either *expr* `=>` *stmt*, or a default `=>` *stmt*. The scrutinee may be omitted for strategy-style switching.
 
 ---
 
@@ -129,6 +129,6 @@ switch close {
 
 ---
 
-### Compiler note
+### Builtins vs keywords
 
-**Keywords vs builtins:** Names like `ta`, `close`, or `strategy` may appear as **identifier paths** when not in a keyword position. Builtins are not documented exhaustively in this directory; see [`LLM_MANIFEST.md`](../LLM_MANIFEST.md) section 4.
+Names like `ta`, `close`, or `strategy` may appear as **identifier paths** when not in a keyword position. Builtin libraries are not exhaustively documented in this directory; see [`LLM_MANIFEST.md`](../LLM_MANIFEST.md) section 4 and [`ROADMAP.md`](../../../ROADMAP.md).

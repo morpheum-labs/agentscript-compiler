@@ -25,6 +25,12 @@ impl Span {
         end: 0,
     };
 
+    /// `true` for [`Self::DUMMY`] only. (A real empty range at byte 0 is still `DUMMY` today.)
+    #[must_use]
+    pub fn is_dummy(self) -> bool {
+        self == Self::DUMMY
+    }
+
     #[must_use]
     pub fn merge(a: Self, b: Self) -> Self {
         Self {

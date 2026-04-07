@@ -48,9 +48,15 @@ impl Expr {
     /// For tests and synthetic nodes; avoid for real parse output.
     #[must_use]
     pub fn synthetic(kind: ExprKind) -> Self {
+        Self::synthetic_with_span(Span::DUMMY, kind)
+    }
+
+    /// Synthetic node with an explicit span (e.g. hand-built AST in tests that should report a range).
+    #[must_use]
+    pub fn synthetic_with_span(span: Span, kind: ExprKind) -> Self {
         Self {
             id: NodeId::UNASSIGNED,
-            span: Span::DUMMY,
+            span,
             kind,
         }
     }

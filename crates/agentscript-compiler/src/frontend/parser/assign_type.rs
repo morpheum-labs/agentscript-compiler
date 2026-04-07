@@ -132,6 +132,19 @@ pub(super) fn type_parser_decl_root() -> impl Parser<char, Type, Error = Simple<
     recursive(|ty| type_parser_core(ty))
 }
 
+/// Optional type prefix on function parameters (`foo(int x, array<float> y)`): same as [`type_parser`]
+/// for nested shapes (`array<MyUdt>`), but a **bare identifier** alone is not a type at the prefix root
+/// so names like `MAType` are not swallowed as `Type::Named`.
+pub(super) fn type_parser_fn_param_prefix() -> impl Parser<char, Type, Error = Simple<char>> + Clone {
+    recursive(|ty| {
+        let inner = choice((
+            type_parser_core(ty.clone()),
+            text::ident().map(Type::Named),
+        ));
+        type_parser_core(inner)
+    })
+}
+
 pub(super) fn var_qualifier() -> impl Parser<char, VarQualifier, Error = Simple<char>> + Clone {
     choice((
         text::keyword("varip").to(VarQualifier::Varip),

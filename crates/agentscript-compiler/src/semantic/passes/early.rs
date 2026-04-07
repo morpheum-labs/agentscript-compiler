@@ -141,7 +141,7 @@ fn check_fn_params(f: &FnDecl, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate parameter `{}` in function `{}`",
                     p.name, f.name
                 ),
-                span: f.span,
+                span: p.span,
             });
         }
     }
@@ -156,7 +156,7 @@ fn check_enum_variants(e: &EnumDef, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate variant `{}` in enum `{}`",
                     v.name, e.name
                 ),
-                span: e.span,
+                span: v.value.span,
             });
         }
     }
@@ -171,7 +171,7 @@ fn check_udt_fields(t: &UserTypeDef, issues: &mut Vec<SemanticDiagnostic>) {
                     "duplicate field `{}` in type `{}`",
                     f.name, t.name
                 ),
-                span: t.span,
+                span: f.default.span,
             });
         }
     }
@@ -266,11 +266,13 @@ x = 1
                     name: "bad".into(),
                     params: vec![
                         FnParam {
+                            span: Span { start: 10, end: 11 },
                             ty: None,
                             name: "n".into(),
                             default: None,
                         },
                         FnParam {
+                            span: Span { start: 20, end: 21 },
                             ty: None,
                             name: "n".into(),
                             default: None,
@@ -283,5 +285,15 @@ x = 1
         let e = analyze_script(&s).unwrap_err();
         assert!(e.message().contains("parameter"));
         assert!(e.message().contains('n'));
+        let d = e
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("duplicate parameter"))
+            .expect("duplicate parameter diagnostic");
+        assert_eq!(
+            d.span,
+            Span { start: 20, end: 21 },
+            "diagnostic should point at the second duplicate parameter"
+        );
     }
 }

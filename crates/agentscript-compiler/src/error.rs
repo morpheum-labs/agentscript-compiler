@@ -7,6 +7,13 @@ use thiserror::Error;
 use crate::frontend::ast::Span;
 use crate::semantic::AnalyzeError;
 
+/// When a diagnostic has no range, point at the first non-whitespace byte so miette still draws a caret.
+fn fallback_label_span(source: &str) -> Option<(usize, usize)> {
+    let start = source.find(|c: char| !c.is_whitespace())?;
+    let end = (start + 1).min(source.len());
+    Some((start, end - start))
+}
+
 /// User-facing compiler error (parse phase today; typecheck/runtime later).
 #[derive(Debug, Error, Diagnostic)]
 #[error("failed to parse AgentScript source")]
@@ -67,15 +74,21 @@ impl AnalyzeCompileError {
             .diagnostics
             .into_iter()
             .filter_map(|d| {
-                if d.span == Span::DUMMY {
-                    return None;
-                }
-                let len = d.span.end.saturating_sub(d.span.start);
-                if len == 0 {
-                    return None;
+                let mut span = d.span;
+                let mut len = span.end.saturating_sub(span.start);
+                if span.is_dummy() || len == 0 {
+                    if let Some((off, flen)) = fallback_label_span(source.as_str()) {
+                        span = Span {
+                            start: off,
+                            end: off + flen,
+                        };
+                        len = flen;
+                    } else {
+                        return None;
+                    }
                 }
                 Some(SemanticLabel {
-                    span: (d.span.start, len).into(),
+                    span: (span.start, len).into(),
                     message: d.message,
                 })
             })

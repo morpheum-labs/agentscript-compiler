@@ -204,7 +204,7 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         self.push_scope();
         for p in &f.params {
             let ty = param_hir_type(p);
-            self.define_at(f.span, &p.name, ty.clone());
+            self.define_at(p.span, &p.name, ty.clone());
             if let Some(d) = &p.default {
                 let dt = match self.type_expr(d) {
                     Ok(t) => t,
@@ -616,12 +616,12 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                     return Err(());
                 }
                 if !is_integral(&idx_ty) {
-                    self.err(e.span, "series index must be integral");
+                    self.err(index.span, "series index must be integral");
                 }
                 match index_result_type(&base_ty) {
                     Ok(t) => t,
                     Err(()) => {
-                        self.err(e.span, "cannot subscript this type");
+                        self.err(base.span, "cannot subscript this type");
                         return Err(());
                     }
                 }
@@ -647,11 +647,14 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                         return Err(());
                     }
                     let mut first = tys[0].clone();
-                    for u in tys.into_iter().skip(1) {
+                    for (i, u) in tys.into_iter().enumerate().skip(1) {
                         first = match unify_branch_types(&first, &u) {
                             Some(t) => t,
                             None => {
-                                self.err(e.span, "array literal elements have incompatible types");
+                                self.err(
+                                    elts[i].span,
+                                    "array literal elements have incompatible types",
+                                );
                                 return Err(());
                             }
                         };
@@ -664,13 +667,13 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 match op {
                     UnaryOp::Pos | UnaryOp::Neg => {
                         if !is_numeric(&inner) {
-                            self.err(e.span, "unary +/- expects a numeric operand");
+                            self.err(expr.span, "unary +/- expects a numeric operand");
                         }
                         inner
                     }
                     UnaryOp::Not => {
                         if !is_bool_like(&inner) {
-                            self.err(e.span, "unary not expects a boolean operand");
+                            self.err(expr.span, "unary not expects a boolean operand");
                         }
                         if is_series_shape(&inner) {
                             HirType::Series(AstType::Primitive(PrimitiveType::Bool))
@@ -751,6 +754,13 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 return Ok(t);
             }
             self.err(span, format!("unknown identifier `{name}`"));
+            return Err(());
+        }
+        if path.len() >= 2 && self.import_aliases.contains_key(path[0].as_str()) {
+            self.err(
+                span,
+                "qualified access through an import alias is not supported until library linking exists",
+            );
             return Err(());
         }
         if path.len() == 2 {
@@ -941,8 +951,12 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 let n = entry.numeric_args_prefix.min(arg_tys.len());
                 for (i, t) in arg_tys.iter().enumerate().take(n) {
                     if !is_numeric(t) {
+                        let span = args
+                            .get(i)
+                            .map(|(_, ex)| ex.span)
+                            .unwrap_or(cspan);
                         self.err(
-                            cspan,
+                            span,
                             format!(
                                 "`{}`: argument {} must be numeric",
                                 entry.dotted_name,
@@ -954,10 +968,14 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 }
                 return Ok(builtin_result_with_series_promotion(entry, &arg_tys));
             }
-            for t in &arg_tys {
+            for (i, t) in arg_tys.iter().enumerate() {
                 if !is_numeric(t) {
+                    let span = args
+                        .get(i)
+                        .map(|(_, ex)| ex.span)
+                        .unwrap_or(cspan);
                     self.err(
-                        cspan,
+                        span,
                         format!(
                             "`{}`: all arguments must be numeric",
                             entry.dotted_name
@@ -1064,7 +1082,11 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
             s if s.starts_with("plot.") || s == "plot" => {
                 for (i, t) in arg_tys.iter().enumerate().take(3) {
                     if i == 0 && !is_numeric(t) {
-                        self.err(call_span, "`plot`: first argument should be numeric");
+                        let span = args
+                            .first()
+                            .map(|(_, ex)| ex.span)
+                            .unwrap_or(call_span);
+                        self.err(span, "`plot`: first argument should be numeric");
                     }
                 }
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
@@ -1224,6 +1246,15 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 PrimitiveType::Float,
             ))),
             _ if !name.is_empty() => {
+                if let Some((root, _)) = name.split_once('.') {
+                    if self.import_aliases.contains_key(root) {
+                        self.err(
+                            cspan,
+                            "calls through an import alias are not supported until library linking exists",
+                        );
+                        return Err(());
+                    }
+                }
                 for (_, a) in args {
                     let _ = self.type_expr(a);
                 }
@@ -1392,6 +1423,13 @@ fn builtin_result_with_series_promotion(
 
 fn param_hir_type(p: &FnParam) -> HirType {
     match &p.ty {
+        // String/bool parameters are usually simple literals, not per-bar series.
+        Some(AstType::Primitive(PrimitiveType::String)) => {
+            HirType::Simple(AstType::Primitive(PrimitiveType::String))
+        }
+        Some(AstType::Primitive(PrimitiveType::Bool)) => {
+            HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
+        }
         Some(AstType::Primitive(pr)) => HirType::Series(AstType::Primitive(*pr)),
         Some(_) => HirType::Series(AstType::Primitive(PrimitiveType::Float)),
         None => HirType::Series(AstType::Primitive(PrimitiveType::Float)),
@@ -1521,6 +1559,7 @@ fn dotted_name(e: &Expr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{typecheck_script, typecheck_script_in_session};
+    use crate::analyze_to_hir_compiler;
     use crate::frontend::ast::{
         ExprKind, Item, NodeId, PrimitiveType, Script, StmtKind, Type as AstType,
     };
@@ -1650,13 +1689,13 @@ mod tests {
     fn user_function_call_checked_for_arity() {
         let s = parse_script(
             "t",
-            "indicator(\"x\")\nf(double x) => x * 2.0\nz = f(1.0)\n",
+            "indicator(\"x\")\nf(float x) => x * 2.0\nz = f(1.0)\n",
         )
         .unwrap();
         typecheck_script(&s).unwrap();
         let bad = parse_script(
             "t",
-            "indicator(\"x\")\nf(double x) => x * 2.0\nz = f()\n",
+            "indicator(\"x\")\nf(float x) => x * 2.0\nz = f()\n",
         )
         .unwrap();
         let e = typecheck_script(&bad).unwrap_err();
@@ -1898,5 +1937,55 @@ mod tests {
         )
         .unwrap();
         typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn import_unused_typechecks_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nimport User/Lib/1 as m\ny = close\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn import_qualified_ident_path_rejected() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nimport User/Lib/1 as m\ny = m.foo\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&s).unwrap_err();
+        assert!(
+            e.message().contains("import alias") && e.message().contains("library linking"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn import_qualified_call_rejected() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nimport User/Lib/1 as m\ny = m.foo()\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&s).unwrap_err();
+        assert!(
+            e.message().contains("import alias") && e.message().contains("library linking"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn unused_import_script_lowers_to_hir() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\nimport user/lib as L\ny = close\n",
+        )
+        .unwrap();
+        analyze_to_hir_compiler(&s).expect("HIR with unused import should succeed");
     }
 }

@@ -4,7 +4,7 @@
 
 **Normative grammar:** [`spec/agentscripts-v1.md`](../../spec/agentscripts-v1.md) (QAS v1 EBNF §§1–13).
 
-**Implementation notes:** [`spec/qas-v1-parser-status.md`](../../spec/qas-v1-parser-status.md).
+**Parser and semantics status:** [`spec/qas-v1-parser-status.md`](../../spec/qas-v1-parser-status.md).
 
 **Roadmap / Pine checklist:** [`ROADMAP.md`](../../ROADMAP.md).
 
@@ -23,16 +23,16 @@ Use when the user asks how a script is structured, what may appear at top level,
   * **Keywords:** version header, AgentScript header.
 
 * **[`syntax/grammar.md`](syntax/grammar.md)**  
-  * **Content:** Pointer to EBNF §§1–13 and the `frontend/parser/` modules that implement it.
+  * **Content:** Where the EBNF lives (§§1–13), what each major section covers, pointers to `spec/qas-v1-parser-status.md` for gaps.
 
 ---
 
 ## 2. Lexical and expression reference
 
-Use for tokens, operators, types, and keyword semantics at the **parser** level.
+Use for tokens, operators, types, and keyword semantics.
 
 * **[`reference/keywords.md`](reference/keywords.md)**  
-  * **Content:** Control flow, declarations, literals, `and` / `or` / `not`, function forms, and brief compiler status (parse vs typecheck vs HIR/WASM).  
+  * **Content:** Control flow, declarations, literals, `and` / `or` / `not`, function forms; notes where behavior is still partial vs TradingView.  
   * **Keywords:** `if`, `else`, `for`, `while`, `switch`, `var`, `varip`, `const`, `input`, `simple`, `series`, `break`, `continue`, `true`, `false`, `na`, and others listed there.
 
 * **[`reference/types.md`](reference/types.md)**  
@@ -50,18 +50,18 @@ Use for tokens, operators, types, and keyword semantics at the **parser** level.
 Use when the user assumes TradingView Pine behavior or indentation-based syntax.
 
 * **[`concepts/dialect-and-limitations.md`](concepts/dialect-and-limitations.md)**  
-  * **Content:** Braced blocks only, resolver/script-kind constraints at a high level, pointer to parity table and parser status.  
+  * **Content:** Braced blocks only, script-kind constraints at a high level, pointer to parity table and parser status.  
   * **Keywords:** braces, QAS, Pine parity.
 
 * **[`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md)**  
-  * **Content:** Tables of TV-accurate behaviors vs this compiler: what **`parse_and_analyze` / `check_script`** typically does (pass vs fail), separate from WASM emit and TV runtime parity.  
+  * **Content:** Tables of TV-accurate behaviors vs AgentScript: what the **static checker** typically accepts vs rejects, separate from WASM emit and TV runtime parity.  
   * **Keywords:** TradingView, validation, builtins, `strategy.*`, `request.*`.
 
 ---
 
 ## 4. Not covered here (see other paths)
 
-* **Builtin libraries (`ta.*`, `strategy.*`, `request.*`, …):** not exhaustively documented in this tree; behavior and typing follow semantic passes and [`ROADMAP.md`](../../ROADMAP.md). The TV-shaped reference corpus remains under [`spec/pinescriptv6/reference/functions/`](../../spec/pinescriptv6/reference/functions/) as a **checklist**, not a guarantee of QAS semantics.
+* **Builtin libraries (`ta.*`, `strategy.*`, `request.*`, …):** not exhaustively documented in this tree; behavior and typing follow the checker and [`ROADMAP.md`](../../ROADMAP.md). The TV-shaped reference corpus under [`spec/pinescriptv6/reference/functions/`](../../spec/pinescriptv6/reference/functions/) is a **checklist**, not a guarantee of QAS semantics.
 * **Execution model (bar state, `var` persistence):** runtime and IR; see [`ROADMAP.md`](../../ROADMAP.md) and Aether docs, not duplicated as TV-identical prose here.
 * **WASM guest ABI:** [`docs/agentscript-guest-abi.md`](../agentscript-guest-abi.md).
 
@@ -71,6 +71,6 @@ Use when the user assumes TradingView Pine behavior or indentation-based syntax.
 
 * **IF** the user asks how to declare a user function or `export` in a library → **`reference/program-structure.md`**.
 * **IF** the user asks which `//@version=` values are valid → **`reference/directives.md`**.
-* **IF** the user asks about `switch` with no scrutinee or `for … in` → **`reference/keywords.md`** (and EBNF in `agentscripts-v1.md` §§ for exact productions).
+* **IF** the user asks about `switch` with no scrutinee or `for … in` → **`reference/keywords.md`** (and EBNF in `agentscripts-v1.md` for exact productions).
 * **IF** the user asks why a script fails inside `strategy.*` in an `indicator()` → **`concepts/dialect-and-limitations.md`** and resolver notes in [`ROADMAP.md`](../../ROADMAP.md).
 * **IF** the user asks what TradingView allows that AgentScript does not, or whether a script “validates” vs TV → **`concepts/tv-vs-agentscript-validation.md`**.

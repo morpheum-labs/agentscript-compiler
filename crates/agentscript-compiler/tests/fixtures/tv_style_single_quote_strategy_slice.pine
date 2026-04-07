@@ -1,0 +1,7 @@
+//@version=5
+// Vertical slice: TV-style single-quoted strings on a real-shaped `strategy()` line (from weighted_strategy.pine).
+// `input.*` with title/group kwargs is parsed but not fully typechecked yet — see typecheck `input.bool` / `input.string`.
+strategy(title='Acrypto - Weighted Strategy v1.4.9', overlay=true, precision=2, commission_value=0.075, commission_type=strategy.commission.percent, initial_capital=1000, currency=currency.USD, default_qty_type=strategy.percent_of_equity, default_qty_value=100, slippage=1)
+
+group_label = 'Trading type'
+escaped = 'it\'s ok'

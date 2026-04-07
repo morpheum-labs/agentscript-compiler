@@ -72,7 +72,7 @@ impl fmt::Display for AnalyzeError {
             if i > 0 {
                 writeln!(f)?;
             }
-            if d.span == Span::DUMMY {
+            if d.span.is_dummy() {
                 write!(f, "{}", d.message)?;
             } else {
                 write!(f, "[{}..{}] {}", d.span.start, d.span.end, d.message)?;

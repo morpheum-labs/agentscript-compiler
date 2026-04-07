@@ -1,0 +1,15 @@
+// Braced QAS/AgentScript slice inspired by examples/weighted_strategy.pine (MA helper + strategy).
+// TradingView indentation-only bodies are not supported; this uses `{ … }` throughout.
+//@version=5
+strategy("Weighted strategy braced slice", overlay = true)
+
+ma(string MAType, MASource, int MAPeriod) => ta.sma(MASource, MAPeriod)
+
+len = 14
+baseline = ma('SMA', close, len)
+
+if baseline > close {
+    flag = 1
+} else {
+    flag = 2
+}

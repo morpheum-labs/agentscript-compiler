@@ -42,6 +42,12 @@ Optional **`// @agentscript=<n>`** (`n` ≥ 1): see §1 `AGENTSCRIPT_LINE` in th
 | `array_factory_literal` → `array.from(…)` | **Yes** | Dotted call; `array_from_call` in `parse_smoke.rs`. |
 | `bracket_array_literal` → `[a, b]` | **Yes** | [`ExprKind::Array`](../crates/agentscript-compiler/src/frontend/ast/expr.rs). |
 | `map.from(…)` | **TBD** | Not finalized in spec §11; today parses as an ordinary call; specialize when Pine reference + tests lock the shape. |
+| Integer literals with **leading zeros** (`00`, `007`) | **Yes** | [`number_literal`](../crates/agentscript-compiler/src/frontend/parser/literals.rs); `pine_leading_zero_integer_literals` in [`parse_smoke.rs`](../crates/agentscript-compiler/tests/parse_smoke.rs). |
+| Float literals **trailing dot** (`0.`, `1.`) | **Yes** | Same; `pine_trailing_dot_float_literal` in `parse_smoke.rs`. |
+
+## Function parameter type prefixes
+
+Optional types on `fn` / `method` / Pine `name(…) =>` parameters use [`type_parser_fn_param_prefix`](../crates/agentscript-compiler/src/frontend/parser/assign_type.rs): the same shapes as `type_parser` for generics (`array<…>`, …) with **bare `Named` only inside** bracketed types, not as the whole prefix—so a parameter name like `MAType` is not parsed as `Type::Named("MAType")`. See `fn_param_names_not_swallowed_as_named_types` and `fn_param_typed_array_of_user_named_element` in `parse_smoke.rs`. A **bare user type** prefix alone (e.g. `MyUdt x`) is not supported at the parameter root yet.
 
 ## Spec vs parser — residual gaps
 

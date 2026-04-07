@@ -967,6 +967,74 @@ x = .25 + .5e0
 }
 
 #[test]
+fn pine_leading_zero_integer_literals() {
+    let src = r#"indicator("x")
+n = 00 + 007
+"#;
+    let s = parse_and_analyze("t.pine", src).expect("parse + analyze");
+    let Item::Stmt(Stmt { kind: StmtKind::Assign { value, .. }, .. }) = &s.items[1] else {
+        panic!("expected assign");
+    };
+    let ExprKind::Binary { op: BinOp::Add, left, right } = &value.kind else {
+        panic!("expected add");
+    };
+    assert!(left.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(0))));
+    assert!(right.as_ref().shape_eq(&Expr::synthetic(ExprKind::Int(7))));
+}
+
+#[test]
+fn pine_trailing_dot_float_literal() {
+    let src = r#"indicator("x")
+var x = 0.
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::Stmt(Stmt { kind: StmtKind::VarDecl(v), .. }) = &s.items[1] else {
+        panic!("expected var decl");
+    };
+    assert_eq!(v.value.kind, ExprKind::Float(0.0));
+}
+
+#[test]
+fn fn_param_names_not_swallowed_as_named_types() {
+    let src = r#"indicator("x")
+ma(MAType, MASource, MAPeriod) => MASource
+y = 1
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::FnDecl(f) = &s.items[1] else {
+        panic!("expected fn decl");
+    };
+    assert_eq!(f.name, "ma");
+    assert_eq!(f.params.len(), 3);
+    assert_eq!(f.params[0].name, "MAType");
+    assert_eq!(f.params[1].name, "MASource");
+    assert_eq!(f.params[2].name, "MAPeriod");
+    assert!(f.params.iter().all(|p| p.ty.is_none()));
+}
+
+#[test]
+fn fn_param_typed_array_of_user_named_element() {
+    let src = r#"indicator("x")
+push(array<MyRow> rows, float v) => v
+"#;
+    let s = parse_script("t.pine", src).unwrap();
+    let Item::FnDecl(f) = &s.items[1] else {
+        panic!("expected fn decl");
+    };
+    assert_eq!(f.params.len(), 2);
+    assert!(matches!(
+        &f.params[0].ty,
+        Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::Named(n) if n == "MyRow")
+    ));
+    assert_eq!(f.params[0].name, "rows");
+    assert!(matches!(
+        &f.params[1].ty,
+        Some(Type::Primitive(PrimitiveType::Float))
+    ));
+    assert_eq!(f.params[1].name, "v");
+}
+
+#[test]
 fn switch_default_only_braced() {
     let src = r#"indicator("x")
 switch z {
@@ -1240,6 +1308,21 @@ fn dotted_ident_stays_ident_path() {
 fn examples_uptrend_pine_parse_and_analyze() {
     let src = include_str!("../../../examples/uptrend.pine");
     parse_and_analyze("examples/uptrend.pine", src).expect("repo example parse + analyze");
+}
+
+#[test]
+fn examples_weighted_strategy_braced_slice_parse_and_analyze() {
+    let src = include_str!("../../../examples/weighted_strategy_braced_slice.pine");
+    parse_and_analyze("examples/weighted_strategy_braced_slice.pine", src)
+        .expect("braced slice parse + analyze");
+}
+
+/// Real-world–style Pine: single-quoted string args (TV) + `strategy` kwargs + `input`/`options` array.
+#[test]
+fn fixture_tv_style_single_quote_strategy_slice_parse_and_analyze() {
+    let src = include_str!("fixtures/tv_style_single_quote_strategy_slice.pine");
+    parse_and_analyze("tv_style_single_quote_strategy_slice.pine", src)
+        .expect("fixture parse + check_script (vertical slice)");
 }
 
 #[test]

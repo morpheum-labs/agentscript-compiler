@@ -1,64 +1,62 @@
 # Types (surface syntax)
 
-Type syntax is parsed into [`Type`](../../../crates/agentscript-compiler/src/frontend/ast/types.rs). Implementation: [`assign_type.rs`](../../../crates/agentscript-compiler/src/frontend/parser/assign_type.rs) (`type_parser`, `type_parser_decl_root`, `var_qualifier`).
-
 Normative EBNF: [`spec/agentscripts-v1.md`](../../../spec/agentscripts-v1.md) §3–4.
 
 ---
 
 ## Primitives
 
-| Syntax | AST |
-|--------|-----|
-| `int` | `Primitive(Int)` |
-| `float` | `Primitive(Float)` |
-| `bool` | `Primitive(Bool)` |
-| `string` | `Primitive(String)` |
-| `color` | `Primitive(Color)` |
+| Syntax | Meaning |
+|--------|---------|
+| `int` | Integer |
+| `float` | Floating-point |
+| `bool` | Boolean |
+| `string` | String |
+| `color` | Color |
 
 ---
 
 ## Arrays
 
-- **Bracket form (Pine):** `int[]`, `float[]`, `bool[]`, `string[]`, `color[]` — equivalent to a one-dimensional array of that primitive (see `type_parser_core` in `assign_type.rs`).
-- **Generic form:** `array<` *type* `>` → `Type::Array(Box<Type>)`.
+- **Bracket form (Pine):** `int[]`, `float[]`, `bool[]`, `string[]`, `color[]` — one-dimensional array of that primitive.
+- **Generic form:** `array<` *type* `>` — generic array type.
 
 ---
 
 ## Matrix and map
 
-- `matrix<` *type* `>` → `Matrix`
-- `map<` *key* `,` *value* `>` → `Map`
+- `matrix<` *type* `>` — matrix of the element type  
+- `map<` *key* `,` *value* `>` — map from key type to value type  
 
 ---
 
 ## Object / drawing-related types
 
-Parsed as dedicated variants (not `Named`):
+These are parsed as dedicated type names:
 
 - `label`, `line`, `box`, `table`, `polyline`, `linefill`, `volume_row`
-- `chart.point` → `ChartPoint`
+- `chart.point` — chart point type
 
 ---
 
 ## Named types
 
-A bare identifier at the end of the `type` parser chain is a **named** type (user `enum` or `type` name), e.g. for `map<symbols, float>` where `symbols` is an enum.
+A bare identifier at the end of a type can denote a **user** `enum` or `type` name, e.g. in `map<symbols, float>` where `symbols` is an enum.
 
 ---
 
 ## Variable qualifiers (not types, but type-like positions)
 
-Used with declarations: `var`, `varip`, `const`, `input`, `simple`, `series` — see [`VarQualifier`](../../../crates/agentscript-compiler/src/frontend/ast/types.rs) and [`reference/keywords.md`](keywords.md).
+Used with declarations: `var`, `varip`, `const`, `input`, `simple`, `series` — see [`reference/keywords.md`](keywords.md).
 
 ---
 
 ## Known gaps
 
-- The EBNF and roadmap mention types such as **`footprint`** used with some `request.*` APIs; the **full** surface for every TV v6 type name is not guaranteed implemented. Track [`ROADMAP.md`](../../../ROADMAP.md) and [`spec/qas-v1-parser-status.md`](../../../spec/qas-v1-parser-status.md).
+The EBNF and roadmap mention types such as **`footprint`** with some `request.*` APIs; the **full** surface for every TV v6 type name is not guaranteed available yet. Track [`ROADMAP.md`](../../../ROADMAP.md) and [`spec/qas-v1-parser-status.md`](../../../spec/qas-v1-parser-status.md).
 
 ---
 
-### Compiler note
+### Checker coverage
 
-**Parser vs typecheck:** The parser accepts a wide set of type shapes; the typechecker only understands a **subset** for diagnostics and HIR lowering. Underestimating or overstating parity with TradingView is avoided here; use ROADMAP Phase 1 rows for status.
+The grammar accepts a wide set of type shapes; the **checker** only understands a **subset** for diagnostics and downstream lowering. For parity with TradingView, use [`ROADMAP.md`](../../../ROADMAP.md) Phase 1 rows rather than assuming every parsed type is fully modeled.

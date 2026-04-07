@@ -36,6 +36,29 @@ fn script_declaration_span(decl: &ScriptDeclaration) -> Span {
         .unwrap_or(decl.span)
 }
 
+/// When no `indicator`/`strategy`/`library` header was lowered, still give WASM/HIR a non-`DUMMY`
+/// anchor for `expr_span` fallbacks (e.g. stmt-only scripts).
+fn fallback_script_source_span(script: &Script) -> Span {
+    for item in &script.items {
+        let s = match item {
+            Item::ScriptDecl(d) => d.span,
+            Item::Stmt(st) => st.span,
+            Item::Import(i) => i.span,
+            Item::FnDecl(f) => f.span,
+            Item::Enum(e) => e.span,
+            Item::TypeDef(t) => t.span,
+            Item::Export(ExportDecl::Fn(f)) => f.span,
+            Item::Export(ExportDecl::Var(v)) => v.span,
+            Item::Export(ExportDecl::Enum(e)) => e.span,
+            Item::Export(ExportDecl::TypeDef(t)) => t.span,
+        };
+        if s != Span::DUMMY {
+            return s;
+        }
+    }
+    Span::DUMMY
+}
+
 /// Lowering failed: construct not in the supported subset.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("HIR lowering: {message}")]
@@ -531,11 +554,8 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 Item::Stmt(stmt) => {
                     self.lower_top_stmt(stmt, &mut inputs, &mut body)?;
                 }
-                Item::Import(i) => {
-                    return Err(HirLowerError::at(
-                        i.span,
-                        "only indicator/strategy declarations and statements are supported in this HIR lowering pass",
-                    ));
+                Item::Import(_) => {
+                    // Metadata only until a module linker exists; typecheck rejects qualified use.
                 }
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
                     user_functions.push(self.lower_user_function(f)?);
@@ -571,6 +591,10 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     ));
                 }
             }
+        }
+
+        if source_span == Span::DUMMY {
+            source_span = fallback_script_source_span(script);
         }
 
         Ok(HirScript {

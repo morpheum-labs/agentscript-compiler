@@ -106,6 +106,8 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnParam {
+    /// Span covering this parameter (for duplicate-param and similar diagnostics).
+    pub span: Span,
     pub ty: Option<Type>,
     pub name: String,
     pub default: Option<Expr>,
