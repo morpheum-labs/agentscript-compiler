@@ -61,5 +61,6 @@ pub enum HirExpr {
     Plot {
         expr: HirId,
         title: Option<String>,
+        ty: HirType,
     },
 }

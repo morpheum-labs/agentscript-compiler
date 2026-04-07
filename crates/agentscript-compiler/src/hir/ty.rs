@@ -19,6 +19,8 @@ pub enum HirType {
     Array(Box<HirType>),
     /// Row-major matrix type surface (`matrix<float>`): element series/simple like arrays.
     Matrix(Box<HirType>),
+    /// `import … as alias` namespace (not a TV string; use for bare-alias typing until linking supplies members).
+    ImportNamespace { alias: String },
 }
 
 #[inline]
@@ -35,7 +37,7 @@ impl HirType {
 
     #[must_use]
     pub fn is_simple_shape(&self) -> bool {
-        matches!(self, Self::Simple(_))
+        matches!(self, Self::Simple(_) | Self::ImportNamespace { .. })
     }
 
     /// Element type for array/matrix wrappers; scalars return `None`.
@@ -159,6 +161,10 @@ pub fn assignable(from: &HirType, to: &HirType) -> bool {
         ) => true,
         (HirType::Array(f), HirType::Array(t)) => assignable(f, t),
         (HirType::Matrix(f), HirType::Matrix(t)) => assignable(f, t),
+        (
+            &HirType::ImportNamespace { alias: ref a },
+            &HirType::ImportNamespace { alias: ref b },
+        ) => a == b,
         _ => false,
     }
 }
@@ -181,6 +187,12 @@ pub fn type_compatible_eq(a: &HirType, b: &HirType) -> bool {
             HirType::Series(AstType::Named(n1)),
             HirType::Series(AstType::Named(n2))
         ) if n1 == n2
+    ) || matches!(
+        (a, b),
+        (
+            HirType::ImportNamespace { alias: ref a },
+            HirType::ImportNamespace { alias: ref b }
+        ) if a == b
     )
 }
 
@@ -198,6 +210,15 @@ pub fn unify_branch_types(a: &HirType, b: &HirType) -> Option<HirType> {
     }
     if let (HirType::Matrix(ea), HirType::Matrix(eb)) = (a, b) {
         return unify_branch_types(ea, eb).map(|e| HirType::Matrix(Box::new(e)));
+    }
+    if let (
+        HirType::ImportNamespace { alias: ref a },
+        HirType::ImportNamespace { alias: ref b },
+    ) = (a, b)
+    {
+        if a == b {
+            return Some(HirType::ImportNamespace { alias: a.clone() });
+        }
     }
     binary_numeric_result(a, b).ok()
 }
@@ -220,6 +241,7 @@ pub fn index_result_type(base: &HirType) -> Result<HirType, ()> {
         HirType::Series(a) => Ok(HirType::Series(a.clone())),
         HirType::Simple(AstType::Primitive(p)) => Ok(HirType::Simple(AstType::Primitive(*p))),
         HirType::Array(elem) | HirType::Matrix(elem) => Ok((**elem).clone()),
+        HirType::ImportNamespace { .. } => Err(()),
         _ => Err(()),
     }
 }

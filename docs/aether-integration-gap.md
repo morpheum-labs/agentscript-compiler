@@ -29,6 +29,22 @@ Roughly ordered by dependency.
 5. **Semantics vs Pine v6** — **Gap:** bar model, `var`/`varip`, full builtin registry; see ROADMAP semantics table and `pinescriptv6/` checklist.
 6. **Tooling** — **Progress:** `--emit=wasm` / `hir` / `ast`. **Gap:** `-o`, JSON diagnostics (ROADMAP Phase 3).
 
+### 2.1 Pine-style `import` / library resolution (compiler contract)
+
+TradingView resolves `import user/lib/1 as m` against a **published library** in their cloud. This repo has **no** TV publisher; the compiler needs an explicit **host-supplied** mapping before qualified `m.*` can be type-checked or lowered.
+
+**Contract (v0):**
+
+| Input | Role |
+|-------|------|
+| **Main script** | Parsed `Script`; may contain `import … as alias` lines. |
+| **Library script** | A second parsed `Script` whose top-level declaration is `library(...)`. The host (CLI, Aether job loader, or tests) calls [`register_import_library`](../crates/agentscript-compiler/src/lib.rs) on the compile [`CompilerSession`](../crates/agentscript-compiler/src/session.rs) **before** running semantic passes on the main script, passing the **same string** as the import alias (e.g. `m`). |
+| **Export surface** | Only **`export` functions** participate in the linked map today; their signatures are taken from the library script after the usual early → resolver → lexical → **typecheck** pipeline on that library alone. |
+
+**Non-goals (v0):** matching TV’s `user/lib/version` registry, private vs public publish flags, or multi-unit graphs beyond host-registered aliases. **Progress:** when the host registers a library with [`register_import_library`](../crates/agentscript-compiler/src/lib.rs), the compiler stores lowered library HIR and **splices** qualified `alias.export(...)` into the consumer as merged user functions (extra wasm user-function bodies), including simple cross-export calls within the same library.
+
+**Future options** (not committed here): JSON manifest of exports only (no source), workspace-relative path glob, or Aether passing pre-parsed `Script` blobs per job dependency.
+
 ---
 
 ## 3. Aether-side gaps (aether)

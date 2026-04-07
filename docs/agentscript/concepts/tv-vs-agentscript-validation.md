@@ -16,6 +16,17 @@ Normative progress for semantics is still [`ROADMAP.md`](../../../ROADMAP.md) (�
 
 ---
 
+## Validation ladder (what “passes” means at each stage)
+
+AgentScript validation is **layered**: a script can pass an earlier stage and still fail a later one. From coarsest to strictest:
+
+1. **Parse** — [`parse_script`](../../../crates/agentscript-compiler/src/lib.rs) / the braced QAS grammar ([`spec/agentscripts-v1.md`](../../../spec/agentscripts-v1.md) via [`spec/qas-v1-parser-status.md`](../../../spec/qas-v1-parser-status.md)). Success means a well-formed [`Script`](../../../crates/agentscript-compiler/src/frontend/ast/mod.rs) AST.
+2. **Static analysis (`check_script`)** — [`check_script`](../../../crates/agentscript-compiler/src/lib.rs) runs the default semantic passes (resolve, typecheck, early checks, etc.). The library helper [`parse_and_analyze`](../../../crates/agentscript-compiler/src/lib.rs) combines parse + analysis. This is what most of the **“Analyze passes”** cells in the tables below refer to.
+3. **HIR (`--emit=hir`)** — The CLI [`agentscriptc`](../../../crates/agentscript-compiler/src/main.rs) runs `check_script`, then [`analyze_to_hir_compiler`](../../../crates/agentscript-compiler/src/lib.rs) and prints HIR. Lowering can still be **stricter** than the typechecker for constructs not yet represented in HIR.
+4. **WASM (`--emit=wasm`)** — Same entrypoint runs through [`compile_script_to_wasm_v0`](../../../crates/agentscript-compiler/src/lib.rs) (guest subset + [`docs/agentscript-guest-abi.md`](../../agentscript-guest-abi.md)). Integration tests such as `examples_uptrend_pine_parse_and_analyze` exercise **analysis** without requiring a full WASM compile of the same source.
+
+---
+
 ## Syntax and dialect (TV accepts; AgentScript differs)
 
 | On TradingView | In AgentScript today | Typical static check |
@@ -39,7 +50,7 @@ Normative progress for semantics is still [`ROADMAP.md`](../../../ROADMAP.md) (�
 | **`mcp.*`** | **Not implemented** | **Analyze fails** |
 | **`syminfo.*` / `timeframe.*`** (full set) | **Partial** typing for a **small** `syminfo.*` slice; **no** full parity or lowering for most paths | **Varies:** known paths may **pass**; unknown paths **fail** |
 | **`input.*`** beyond **`input.int` / `input.float`** (and the bare `input(...)` forms called out in ROADMAP) | **Partial** — other factories **not** modeled | **Analyze fails** when the builtin is unknown or untyped |
-| **`plot`**, **`plotshape`**, **`fill`**, **`alertcondition`**, … | **`plot(expr)`** lowers in some paths; several drawing/alert calls are accepted by the checker but **skipped** in lowering ([`ROADMAP.md`](../../../ROADMAP.md) plot/drawing row) | **Analyze passes** for many statement-level forms; **no** chart/drawing IR |
+| **`plot`**, **`plotshape`**, **`fill`**, **`alertcondition`**, … | **`plot(...)`** as a **statement** or **expression** (e.g. RHS of `let`) lowers on supported paths; several drawing/alert calls are accepted by the checker but **skipped** in lowering ([`ROADMAP.md`](../../../ROADMAP.md) plot/drawing row) | **Analyze passes** for many supported forms; **WASM v0** still side-effect oriented (`plot` import); **no** full chart/drawing IR |
 
 ---
 
@@ -47,7 +58,7 @@ Normative progress for semantics is still [`ROADMAP.md`](../../../ROADMAP.md) (�
 
 | On TradingView | In AgentScript today | Typical static check |
 |----------------|----------------------|----------------------|
-| **`import` / `export`** module linking | Parsed; **no** module graph or link step ([`ROADMAP.md`](../../../ROADMAP.md) imports/exports row) | **`import`:** **Analyze passes** when the alias is unused (or only the bare alias is referenced); **qualified** `alias.member` or `alias.fn(...)` **analyze fails** with an explicit library-linking diagnostic. **`export`:** same static rules as the matching non-export top-level forms; **no** cross-module validation |
+| **`import` / `export`** module linking | Host can link a `library()` script with [`register_import_library`](../../../crates/agentscript-compiler/src/lib.rs) ([`ROADMAP.md`](../../../ROADMAP.md), [`aether-integration-gap.md`](../../aether-integration-gap.md) §2.1); **no** TV cloud registry | **`import`:** **Analyze passes** when the alias is unused, bare alias only, or the host registered a library and the call matches an **`export` function** signature. Otherwise qualified use **analyze fails** with a library-linking / unknown-member diagnostic. **HIR** may still fail on linked library **calls** (not lowered yet). **`export`:** same static rules as the matching non-export top-level forms in the library unit |
 | Surface **`array<>` / `matrix<>` / `map<>`** enforcement | Type syntax parsed; **not** fully checked ([`ROADMAP.md`](../../../ROADMAP.md) types row) | **Often passes**; generic typing is **incomplete** vs TV |
 | **`var` / `varip`** bar persistence | **Partial:** lowering maps persist symbols to globals for a **subset**; full TV bar/`varip` rules **open** | **Passes** when the checker accepts; **semantics differ** from TV |
 | **`barstate.*`**, tick replay, session rules | **Not** full TV execution model ([`ROADMAP.md`](../../../ROADMAP.md) bar execution row) | **Varies** — unknown globals **fail**; partial stubs may **pass** without TV behavior |

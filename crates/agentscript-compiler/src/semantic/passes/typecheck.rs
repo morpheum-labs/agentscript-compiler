@@ -17,7 +17,10 @@ use crate::hir::{
 };
 use crate::semantic::builtin_registry;
 use crate::semantic::{AnalyzeError, SemanticDiagnostic};
-use crate::session::{CompilerSession, ExprTypesRead, ExprTypeSink, SymbolDefRecorder};
+use crate::session::{
+    CompilerSession, ExprTypesRead, ExprTypeSink, LibraryExportFnSig, LibraryExportsRead,
+    SymbolDefRecorder, TypecheckedFnSigSink,
+};
 
 /// Run type checking on a script (after earlier semantic passes).
 pub fn typecheck_script(script: &Script) -> Result<(), AnalyzeError> {
@@ -42,7 +45,10 @@ struct FnSig {
     ret: HirType,
 }
 
-struct Checker<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> {
+struct Checker<
+    'a,
+    S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead + LibraryExportsRead + TypecheckedFnSigSink,
+> {
     /// Import aliases — names exist but have unknown types until library typing exists.
     import_aliases: HashMap<String, HirType>,
     /// `f name(...)` / `name(...) =>` declarations (name → params + return type).
@@ -56,13 +62,26 @@ struct Checker<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> {
     session: &'a mut S,
 }
 
-impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
+impl<
+        'a,
+        S: ExprTypeSink
+            + SymbolDefRecorder
+            + ExprTypesRead
+            + LibraryExportsRead
+            + TypecheckedFnSigSink,
+    > Checker<'a, S>
+{
     fn new(script: &Script, session: &'a mut S) -> Self {
         let mut import_aliases = HashMap::new();
         let mut fn_sigs = HashMap::new();
         for item in &script.items {
             if let Item::Import(i) = item {
-                import_aliases.insert(i.alias.clone(), HirType::Simple(AstType::Primitive(PrimitiveType::String)));
+                import_aliases.insert(
+                    i.alias.clone(),
+                    HirType::ImportNamespace {
+                        alias: i.alias.clone(),
+                    },
+                );
             }
             if let Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) = item {
                 fn_sigs.insert(f.name.clone(), fn_sig_from_decl(f));
@@ -119,7 +138,25 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         for item in &script.items {
             self.check_item(item);
         }
+        self.sync_typechecked_fn_sigs();
         self.finish_result()
+    }
+
+    fn sync_typechecked_fn_sigs(&mut self) {
+        let m: HashMap<String, LibraryExportFnSig> = self
+            .fn_sigs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    LibraryExportFnSig {
+                        params: v.params.clone(),
+                        ret: v.ret.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.session.replace_typechecked_fn_sigs(m);
     }
 
     fn collect_enum_and_udt_members(&mut self, script: &Script) {
@@ -565,6 +602,20 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         field: &str,
     ) -> Result<HirType, ()> {
         let base_ty = self.type_expr(base)?;
+        if let HirType::ImportNamespace { alias } = &base_ty {
+            if let Some(sig) = self.session.library_export_fn_sig(alias, field) {
+                return Ok(sig.ret.clone());
+            }
+            let msg = if self.session.import_library_is_linked(alias) {
+                format!("unknown exported library member `{field}` for import `{alias}`")
+            } else {
+                format!(
+                    "member access on import `{alias}` requires `register_import_library` for that alias"
+                )
+            };
+            self.err(e.span, msg);
+            return Err(());
+        }
         if let HirType::Simple(AstType::Named(n)) | HirType::Series(AstType::Named(n)) = &base_ty {
             if let Some(vm) = self.enum_variants.get(n) {
                 if let Some(t) = vm.get(field) {
@@ -757,10 +808,25 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
             return Err(());
         }
         if path.len() >= 2 && self.import_aliases.contains_key(path[0].as_str()) {
-            self.err(
-                span,
-                "qualified access through an import alias is not supported until library linking exists",
-            );
+            let root = path[0].as_str();
+            if path.len() > 2 {
+                self.err(
+                    span,
+                    "nested qualified paths through an import alias are not supported",
+                );
+                return Err(());
+            }
+            let member = path[1].as_str();
+            if let Some(sig) = self.session.library_export_fn_sig(root, member) {
+                return Ok(sig.ret.clone());
+            }
+            let msg = if self.session.import_library_is_linked(root) {
+                format!("unknown exported library member `{member}` for import `{root}`")
+            } else {
+                "qualified access through an import alias is not supported until library linking exists"
+                    .into()
+            };
+            self.err(span, msg);
             return Err(());
         }
         if path.len() == 2 {
@@ -1033,44 +1099,32 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)))
             }
             "input.int" => {
-                if arg_tys.len() != 1 {
-                    self.err(cspan, "`input.int` expects one default argument");
+                if args.is_empty() {
+                    self.err(cspan, "`input.int` expects at least a defval");
                     return Err(());
                 }
-                Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Int)))
+                self.typecheck_input_factory(InputFactoryKind::Int, cspan, args, &arg_tys)
             }
             "input.float" => {
                 if args.is_empty() {
                     self.err(cspan, "`input.float` expects at least a defval");
                     return Err(());
                 }
-                for (nm, ex) in args {
-                    if nm.as_deref() == Some("defval") {
-                        return self.type_expr(ex);
-                    }
-                }
-                if arg_tys.len() == 1 {
-                    return Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Float)));
-                }
-                self.err(
-                    cspan,
-                    "`input.float` with keyword args should include `defval=`",
-                );
-                Err(())
+                self.typecheck_input_factory(InputFactoryKind::Float, cspan, args, &arg_tys)
             }
             "input.bool" => {
-                if arg_tys.len() != 1 {
-                    self.err(cspan, "`input.bool` expects one default argument");
+                if args.is_empty() {
+                    self.err(cspan, "`input.bool` expects at least a defval");
                     return Err(());
                 }
-                Ok(HirType::Simple(AstType::Primitive(PrimitiveType::Bool)))
+                self.typecheck_input_factory(InputFactoryKind::Bool, cspan, args, &arg_tys)
             }
             "input.string" => {
-                if arg_tys.len() != 1 {
-                    self.err(cspan, "`input.string` expects one default argument");
+                if args.is_empty() {
+                    self.err(cspan, "`input.string` expects at least a defval");
                     return Err(());
                 }
-                Ok(HirType::Simple(AstType::Primitive(PrimitiveType::String)))
+                self.typecheck_input_factory(InputFactoryKind::String, cspan, args, &arg_tys)
             }
             "nz" => {
                 if arg_tys.is_empty() {
@@ -1246,12 +1300,44 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
                 PrimitiveType::Float,
             ))),
             _ if !name.is_empty() => {
-                if let Some((root, _)) = name.split_once('.') {
+                if let Some((root, rest)) = name.split_once('.') {
+                    if let Some(sig) = self.session.library_export_fn_sig(root, rest) {
+                        if args.len() != sig.params.len() {
+                            self.err(
+                                call_span,
+                                format!(
+                                    "`{name}` expects {} arguments, got {}",
+                                    sig.params.len(),
+                                    args.len()
+                                ),
+                            );
+                            return Err(());
+                        }
+                        for (i, ((_, e), pt)) in args.iter().zip(sig.params.iter()).enumerate() {
+                            let t = match self.type_expr(e) {
+                                Ok(t) => t,
+                                Err(()) => return Err(()),
+                            };
+                            if !assignable(&t, pt) {
+                                self.err(
+                                    e.span,
+                                    format!("argument {} to `{name}` has incompatible type", i + 1),
+                                );
+                                return Err(());
+                            }
+                        }
+                        return Ok(sig.ret.clone());
+                    }
                     if self.import_aliases.contains_key(root) {
-                        self.err(
-                            cspan,
-                            "calls through an import alias are not supported until library linking exists",
-                        );
+                        let msg = if self.session.import_library_is_linked(root) {
+                            format!(
+                                "unknown exported library member `{rest}` for import `{root}` in call"
+                            )
+                        } else {
+                            "calls through an import alias are not supported until library linking exists"
+                                .into()
+                        };
+                        self.err(cspan, msg);
                         return Err(());
                     }
                 }
@@ -1319,6 +1405,133 @@ impl<'a, S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead> Checker<'a, S> {
         }
     }
 
+    /// TV-style `input.int` / `input.float` / `input.bool` / `input.string`: `defval` positional or `defval=`,
+    /// plus optional `title` / `group` / bounds / `options=` / etc.
+    fn typecheck_input_factory(
+        &mut self,
+        factory: InputFactoryKind,
+        cspan: Span,
+        args: &[(Option<String>, Expr)],
+        arg_tys: &[HirType],
+    ) -> Result<HirType, ()> {
+        let Some(di) = input_factory_defval_index(args) else {
+            self.err(
+                cspan,
+                "input factory requires a defval (first positional argument or `defval=`)",
+            );
+            return Err(());
+        };
+        let def_span = args[di].1.span;
+        let def_ty = &arg_tys[di];
+        match factory {
+            InputFactoryKind::Bool => {
+                if !is_bool_like(def_ty) {
+                    self.err(def_span, "`input.bool`: defval must be bool or series bool");
+                    return Err(());
+                }
+            }
+            InputFactoryKind::String => {
+                if !is_stringish(def_ty) {
+                    self.err(
+                        def_span,
+                        "`input.string`: defval must be string or series string",
+                    );
+                    return Err(());
+                }
+            }
+            InputFactoryKind::Int => {
+                if !is_integral(def_ty) {
+                    self.err(def_span, "`input.int`: defval must be integral");
+                    return Err(());
+                }
+            }
+            InputFactoryKind::Float => {
+                if !is_numeric(def_ty) {
+                    self.err(def_span, "`input.float`: defval must be numeric");
+                    return Err(());
+                }
+            }
+        }
+
+        for (i, (nm, ex)) in args.iter().enumerate() {
+            if i == di {
+                continue;
+            }
+            let ty = &arg_tys[i];
+            match nm.as_deref() {
+                Some("title") | Some("group") | Some("tooltip") => {
+                    if !is_stringish(ty) {
+                        self.err(
+                            ex.span,
+                            format!(
+                                "`input.*`: `{}` must be string or series string",
+                                nm.as_deref().unwrap_or("?")
+                            ),
+                        );
+                        return Err(());
+                    }
+                }
+                Some("options") if factory == InputFactoryKind::String => {
+                    if !matches!(ty, HirType::Array(_)) {
+                        self.err(ex.span, "`input.string`: `options=` must be an array");
+                        return Err(());
+                    }
+                }
+                Some("minval") | Some("maxval") | Some("step") => match factory {
+                    InputFactoryKind::Int => {
+                        if !is_integral(ty) && !is_numeric(ty) {
+                            self.err(
+                                ex.span,
+                                "`input.int`: minval/maxval/step must be integral or numeric",
+                            );
+                            return Err(());
+                        }
+                    }
+                    InputFactoryKind::Float => {
+                        if !is_numeric(ty) {
+                            self.err(
+                                ex.span,
+                                "`input.float`: minval/maxval/step must be numeric",
+                            );
+                            return Err(());
+                        }
+                    }
+                    _ => {}
+                },
+                Some("inline") | Some("confirm") if factory == InputFactoryKind::Bool => {
+                    if !is_bool_like(ty) {
+                        self.err(
+                            ex.span,
+                            "`input.bool`: `inline` / `confirm` must be bool or series bool",
+                        );
+                        return Err(());
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    if is_stringish(ty) {
+                        continue;
+                    }
+                    match factory {
+                        InputFactoryKind::Bool if is_bool_like(ty) => continue,
+                        InputFactoryKind::String if matches!(ty, HirType::Array(_)) => continue,
+                        InputFactoryKind::Int if is_integral(ty) || is_numeric(ty) => continue,
+                        InputFactoryKind::Float if is_numeric(ty) => continue,
+                        _ => {
+                            self.err(
+                                ex.span,
+                                "unexpected positional argument for this `input.*` call",
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(factory.result_hir_type())
+    }
+
     fn finish_result(&mut self) -> Result<(), AnalyzeError> {
         if self.issues.is_empty() {
             Ok(())
@@ -1332,7 +1545,13 @@ fn default_fn_return_hir() -> HirType {
     HirType::Series(AstType::Primitive(PrimitiveType::Float))
 }
 
-fn infer_return_from_block<S: ExprTypeSink + SymbolDefRecorder + ExprTypesRead>(
+fn infer_return_from_block<
+    S: ExprTypeSink
+        + SymbolDefRecorder
+        + ExprTypesRead
+        + LibraryExportsRead
+        + TypecheckedFnSigSink,
+>(
     checker: &mut Checker<'_, S>,
     stmts: &[Stmt],
 ) -> HirType {
@@ -1546,6 +1765,38 @@ fn builtin_global(path: &[String]) -> Option<HirType> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputFactoryKind {
+    Bool,
+    String,
+    Int,
+    Float,
+}
+
+impl InputFactoryKind {
+    fn result_hir_type(self) -> HirType {
+        match self {
+            Self::Bool => HirType::Simple(AstType::Primitive(PrimitiveType::Bool)),
+            Self::String => HirType::Simple(AstType::Primitive(PrimitiveType::String)),
+            Self::Int => HirType::Simple(AstType::Primitive(PrimitiveType::Int)),
+            Self::Float => HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
+        }
+    }
+}
+
+/// Index of the `defval` argument: explicit `defval=` wins; else first positional (`None` name).
+fn input_factory_defval_index(args: &[(Option<String>, Expr)]) -> Option<usize> {
+    for (i, (nm, _)) in args.iter().enumerate() {
+        if nm.as_deref() == Some("defval") {
+            return Some(i);
+        }
+    }
+    match args.first() {
+        Some((None, _)) => Some(0),
+        _ => None,
+    }
+}
+
 fn dotted_name(e: &Expr) -> Option<String> {
     match &e.kind {
         ExprKind::IdentPath(p) => Some(p.join(".")),
@@ -1565,6 +1816,7 @@ mod tests {
     };
     use crate::hir::HirType;
     use crate::parse_script;
+    use crate::register_import_library;
     use crate::session::CompilerSession;
     use crate::Compiler;
 
@@ -1987,5 +2239,109 @@ mod tests {
         )
         .unwrap();
         analyze_to_hir_compiler(&s).expect("HIR with unused import should succeed");
+    }
+
+    #[test]
+    fn fixture_minimal_strategy_parse_and_check_script() {
+        let src = include_str!("../../../tests/fixtures/minimal_strategy.pine");
+        let s = parse_script("minimal_strategy.pine", src).unwrap();
+        crate::check_script(&s).expect("semantic checks for strategy fixture");
+    }
+
+    #[test]
+    fn import_linked_library_qualified_call_typechecks() {
+        let lib = parse_script(
+            "lib.pine",
+            "//@version=6\nlibrary(\"L\")\nexport f double(float x) => x * 2.0\n",
+        )
+        .unwrap();
+        let main = parse_script(
+            "main.pine",
+            "//@version=6\nimport User/L/1 as m\nindicator(\"x\")\ny = m.double(close)\n",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        register_import_library(&mut session, "m", &lib).expect("register library");
+        session.prepare_analysis(&main);
+        typecheck_script_in_session(&mut session, &main).expect("consumer typechecks with link");
+    }
+
+    #[test]
+    fn import_linked_library_call_lowers_to_hir() {
+        let lib = parse_script(
+            "lib.pine",
+            "//@version=6\nlibrary(\"L\")\nexport f double(float x) => x * 2.0\n",
+        )
+        .unwrap();
+        let main = parse_script(
+            "main.pine",
+            "//@version=6\nimport User/L/1 as m\nindicator(\"x\")\ny = m.double(close)\n",
+        )
+        .unwrap();
+        let mut c = Compiler::with_hir_lowering();
+        register_import_library(&mut c.session, "m", &lib).unwrap();
+        c.session.prepare_analysis(&main);
+        c.run_semantic_passes(&main)
+            .expect("HIR lowers linked library call");
+        let hir = c.session.hir.as_ref().expect("hir");
+        assert!(
+            hir.user_functions.iter().any(|uf| {
+                hir.symbols
+                    .name(uf.symbol)
+                    .is_some_and(|n| n.starts_with("__import__"))
+            }),
+            "expected merged import user function on HIR"
+        );
+    }
+
+    #[test]
+    fn input_bool_title_and_group_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = input.bool(true, 'T', group='G')\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn input_string_options_array_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = input.string(\"a\", \"t\", options=[\"A\", \"B\"], group=\"g\")\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn input_int_minval_maxval_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = input.int(1, \"d\", minval=1, maxval=31)\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn input_float_defval_kw_only_ok() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = input.float(defval=1.5, title=\"x\")\n",
+        )
+        .unwrap();
+        typecheck_script(&s).unwrap();
+    }
+
+    #[test]
+    fn input_string_options_must_be_array() {
+        let s = parse_script(
+            "t",
+            "indicator(\"x\")\na = input.string(\"a\", \"t\", options=\"bad\")\n",
+        )
+        .unwrap();
+        let e = typecheck_script(&s).unwrap_err();
+        assert!(e.message().contains("options"), "{}", e.message());
     }
 }

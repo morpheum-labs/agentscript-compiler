@@ -131,12 +131,7 @@ fn hir_expr_ty<'a>(hir: &'a HirScript, id: HirId) -> Result<&'a HirType, HirWasm
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Financial(f) => &f.ty,
         HirExpr::Array { ty, .. } => ty,
-        HirExpr::Plot { .. } => {
-            return Err(HirWasmError::at(
-                span,
-                "internal: unexpected plot expr in ta period operand",
-            ));
-        }
+        HirExpr::Plot { ty, .. } => ty,
     })
 }
 
@@ -523,12 +518,7 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         HirExpr::Array { ty, .. } => ty,
         HirExpr::Security(sec) => &sec.ty,
         HirExpr::Financial(f) => &f.ty,
-        HirExpr::Plot { .. } => {
-            return Err(HirWasmError::at(
-                span,
-                "plot expression shape not supported as let value",
-            ));
-        }
+        HirExpr::Plot { ty, .. } => ty,
     };
     hir_ty_to_val(ty_ref, span)
 }
@@ -552,6 +542,8 @@ struct Ctx<'a> {
     scratch_slot_max: i32,
     /// Temp for UTF-8 length returned by [`IMPORT_SERIES_STRING_UTF8`].
     scratch_i32: u32,
+    /// Holds series value across [`IMPORT_PLOT`] (`(f64) -> ()`) when `plot(...)` is an expression.
+    scratch_plot: u32,
 }
 
 impl<'a> Ctx<'a> {
@@ -941,11 +933,12 @@ impl<'a> Ctx<'a> {
                     "array literals are not supported in wasm codegen v0",
                 ));
             }
-            HirExpr::Plot { .. } => {
-                return Err(HirWasmError::at(
-                    span,
-                    "nested plot expression not supported",
-                ));
+            HirExpr::Plot { expr: inner, .. } => {
+                self.emit_expr(func, *inner)?;
+                func.instructions().local_set(self.scratch_plot);
+                func.instructions().local_get(self.scratch_plot);
+                func.instructions().call(IMPORT_PLOT);
+                func.instructions().local_get(self.scratch_plot);
             }
         }
         Ok(())
@@ -1304,6 +1297,8 @@ fn encode_user_function_body(
     local_defs.push((1, ValType::F64));
     let scratch_i32 = scratch_r + 1;
     local_defs.push((1, ValType::I32));
+    let scratch_plot = scratch_i32 + 1;
+    local_defs.push((1, ValType::F64));
 
     let ctx = Ctx {
         hir,
@@ -1318,6 +1313,7 @@ fn encode_user_function_body(
         scratch_tf_off,
         scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
         scratch_i32,
+        scratch_plot,
     };
     let mut f = Function::new(local_defs);
     for s in &uf.body_stmts {
@@ -1597,6 +1593,8 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         local_defs.push((1, ValType::F64));
         let scratch_i32 = scratch_r + 1;
         local_defs.push((1, ValType::I32));
+        let scratch_plot = scratch_i32 + 1;
+        local_defs.push((1, ValType::F64));
 
         let ctx = Ctx {
             hir,
@@ -1611,6 +1609,7 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             scratch_tf_off: scratch_tf_pass,
             scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
             scratch_i32,
+            scratch_plot,
         };
         let mut f = Function::new(local_defs);
         for stmt in &hir.body {

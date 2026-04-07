@@ -54,8 +54,8 @@ Use when the user assumes TradingView Pine behavior or indentation-based syntax.
   * **Keywords:** braces, QAS, Pine parity.
 
 * **[`concepts/tv-vs-agentscript-validation.md`](concepts/tv-vs-agentscript-validation.md)**  
-  * **Content:** Tables of TV-accurate behaviors vs AgentScript: what the **static checker** typically accepts vs rejects, separate from WASM emit and TV runtime parity.  
-  * **Keywords:** TradingView, validation, builtins, `strategy.*`, `request.*`.
+  * **Content:** Tables of TV-accurate behaviors vs AgentScript: what the **static checker** typically accepts vs rejects, separate from WASM emit and TV runtime parity. Includes a short **validation ladder** (parse → `check_script` / `parse_and_analyze` → `--emit=hir` → `--emit=wasm`) with pointers to the CLI and library APIs.  
+  * **Keywords:** TradingView, validation, builtins, `strategy.*`, `request.*`, parse, HIR, WASM.
 
 ---
 

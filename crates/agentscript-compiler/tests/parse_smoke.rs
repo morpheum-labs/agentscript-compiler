@@ -1,7 +1,7 @@
 use agentscript_compiler::{
-    parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr, ExprKind,
-    FnBody, ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind, Span,
-    Stmt, StmtKind, Type, UnaryOp, VarQualifier,
+    analyze_script, parse_and_analyze, parse_script, AssignOp, BinOp, ElseBody, ExportDecl, Expr,
+    ExprKind, FnBody, ForInPattern, ImportDecl, Item, PrimitiveType, ScriptDeclaration, ScriptKind,
+    Span, Stmt, StmtKind, Type, UnaryOp, VarQualifier,
 };
 
 #[test]
@@ -1181,6 +1181,23 @@ f() => 1
     };
     assert_eq!(f.name, "f");
     assert!(f.params.is_empty());
+}
+
+#[test]
+fn pine_function_duplicate_params_early_diagnostic_span() {
+    let src = r#"//@version=6
+indicator("x")
+dup(float a, float a) => 1
+"#;
+    let s = parse_script("dup.pine", src).expect("parse");
+    let err = analyze_script(&s).expect_err("duplicate parameter");
+    let d = err
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("duplicate parameter"))
+        .expect("duplicate parameter diagnostic");
+    assert_ne!(d.span, Span::DUMMY);
+    assert!(d.message.contains('a'), "message={}", d.message);
 }
 
 #[test]

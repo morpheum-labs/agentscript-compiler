@@ -8,6 +8,26 @@ use crate::bindings::{NameBinding, SemanticSymbolId};
 use crate::frontend::ast::{max_node_id, NodeId, Script, Span};
 use crate::hir::{HirScript, HirType};
 
+/// Inferred signature for a top-level or exported library function (params + return after typecheck).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LibraryExportFnSig {
+    pub params: Vec<HirType>,
+    pub ret: HirType,
+}
+
+/// Read linked `import` library export signatures supplied by the host ([`CompilerSession::linked_library_exports`]).
+pub trait LibraryExportsRead {
+    fn library_export_fn_sig(&self, import_alias: &str, member: &str) -> Option<LibraryExportFnSig>;
+
+    /// True if the host registered a library for this import alias ([`crate::register_import_library`]).
+    fn import_library_is_linked(&self, import_alias: &str) -> bool;
+}
+
+/// Sink for the typechecker to record top-level function signatures after inference.
+pub trait TypecheckedFnSigSink {
+    fn replace_typechecked_fn_sigs(&mut self, m: HashMap<String, LibraryExportFnSig>);
+}
+
 /// Narrow interface for passes that only record qualified-path resolutions.
 pub trait NameBindingSink {
     fn set_name_binding(&mut self, id: NodeId, binding: NameBinding);
@@ -52,6 +72,13 @@ pub struct CompilerSession {
     /// `define_*`). Used by HIR lowering to align [`SemanticSymbolId`] with [`crate::hir::SymbolId`].
     /// Import aliases are excluded (HIR does not lower imports yet).
     pub def_semantic_ids: Vec<SemanticSymbolId>,
+    /// `import_alias` → (`export_name` → signature). Filled by [`crate::register_import_library`].
+    pub linked_library_exports: HashMap<String, HashMap<String, LibraryExportFnSig>>,
+    /// `import_alias` → lowered library [`HirScript`] (from the same registration). Used to splice
+    /// `alias.member(...)` calls into the consumer HIR as merged user functions.
+    pub linked_library_hir: HashMap<String, HirScript>,
+    /// Top-level function signatures after the last successful [`typecheck_script_in_session`] on this session.
+    pub typechecked_fn_sigs: HashMap<String, LibraryExportFnSig>,
 }
 
 impl CompilerSession {
@@ -64,6 +91,9 @@ impl CompilerSession {
             expr_types: Vec::new(),
             symbol_def_stack: Vec::new(),
             def_semantic_ids: Vec::new(),
+            linked_library_exports: HashMap::new(),
+            linked_library_hir: HashMap::new(),
+            typechecked_fn_sigs: HashMap::new(),
         }
     }
 
@@ -75,6 +105,9 @@ impl CompilerSession {
         self.expr_types.clear();
         self.symbol_def_stack.clear();
         self.def_semantic_ids.clear();
+        self.linked_library_exports.clear();
+        self.linked_library_hir.clear();
+        self.typechecked_fn_sigs.clear();
     }
 
     /// Allocate side maps for `script` (from [`max_node_id`]).
@@ -85,6 +118,7 @@ impl CompilerSession {
         self.expr_types = vec![None; len];
         self.symbol_def_stack = vec![HashMap::new()];
         self.def_semantic_ids.clear();
+        self.typechecked_fn_sigs.clear();
     }
 
     /// Push a scope frame for typed symbol definitions (call with [`Self::push_symbol_scope`] from typecheck).
@@ -155,6 +189,25 @@ impl SymbolDefRecorder for CompilerSession {
 
     fn record_symbol_def(&mut self, span: Span, name: &str, ty: HirType) {
         CompilerSession::record_symbol_def(self, span, name, ty);
+    }
+}
+
+impl LibraryExportsRead for CompilerSession {
+    fn library_export_fn_sig(&self, import_alias: &str, member: &str) -> Option<LibraryExportFnSig> {
+        self.linked_library_exports
+            .get(import_alias)?
+            .get(member)
+            .cloned()
+    }
+
+    fn import_library_is_linked(&self, import_alias: &str) -> bool {
+        self.linked_library_exports.contains_key(import_alias)
+    }
+}
+
+impl TypecheckedFnSigSink for CompilerSession {
+    fn replace_typechecked_fn_sigs(&mut self, m: HashMap<String, LibraryExportFnSig>) {
+        self.typechecked_fn_sigs = m;
     }
 }
 

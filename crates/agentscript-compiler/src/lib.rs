@@ -44,8 +44,8 @@ pub use hir::{
     AstHirLowerer, HirLowerError, HirScript, HirType, LowerToHir,
 };
 pub use session::{
-    CompilerSession, ExprTypesRead, ExprTypeSink, NameBindingSink, SemanticDefSite,
-    SymbolDefRecorder,
+    CompilerSession, ExprTypesRead, ExprTypeSink, LibraryExportFnSig, LibraryExportsRead,
+    NameBindingSink, SemanticDefSite, SymbolDefRecorder, TypecheckedFnSigSink,
 };
 pub use visitor::{AstVisitor, AstWalk, VisitExpr, VisitStmt};
 
@@ -109,6 +109,68 @@ pub fn parse_and_analyze(
     let script = parse_script(src_name.as_ref(), source)?;
     check_script(&script).map_err(CompileOrAnalyzeError::Analyze)?;
     Ok(script)
+}
+
+/// Register a `library()` script as the resolution target for `import … as import_alias` when
+/// compiling a consumer script. Runs semantic analysis on `lib`, then stores exported function
+/// signatures on `session`. Call before [`CompilerSession::prepare_analysis`] on the consumer.
+///
+/// See repository `docs/aether-integration-gap.md` §2.1.
+pub fn register_import_library(
+    session: &mut CompilerSession,
+    import_alias: impl Into<String>,
+    lib: &Script,
+) -> Result<(), AnalyzeError> {
+    use crate::frontend::ast::{ExportDecl, Item, ScriptKind, Span};
+
+    let import_alias = import_alias.into();
+    let kind = lib.items.iter().find_map(|it| match it {
+        Item::ScriptDecl(d) => Some(d.kind),
+        _ => None,
+    });
+    if kind != Some(ScriptKind::Library) {
+        return Err(AnalyzeError::single(
+            "linked import source must be a `library()` script",
+            Span::DUMMY,
+        ));
+    }
+    let mut co = Compiler::with_hir_lowering();
+    co.session.prepare_analysis(lib);
+    co.run_semantic_passes(lib)?;
+    let lib_hir = co
+        .session
+        .hir
+        .as_ref()
+        .ok_or_else(|| {
+            AnalyzeError::single(
+                "internal: library script did not produce HIR after semantic passes",
+                Span::DUMMY,
+            )
+        })?
+        .clone();
+    let mut members = std::collections::HashMap::new();
+    for item in &lib.items {
+        if let Item::Export(ExportDecl::Fn(f)) = item {
+            let sig = co
+                .session
+                .typechecked_fn_sigs
+                .get(&f.name)
+                .cloned()
+                .ok_or_else(|| {
+                    AnalyzeError::single(
+                        format!(
+                            "internal: missing typechecked signature for library export `{}`",
+                            f.name
+                        ),
+                        f.span,
+                    )
+                })?;
+            members.insert(f.name.clone(), sig);
+        }
+    }
+    session.linked_library_exports.insert(import_alias.clone(), members);
+    session.linked_library_hir.insert(import_alias, lib_hir);
+    Ok(())
 }
 
 /// Run [`Compiler::run_semantic_passes`] with the default semantic pipeline (no HIR).
@@ -226,6 +288,43 @@ plot(f(close))
 "#;
         let script = parse_script("t", SRC).expect("parse");
         let wasm = compile_script_to_wasm_v0(&script).expect("user-call wasm");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+    }
+
+    #[test]
+    fn compile_wasm_v0_linked_library_import_smoke() {
+        const LIB: &str = r#"//@version=6
+library("L")
+export f double(float x) => x * 2.0
+"#;
+        const MAIN: &str = r#"//@version=6
+import User/L/1 as m
+indicator("x")
+y = m.double(close)
+plot(y)
+"#;
+        let lib = parse_script("lib.pine", LIB).expect("parse lib");
+        let main = parse_script("main.pine", MAIN).expect("parse main");
+        let mut c = Compiler::with_hir_lowering();
+        register_import_library(&mut c.session, "m", &lib).expect("register");
+        c.session.prepare_analysis(&main);
+        c.run_semantic_passes(&main).expect("analyze consumer");
+        let hir = c.session.hir.as_ref().expect("hir");
+        let wasm = GuestWasmV0
+            .emit(hir)
+            .expect("emit wasm with merged library call");
+        wasmparser::validate(&wasm).expect("valid wasm module");
+    }
+
+    #[test]
+    fn compile_wasm_v0_let_plot_rhs_smoke() {
+        const SRC: &str = r#"//@version=6
+indicator("x")
+y = plot(close)
+plot(y)
+"#;
+        let script = parse_script("t", SRC).expect("parse");
+        let wasm = compile_script_to_wasm_v0(&script).expect("let plot rhs wasm");
         wasmparser::validate(&wasm).expect("valid wasm module");
     }
 
