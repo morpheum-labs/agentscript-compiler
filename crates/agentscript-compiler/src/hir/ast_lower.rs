@@ -108,6 +108,14 @@ pub fn lower_script_to_hir_in_bump_with_session(
     lower.lower_script(script)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FnLoweringMode {
+    /// Consumer script: hoist defs align with [`CompilerSession::def_semantic_ids`].
+    MainScript,
+    /// Linked `export fn` under a mangled name; skip `next_def_sid` for the function and params.
+    LinkedLibrary,
+}
+
 struct LowerCtx<'a, 'sess> {
     bump: &'a Bump,
     session: Option<&'sess CompilerSession>,
@@ -127,10 +135,6 @@ struct LowerCtx<'a, 'sess> {
     /// User `f(...) =>` / Pine expr-body functions: name → arity (parameters).
     user_fn_arity: HashMap<String, usize>,
     persist_symbols: HashSet<SymbolId>,
-    /// Merged [`HirUserFunction`]s from linked libraries (`__import__alias__member`); appended after script ufs.
-    import_user_functions: Vec<HirUserFunction>,
-    /// Detect circular export dependencies while merging library bodies.
-    import_merge_stack: HashSet<String>,
 }
 
 impl<'a, 'sess> LowerCtx<'a, 'sess> {
@@ -154,8 +158,6 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             input_float_names: HashSet::new(),
             user_fn_arity: HashMap::new(),
             persist_symbols: HashSet::new(),
-            import_user_functions: Vec::new(),
-            import_merge_stack: HashSet::new(),
         }
     }
 
@@ -457,7 +459,11 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         HirType::Series(Type::Primitive(PrimitiveType::Float))
     }
 
-    fn register_user_fn(&mut self, f: &FnDecl) -> Result<(), HirLowerError> {
+    fn import_mangle(alias: &str, member: &str) -> String {
+        format!("__import__{alias}__{member}")
+    }
+
+    fn register_user_fn(&mut self, f: &FnDecl, mode: FnLoweringMode) -> Result<(), HirLowerError> {
         if f.is_method {
             return Err(HirLowerError::at(
                 f.span,
@@ -471,8 +477,10 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             ));
         }
         let sym = self.intern_name(&f.name);
-        if let Some(sid) = self.next_def_sid(f.span)? {
-            self.sid_to_hir.insert(sid, sym);
+        if mode == FnLoweringMode::MainScript {
+            if let Some(sid) = self.next_def_sid(f.span)? {
+                self.sid_to_hir.insert(sid, sym);
+            }
         }
         Ok(())
     }
@@ -536,13 +544,35 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             self.intern_name(n);
         }
 
-        for item in &script.items {
-            if let Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) = item {
-                self.register_user_fn(f)?;
+        if let Some(sess) = self.session {
+            for (alias, exports) in &sess.linked_library_exports {
+                for (member, entry) in exports {
+                    let mut fd = entry.decl.clone();
+                    fd.name = Self::import_mangle(alias, member);
+                    self.register_user_fn(&fd, FnLoweringMode::LinkedLibrary)?;
+                }
             }
         }
 
-        let mut user_functions: Vec<HirUserFunction> = Vec::new();
+        for item in &script.items {
+            if let Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) = item {
+                self.register_user_fn(f, FnLoweringMode::MainScript)?;
+            }
+        }
+
+        let mut linked_user_functions: Vec<HirUserFunction> = Vec::new();
+        if let Some(sess) = self.session {
+            for (alias, exports) in &sess.linked_library_exports {
+                for (member, entry) in exports {
+                    let mut fd = entry.decl.clone();
+                    fd.name = Self::import_mangle(alias, member);
+                    linked_user_functions
+                        .push(self.lower_user_function(&fd, FnLoweringMode::LinkedLibrary)?);
+                }
+            }
+        }
+
+        let mut user_functions: Vec<HirUserFunction> = linked_user_functions;
 
         for item in &script.items {
             match item {
@@ -557,7 +587,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     // Metadata only until a module linker exists; typecheck rejects qualified use.
                 }
                 Item::FnDecl(f) | Item::Export(ExportDecl::Fn(f)) => {
-                    user_functions.push(self.lower_user_function(f)?);
+                    user_functions.push(self.lower_user_function(f, FnLoweringMode::MainScript)?);
                 }
                 Item::Enum(e) => {
                     return Err(HirLowerError::at(
@@ -596,8 +626,6 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             source_span = fallback_script_source_span(script);
         }
 
-        user_functions.append(&mut self.import_user_functions);
-
         Ok(HirScript {
             version,
             source_span,
@@ -616,7 +644,11 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         })
     }
 
-    fn lower_user_function(&mut self, f: &FnDecl) -> Result<HirUserFunction, HirLowerError> {
+    fn lower_user_function(
+        &mut self,
+        f: &FnDecl,
+        mode: FnLoweringMode,
+    ) -> Result<HirUserFunction, HirLowerError> {
         let sym = *self.names.get(f.name.as_str()).ok_or_else(|| {
             HirLowerError::at(
                 f.span,
@@ -628,11 +660,13 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             self.scope_stack = vec![HashMap::new()];
             let mut params = Vec::with_capacity(f.params.len());
             for p in &f.params {
-                let sid = self
-                    .next_def_sid(f.span)?
-                    .ok_or_else(|| HirLowerError::at(f.span, "internal: missing param semantic id"))?;
                 let pid = self.alloc_fresh_symbol(&p.name);
-                self.sid_to_hir.insert(sid, pid);
+                if mode == FnLoweringMode::MainScript {
+                    let sid = self.next_def_sid(f.span)?.ok_or_else(|| {
+                        HirLowerError::at(f.span, "internal: missing param semantic id")
+                    })?;
+                    self.sid_to_hir.insert(sid, pid);
+                }
                 self.scope_stack[0].insert(p.name.clone(), pid);
                 params.push(pid);
             }
@@ -1254,11 +1288,30 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             if let Some(sess) = self.session {
                 let alias = path[0].as_str();
                 let member = path[1].as_str();
-                if sess.linked_library_exports.contains_key(alias)
-                    && sess.linked_library_hir.contains_key(alias)
+                if sess
+                    .linked_library_exports
+                    .get(alias)
+                    .is_some_and(|m| m.contains_key(member))
                 {
-                    let callee_sym =
-                        self.ensure_linked_library_export_merged(alias, member, callee.span)?;
+                    let mangle = Self::import_mangle(alias, member);
+                    let arity = self.user_fn_arity.get(&mangle).copied().ok_or_else(|| {
+                        HirLowerError::at(
+                            callee.span,
+                            format!("internal: linked library fn `{mangle}` not registered"),
+                        )
+                    })?;
+                    if args.len() != arity {
+                        return Err(HirLowerError::at(
+                            expr_span,
+                            format!("`{alias}.{member}` expects {arity} arguments, got {}", args.len()),
+                        ));
+                    }
+                    let sym = *self.names.get(&mangle).ok_or_else(|| {
+                        HirLowerError::at(
+                            callee.span,
+                            format!("internal: missing symbol for linked `{mangle}`"),
+                        )
+                    })?;
                     let mut call_args = Vec::new();
                     for (_, e) in args {
                         call_args.push(self.lower_expr(e)?);
@@ -1266,7 +1319,7 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                     let ty = self.expr_ty_from_session_or_float_series(call_expr);
                     return Ok(self.alloc_expr(
                         HirExpr::UserCall {
-                            callee: callee_sym,
+                            callee: sym,
                             args: call_args,
                             ty,
                         },
@@ -1923,599 +1976,6 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             format!("call `{}` not supported", path.join(".")),
         ))
     }
-
-    fn import_mangle(alias: &str, member: &str) -> String {
-        format!("__import__{alias}__{member}")
-    }
-
-    /// Splice a linked library export into this script as a normal [`HirExpr::UserCall`] target.
-    fn ensure_linked_library_export_merged(
-        &mut self,
-        alias: &str,
-        member: &str,
-        err_span: Span,
-    ) -> Result<SymbolId, HirLowerError> {
-        let mangle = Self::import_mangle(alias, member);
-        if let Some(&sid) = self.names.get(&mangle) {
-            return Ok(sid);
-        }
-        let sess = self.session.ok_or_else(|| {
-            HirLowerError::at(err_span, "internal: session required for import library lowering")
-        })?;
-        let lib_hir = sess.linked_library_hir.get(alias).ok_or_else(|| {
-            HirLowerError::at(
-                err_span,
-                format!("internal: missing lowered HIR for import `{alias}`"),
-            )
-        })?;
-        let uf = find_library_export_uf(lib_hir, member).ok_or_else(|| {
-            HirLowerError::at(
-                err_span,
-                format!("internal: library export `{member}` not found in HIR for `{alias}`"),
-            )
-        })?;
-
-        if !self.import_merge_stack.insert(mangle.clone()) {
-            return Err(HirLowerError::at(
-                err_span,
-                format!("circular dependency between library exports involving `{member}`"),
-            ));
-        }
-
-        let res = (|| -> Result<SymbolId, HirLowerError> {
-            let export_fn_syms: HashSet<SymbolId> =
-                lib_hir.user_functions.iter().map(|u| u.symbol).collect();
-            let callees = collect_library_user_callees_in_uf(lib_hir, uf, &export_fn_syms);
-            for callee_sym in callees {
-                if callee_sym == uf.symbol {
-                    continue;
-                }
-                let callee_name = lib_hir.symbols.name(callee_sym).ok_or_else(|| {
-                    HirLowerError::at(err_span, "internal: library callee symbol missing name")
-                })?;
-                self.ensure_linked_library_export_merged(alias, callee_name, err_span)?;
-            }
-
-            let fn_sym = self.intern_name(&mangle);
-            let _ = self.user_fn_arity.insert(mangle.clone(), uf.params.len());
-
-            let mut sym_map: HashMap<SymbolId, SymbolId> = HashMap::new();
-            let mut new_params: Vec<SymbolId> = Vec::with_capacity(uf.params.len());
-            for p in &uf.params {
-                let pname = lib_hir.symbols.name(*p).ok_or_else(|| {
-                    HirLowerError::at(err_span, "internal: param symbol missing name")
-                })?;
-                let np = self.alloc_fresh_symbol(pname);
-                sym_map.insert(*p, np);
-                new_params.push(np);
-            }
-
-            let reachable = collect_reachable_hir_ids_from_uf(lib_hir, uf);
-            let mut used_syms: HashSet<SymbolId> = HashSet::new();
-            for hid in &reachable {
-                collect_symbols_in_hir_subtree(lib_hir, *hid, &mut used_syms);
-            }
-            for st in &uf.body_stmts {
-                collect_symbols_in_stmt(lib_hir, st, &mut used_syms);
-            }
-
-            for s in used_syms {
-                if sym_map.contains_key(&s) {
-                    continue;
-                }
-                let name = lib_hir.symbols.name(s).ok_or_else(|| {
-                    HirLowerError::at(err_span, "internal: symbol missing name during import merge")
-                })?;
-                if matches!(
-                    name,
-                    "close" | "open" | "high" | "low" | "volume" | "time"
-                ) {
-                    sym_map.insert(s, self.intern_name(name));
-                } else if export_fn_syms.contains(&s) {
-                    if s == uf.symbol {
-                        sym_map.insert(s, fn_sym);
-                    } else {
-                        let exp_name = lib_hir.symbols.name(s).ok_or_else(|| {
-                            HirLowerError::at(err_span, "internal: export fn symbol missing name")
-                        })?;
-                        let ms = Self::import_mangle(alias, exp_name);
-                        let cs = *self.names.get(&ms).ok_or_else(|| {
-                            HirLowerError::at(
-                                err_span,
-                                format!("internal: merged library fn `{exp_name}` not registered"),
-                            )
-                        })?;
-                        sym_map.insert(s, cs);
-                    }
-                } else {
-                    sym_map.insert(s, self.alloc_fresh_symbol(name));
-                }
-            }
-
-            let mut sorted: Vec<HirId> = reachable.into_iter().collect();
-            sorted.sort_by_key(|h| h.0);
-
-            let mut hir_map: HashMap<HirId, HirId> = HashMap::new();
-            let hir_base = self.exprs.len() as u32;
-            for (i, old) in sorted.iter().enumerate() {
-                hir_map.insert(*old, HirId(hir_base + i as u32));
-            }
-
-            for old in &sorted {
-                let ex = remap_hir_expr_with_maps(
-                    &lib_hir.exprs[old.0 as usize],
-                    &hir_map,
-                    &sym_map,
-                );
-                let sp = lib_hir.expr_spans[old.0 as usize];
-                let new_id = HirId(self.exprs.len() as u32);
-                if hir_map.get(old) != Some(&new_id) {
-                    return Err(HirLowerError::at(
-                        err_span,
-                        "internal: hir id map mismatch during import merge",
-                    ));
-                }
-                self.exprs.push(ex);
-                self.expr_spans.push(sp);
-            }
-
-            let body_stmts: Vec<HirStmt> = uf
-                .body_stmts
-                .iter()
-                .map(|s| remap_hir_stmt_with_maps(s, &hir_map, &sym_map))
-                .collect::<Result<_, _>>()?;
-            let result = *hir_map.get(&uf.result).ok_or_else(|| {
-                HirLowerError::at(err_span, "internal: missing result expr in import merge")
-            })?;
-
-            self.import_user_functions.push(HirUserFunction {
-                symbol: fn_sym,
-                params: new_params,
-                body_stmts,
-                result,
-            });
-
-            Ok(fn_sym)
-        })();
-
-        self.import_merge_stack.remove(&mangle);
-        res
-    }
-}
-
-fn find_library_export_uf<'a>(lib: &'a HirScript, member: &str) -> Option<&'a HirUserFunction> {
-    lib.user_functions.iter().find(|uf| {
-        lib.symbols
-            .name(uf.symbol)
-            .is_some_and(|n| n == member)
-    })
-}
-
-fn collect_library_user_callees_in_uf(
-    lib: &HirScript,
-    uf: &HirUserFunction,
-    export_fn_syms: &HashSet<SymbolId>,
-) -> HashSet<SymbolId> {
-    let mut out = HashSet::new();
-    let reachable = collect_reachable_hir_ids_from_uf(lib, uf);
-    for hid in reachable {
-        collect_user_call_callees_from_hir(lib, hid, export_fn_syms, &mut out);
-    }
-    out
-}
-
-fn collect_user_call_callees_from_hir(
-    lib: &HirScript,
-    id: HirId,
-    export_fn_syms: &HashSet<SymbolId>,
-    out: &mut HashSet<SymbolId>,
-) {
-    let ex = &lib.exprs[id.0 as usize];
-    match ex {
-        HirExpr::UserCall { callee, args, .. } => {
-            if export_fn_syms.contains(callee) {
-                out.insert(*callee);
-            }
-            for a in args {
-                collect_user_call_callees_from_hir(lib, *a, export_fn_syms, out);
-            }
-        }
-        HirExpr::Binary { lhs, rhs, .. } => {
-            collect_user_call_callees_from_hir(lib, *lhs, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, *rhs, export_fn_syms, out);
-        }
-        HirExpr::BuiltinCall { args, .. } => {
-            for a in args {
-                collect_user_call_callees_from_hir(lib, *a, export_fn_syms, out);
-            }
-        }
-        HirExpr::SeriesAccess { base, .. } => {
-            collect_user_call_callees_from_hir(lib, *base, export_fn_syms, out);
-        }
-        HirExpr::Select {
-            cond,
-            then_b,
-            else_b,
-            ..
-        } => {
-            collect_user_call_callees_from_hir(lib, *cond, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, *then_b, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, *else_b, export_fn_syms, out);
-        }
-        HirExpr::Array { elements, .. } => {
-            for e in elements {
-                collect_user_call_callees_from_hir(lib, *e, export_fn_syms, out);
-            }
-        }
-        HirExpr::Not { inner, .. } => {
-            collect_user_call_callees_from_hir(lib, *inner, export_fn_syms, out);
-        }
-        HirExpr::Plot { expr, .. } => {
-            collect_user_call_callees_from_hir(lib, *expr, export_fn_syms, out);
-        }
-        HirExpr::Security(sec) => {
-            collect_user_call_callees_from_hir(lib, sec.symbol, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, sec.timeframe, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, sec.expression, export_fn_syms, out);
-        }
-        HirExpr::Financial(f) => {
-            collect_user_call_callees_from_hir(lib, f.symbol, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, f.financial_id, export_fn_syms, out);
-            collect_user_call_callees_from_hir(lib, f.period, export_fn_syms, out);
-            if let Some(x) = f.ignore_invalid_symbol {
-                collect_user_call_callees_from_hir(lib, x, export_fn_syms, out);
-            }
-            if let Some(x) = f.currency {
-                collect_user_call_callees_from_hir(lib, x, export_fn_syms, out);
-            }
-        }
-        HirExpr::Literal(..) | HirExpr::Variable(..) => {}
-    }
-}
-
-fn collect_reachable_hir_ids_from_uf(lib: &HirScript, uf: &HirUserFunction) -> HashSet<HirId> {
-    let mut s = HashSet::new();
-    visit_hir_reachable_from_id(lib, uf.result, &mut s);
-    for st in &uf.body_stmts {
-        collect_reachable_hir_ids_from_stmt(lib, st, &mut s);
-    }
-    s
-}
-
-fn collect_reachable_hir_ids_from_stmt(lib: &HirScript, st: &HirStmt, out: &mut HashSet<HirId>) {
-    match st {
-        HirStmt::Let { value, .. } => {
-            visit_hir_reachable_from_id(lib, *value, out);
-        }
-        HirStmt::Plot { expr, .. } => {
-            visit_hir_reachable_from_id(lib, *expr, out);
-        }
-        HirStmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            visit_hir_reachable_from_id(lib, *cond, out);
-            for s in then_branch {
-                collect_reachable_hir_ids_from_stmt(lib, s, out);
-            }
-            if let Some(br) = else_branch {
-                for s in br {
-                    collect_reachable_hir_ids_from_stmt(lib, s, out);
-                }
-            }
-        }
-        HirStmt::Block(stmts) => {
-            for s in stmts {
-                collect_reachable_hir_ids_from_stmt(lib, s, out);
-            }
-        }
-        HirStmt::VarInit { value, .. } => {
-            visit_hir_reachable_from_id(lib, *value, out);
-        }
-    }
-}
-
-fn visit_hir_reachable_from_id(lib: &HirScript, id: HirId, out: &mut HashSet<HirId>) {
-    if !out.insert(id) {
-        return;
-    }
-    let ex = &lib.exprs[id.0 as usize];
-    match ex {
-        HirExpr::Literal(..) | HirExpr::Variable(..) => {}
-        HirExpr::Binary { lhs, rhs, .. } => {
-            visit_hir_reachable_from_id(lib, *lhs, out);
-            visit_hir_reachable_from_id(lib, *rhs, out);
-        }
-        HirExpr::BuiltinCall { args, .. } => {
-            for a in args {
-                visit_hir_reachable_from_id(lib, *a, out);
-            }
-        }
-        HirExpr::UserCall { args, .. } => {
-            for a in args {
-                visit_hir_reachable_from_id(lib, *a, out);
-            }
-        }
-        HirExpr::SeriesAccess { base, .. } => {
-            visit_hir_reachable_from_id(lib, *base, out);
-        }
-        HirExpr::Select {
-            cond,
-            then_b,
-            else_b,
-            ..
-        } => {
-            visit_hir_reachable_from_id(lib, *cond, out);
-            visit_hir_reachable_from_id(lib, *then_b, out);
-            visit_hir_reachable_from_id(lib, *else_b, out);
-        }
-        HirExpr::Array { elements, .. } => {
-            for e in elements {
-                visit_hir_reachable_from_id(lib, *e, out);
-            }
-        }
-        HirExpr::Not { inner, .. } => {
-            visit_hir_reachable_from_id(lib, *inner, out);
-        }
-        HirExpr::Plot { expr, .. } => {
-            visit_hir_reachable_from_id(lib, *expr, out);
-        }
-        HirExpr::Security(sec) => {
-            visit_hir_reachable_from_id(lib, sec.symbol, out);
-            visit_hir_reachable_from_id(lib, sec.timeframe, out);
-            visit_hir_reachable_from_id(lib, sec.expression, out);
-        }
-        HirExpr::Financial(f) => {
-            visit_hir_reachable_from_id(lib, f.symbol, out);
-            visit_hir_reachable_from_id(lib, f.financial_id, out);
-            visit_hir_reachable_from_id(lib, f.period, out);
-            if let Some(x) = f.ignore_invalid_symbol {
-                visit_hir_reachable_from_id(lib, x, out);
-            }
-            if let Some(x) = f.currency {
-                visit_hir_reachable_from_id(lib, x, out);
-            }
-        }
-    }
-}
-
-fn collect_symbols_in_hir_subtree(lib: &HirScript, id: HirId, out: &mut HashSet<SymbolId>) {
-    let ex = &lib.exprs[id.0 as usize];
-    match ex {
-        HirExpr::Variable(s, _) => {
-            out.insert(*s);
-        }
-        HirExpr::Binary { lhs, rhs, .. } => {
-            collect_symbols_in_hir_subtree(lib, *lhs, out);
-            collect_symbols_in_hir_subtree(lib, *rhs, out);
-        }
-        HirExpr::BuiltinCall { args, .. } => {
-            for a in args {
-                collect_symbols_in_hir_subtree(lib, *a, out);
-            }
-        }
-        HirExpr::UserCall { args, .. } => {
-            for a in args {
-                collect_symbols_in_hir_subtree(lib, *a, out);
-            }
-        }
-        HirExpr::SeriesAccess { base, .. } => {
-            collect_symbols_in_hir_subtree(lib, *base, out);
-        }
-        HirExpr::Select {
-            cond,
-            then_b,
-            else_b,
-            ..
-        } => {
-            collect_symbols_in_hir_subtree(lib, *cond, out);
-            collect_symbols_in_hir_subtree(lib, *then_b, out);
-            collect_symbols_in_hir_subtree(lib, *else_b, out);
-        }
-        HirExpr::Array { elements, .. } => {
-            for e in elements {
-                collect_symbols_in_hir_subtree(lib, *e, out);
-            }
-        }
-        HirExpr::Not { inner, .. } => {
-            collect_symbols_in_hir_subtree(lib, *inner, out);
-        }
-        HirExpr::Plot { expr, .. } => {
-            collect_symbols_in_hir_subtree(lib, *expr, out);
-        }
-        HirExpr::Security(sec) => {
-            collect_symbols_in_hir_subtree(lib, sec.symbol, out);
-            collect_symbols_in_hir_subtree(lib, sec.timeframe, out);
-            collect_symbols_in_hir_subtree(lib, sec.expression, out);
-        }
-        HirExpr::Financial(f) => {
-            collect_symbols_in_hir_subtree(lib, f.symbol, out);
-            collect_symbols_in_hir_subtree(lib, f.financial_id, out);
-            collect_symbols_in_hir_subtree(lib, f.period, out);
-            if let Some(x) = f.ignore_invalid_symbol {
-                collect_symbols_in_hir_subtree(lib, x, out);
-            }
-            if let Some(x) = f.currency {
-                collect_symbols_in_hir_subtree(lib, x, out);
-            }
-        }
-        HirExpr::Literal(..) => {}
-    }
-}
-
-fn collect_symbols_in_stmt(lib: &HirScript, st: &HirStmt, out: &mut HashSet<SymbolId>) {
-    match st {
-        HirStmt::Let { symbol, value } => {
-            out.insert(*symbol);
-            collect_symbols_in_hir_subtree(lib, *value, out);
-        }
-        HirStmt::Plot { expr, .. } => {
-            collect_symbols_in_hir_subtree(lib, *expr, out);
-        }
-        HirStmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_symbols_in_hir_subtree(lib, *cond, out);
-            for s in then_branch {
-                collect_symbols_in_stmt(lib, s, out);
-            }
-            if let Some(br) = else_branch {
-                for s in br {
-                    collect_symbols_in_stmt(lib, s, out);
-                }
-            }
-        }
-        HirStmt::Block(stmts) => {
-            for s in stmts {
-                collect_symbols_in_stmt(lib, s, out);
-            }
-        }
-        HirStmt::VarInit { symbol, value } => {
-            out.insert(*symbol);
-            collect_symbols_in_hir_subtree(lib, *value, out);
-        }
-    }
-}
-
-fn remap_hir_id(id: HirId, hir_map: &HashMap<HirId, HirId>) -> HirId {
-    *hir_map.get(&id).unwrap_or(&id)
-}
-
-fn remap_sym(id: SymbolId, sym_map: &HashMap<SymbolId, SymbolId>) -> SymbolId {
-    *sym_map.get(&id).unwrap_or(&id)
-}
-
-fn remap_hir_expr_with_maps(
-    ex: &HirExpr,
-    hir_map: &HashMap<HirId, HirId>,
-    sym_map: &HashMap<SymbolId, SymbolId>,
-) -> HirExpr {
-    match ex {
-        HirExpr::Literal(lit, ty) => HirExpr::Literal(lit.clone(), ty.clone()),
-        HirExpr::Variable(s, ty) => HirExpr::Variable(remap_sym(*s, sym_map), ty.clone()),
-        HirExpr::Binary {
-            op,
-            lhs,
-            rhs,
-            ty,
-        } => HirExpr::Binary {
-            op: *op,
-            lhs: remap_hir_id(*lhs, hir_map),
-            rhs: remap_hir_id(*rhs, hir_map),
-            ty: ty.clone(),
-        },
-        HirExpr::BuiltinCall { kind, args, ty } => HirExpr::BuiltinCall {
-            kind: *kind,
-            args: args.iter().map(|a| remap_hir_id(*a, hir_map)).collect(),
-            ty: ty.clone(),
-        },
-        HirExpr::UserCall { callee, args, ty } => HirExpr::UserCall {
-            callee: remap_sym(*callee, sym_map),
-            args: args.iter().map(|a| remap_hir_id(*a, hir_map)).collect(),
-            ty: ty.clone(),
-        },
-        HirExpr::SeriesAccess {
-            base,
-            offset,
-            ty,
-        } => HirExpr::SeriesAccess {
-            base: remap_hir_id(*base, hir_map),
-            offset: *offset,
-            ty: ty.clone(),
-        },
-        HirExpr::Select {
-            cond,
-            then_b,
-            else_b,
-            ty,
-        } => HirExpr::Select {
-            cond: remap_hir_id(*cond, hir_map),
-            then_b: remap_hir_id(*then_b, hir_map),
-            else_b: remap_hir_id(*else_b, hir_map),
-            ty: ty.clone(),
-        },
-        HirExpr::Array { elements, ty } => HirExpr::Array {
-            elements: elements.iter().map(|e| remap_hir_id(*e, hir_map)).collect(),
-            ty: ty.clone(),
-        },
-        HirExpr::Not { inner, ty } => HirExpr::Not {
-            inner: remap_hir_id(*inner, hir_map),
-            ty: ty.clone(),
-        },
-        HirExpr::Security(sec) => HirExpr::Security(Box::new(SecurityCall {
-            symbol: remap_hir_id(sec.symbol, hir_map),
-            timeframe: remap_hir_id(sec.timeframe, hir_map),
-            expression: remap_hir_id(sec.expression, hir_map),
-            gaps: sec.gaps,
-            lookahead: sec.lookahead,
-            ty: sec.ty.clone(),
-        })),
-        HirExpr::Financial(f) => HirExpr::Financial(Box::new(FinancialCall {
-            symbol: remap_hir_id(f.symbol, hir_map),
-            financial_id: remap_hir_id(f.financial_id, hir_map),
-            period: remap_hir_id(f.period, hir_map),
-            gaps: f.gaps,
-            ignore_invalid_symbol: f
-                .ignore_invalid_symbol
-                .map(|x| remap_hir_id(x, hir_map)),
-            currency: f.currency.map(|x| remap_hir_id(x, hir_map)),
-            ty: f.ty.clone(),
-        })),
-        HirExpr::Plot { expr, title, ty } => HirExpr::Plot {
-            expr: remap_hir_id(*expr, hir_map),
-            title: title.clone(),
-            ty: ty.clone(),
-        },
-    }
-}
-
-fn remap_hir_stmt_with_maps(
-    st: &HirStmt,
-    hir_map: &HashMap<HirId, HirId>,
-    sym_map: &HashMap<SymbolId, SymbolId>,
-) -> Result<HirStmt, HirLowerError> {
-    Ok(match st {
-        HirStmt::Let { symbol, value } => HirStmt::Let {
-            symbol: remap_sym(*symbol, sym_map),
-            value: remap_hir_id(*value, hir_map),
-        },
-        HirStmt::Plot { expr, title } => HirStmt::Plot {
-            expr: remap_hir_id(*expr, hir_map),
-            title: title.clone(),
-        },
-        HirStmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => HirStmt::If {
-            cond: remap_hir_id(*cond, hir_map),
-            then_branch: then_branch
-                .iter()
-                .map(|s| remap_hir_stmt_with_maps(s, hir_map, sym_map))
-                .collect::<Result<_, _>>()?,
-            else_branch: match else_branch {
-                None => None,
-                Some(br) => Some(
-                    br.iter()
-                        .map(|s| remap_hir_stmt_with_maps(s, hir_map, sym_map))
-                        .collect::<Result<_, _>>()?,
-                ),
-            },
-        },
-        HirStmt::Block(stmts) => HirStmt::Block(
-            stmts
-                .iter()
-                .map(|s| remap_hir_stmt_with_maps(s, hir_map, sym_map))
-                .collect::<Result<_, _>>()?,
-        ),
-        HirStmt::VarInit { symbol, value } => HirStmt::VarInit {
-            symbol: remap_sym(*symbol, sym_map),
-            value: remap_hir_id(*value, hir_map),
-        },
-    })
 }
 
 /// Dotted callee path (`ta.sma`) or method form (`close.sma`), plus the receiver expression for the latter.

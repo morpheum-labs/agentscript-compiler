@@ -1,11 +1,11 @@
 //! Shared compiler state: allocation arena, name resolution side maps, last HIR snapshot.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bumpalo::Bump;
 
 use crate::bindings::{NameBinding, SemanticSymbolId};
-use crate::frontend::ast::{max_node_id, NodeId, Script, Span};
+use crate::frontend::ast::{max_node_id, FnDecl, NodeId, Script, Span};
 use crate::hir::{HirScript, HirType};
 
 /// Inferred signature for a top-level or exported library function (params + return after typecheck).
@@ -13,6 +13,13 @@ use crate::hir::{HirScript, HirType};
 pub struct LibraryExportFnSig {
     pub params: Vec<HirType>,
     pub ret: HirType,
+}
+
+/// Linked `export fn` body (node ids cleared) plus typecheck signature for consumer lowering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LibraryLinkedExport {
+    pub sig: LibraryExportFnSig,
+    pub decl: FnDecl,
 }
 
 /// Read linked `import` library export signatures supplied by the host ([`CompilerSession::linked_library_exports`]).
@@ -72,11 +79,9 @@ pub struct CompilerSession {
     /// `define_*`). Used by HIR lowering to align [`SemanticSymbolId`] with [`crate::hir::SymbolId`].
     /// Import aliases are excluded (HIR does not lower imports yet).
     pub def_semantic_ids: Vec<SemanticSymbolId>,
-    /// `import_alias` → (`export_name` → signature). Filled by [`crate::register_import_library`].
-    pub linked_library_exports: HashMap<String, HashMap<String, LibraryExportFnSig>>,
-    /// `import_alias` → lowered library [`HirScript`] (from the same registration). Used to splice
-    /// `alias.member(...)` calls into the consumer HIR as merged user functions.
-    pub linked_library_hir: HashMap<String, HirScript>,
+    /// `import_alias` → (`export_name` → AST + signature). Filled by [`crate::register_import_library`].
+    /// [`BTreeMap`] iteration order is stable for HIR registration passes.
+    pub linked_library_exports: BTreeMap<String, BTreeMap<String, LibraryLinkedExport>>,
     /// Top-level function signatures after the last successful [`typecheck_script_in_session`] on this session.
     pub typechecked_fn_sigs: HashMap<String, LibraryExportFnSig>,
 }
@@ -91,8 +96,7 @@ impl CompilerSession {
             expr_types: Vec::new(),
             symbol_def_stack: Vec::new(),
             def_semantic_ids: Vec::new(),
-            linked_library_exports: HashMap::new(),
-            linked_library_hir: HashMap::new(),
+            linked_library_exports: BTreeMap::new(),
             typechecked_fn_sigs: HashMap::new(),
         }
     }
@@ -106,7 +110,6 @@ impl CompilerSession {
         self.symbol_def_stack.clear();
         self.def_semantic_ids.clear();
         self.linked_library_exports.clear();
-        self.linked_library_hir.clear();
         self.typechecked_fn_sigs.clear();
     }
 
@@ -197,7 +200,7 @@ impl LibraryExportsRead for CompilerSession {
         self.linked_library_exports
             .get(import_alias)?
             .get(member)
-            .cloned()
+            .map(|e| e.sig.clone())
     }
 
     fn import_library_is_linked(&self, import_alias: &str) -> bool {

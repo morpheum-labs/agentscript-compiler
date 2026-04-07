@@ -7,7 +7,7 @@ mod node;
 mod stmt;
 mod types;
 
-pub use assign_ids::{assign_node_ids, max_node_id};
+pub use assign_ids::{assign_node_ids, clear_node_ids_in_fn_decl, max_node_id};
 pub use decl::{
     EnumDef, EnumVariant, ExportDecl, FnBody, FnDecl, FnParam, ImportDecl, Item, Script,
     ScriptDeclaration, ScriptKind, UserTypeDef, UdtField,

@@ -13,6 +13,158 @@ pub fn assign_node_ids(script: &mut Script) {
     }
 }
 
+/// Set every [`NodeId`] in `f` (params, defaults, body) to [`NodeId::UNASSIGNED`] so the clone can
+/// be lowered in a consumer session without colliding with consumer side maps.
+pub fn clear_node_ids_in_fn_decl(f: &mut FnDecl) {
+    for p in &mut f.params {
+        if let Some(d) = &mut p.default {
+            clear_expr(d);
+        }
+    }
+    match &mut f.body {
+        FnBody::Expr(e) => clear_expr(e),
+        FnBody::Block(stmts) => {
+            for s in stmts {
+                clear_stmt(s);
+            }
+        }
+    }
+}
+
+fn clear_stmt(s: &mut Stmt) {
+    s.id = NodeId::UNASSIGNED;
+    match &mut s.kind {
+        StmtKind::VarDecl(v) => clear_expr(&mut v.value),
+        StmtKind::Assign { value, .. } | StmtKind::TupleAssign { value, .. } => clear_expr(value),
+        StmtKind::Expr(e) => clear_expr(e),
+        StmtKind::Block(stmts) => {
+            for x in stmts {
+                clear_stmt(x);
+            }
+        }
+        StmtKind::If(i) => clear_if(i),
+        StmtKind::For {
+            from,
+            to,
+            by,
+            body,
+            ..
+        } => {
+            clear_expr(from);
+            clear_expr(to);
+            if let Some(b) = by {
+                clear_expr(b);
+            }
+            for x in body {
+                clear_stmt(x);
+            }
+        }
+        StmtKind::ForIn { iterable, body, .. } => {
+            clear_expr(iterable);
+            for x in body {
+                clear_stmt(x);
+            }
+        }
+        StmtKind::Switch {
+            scrutinee,
+            cases,
+            default,
+        } => {
+            if let Some(s) = scrutinee {
+                clear_expr(s);
+            }
+            for (e, arm) in cases {
+                clear_expr(e);
+                clear_stmt(arm);
+            }
+            if let Some(d) = default {
+                clear_stmt(d.as_mut());
+            }
+        }
+        StmtKind::While { cond, body } => {
+            clear_expr(cond);
+            for x in body {
+                clear_stmt(x);
+            }
+        }
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+fn clear_if(i: &mut IfStmt) {
+    clear_expr(&mut i.cond);
+    for x in &mut i.then_body {
+        clear_stmt(x);
+    }
+    if let Some(else_b) = &mut i.else_body {
+        match else_b {
+            ElseBody::If(inner) => clear_if(inner),
+            ElseBody::Block(stmts) => {
+                for x in stmts.iter_mut() {
+                    clear_stmt(x);
+                }
+            }
+        }
+    }
+}
+
+fn clear_expr(e: &mut Expr) {
+    e.id = NodeId::UNASSIGNED;
+    match &mut e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Na
+        | ExprKind::Color(_)
+        | ExprKind::HexColor(_)
+        | ExprKind::IdentPath(_) => {}
+        ExprKind::Member { base, .. } => clear_expr(base.as_mut()),
+        ExprKind::Call {
+            callee,
+            type_args: _,
+            args,
+        } => {
+            clear_expr(callee.as_mut());
+            for (_, a) in args {
+                clear_expr(a);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            clear_expr(base.as_mut());
+            clear_expr(index.as_mut());
+        }
+        ExprKind::Array(elts) => {
+            for x in elts {
+                clear_expr(x);
+            }
+        }
+        ExprKind::Unary { expr, .. } => clear_expr(expr.as_mut()),
+        ExprKind::Binary { left, right, .. } => {
+            clear_expr(left.as_mut());
+            clear_expr(right.as_mut());
+        }
+        ExprKind::Ternary {
+            cond,
+            then_b,
+            else_b,
+        } => {
+            clear_expr(cond.as_mut());
+            clear_expr(then_b.as_mut());
+            clear_expr(else_b.as_mut());
+        }
+        ExprKind::IfExpr {
+            cond,
+            then_b,
+            else_b,
+        } => {
+            clear_expr(cond.as_mut());
+            clear_expr(then_b.as_mut());
+            clear_expr(else_b.as_mut());
+        }
+    }
+}
+
 /// Largest [`NodeId`] present in the tree (0 if none assigned).
 #[must_use]
 pub fn max_node_id(script: &Script) -> u32 {

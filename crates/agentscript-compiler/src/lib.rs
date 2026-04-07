@@ -45,7 +45,8 @@ pub use hir::{
 };
 pub use session::{
     CompilerSession, ExprTypesRead, ExprTypeSink, LibraryExportFnSig, LibraryExportsRead,
-    NameBindingSink, SemanticDefSite, SymbolDefRecorder, TypecheckedFnSigSink,
+    LibraryLinkedExport, NameBindingSink, SemanticDefSite, SymbolDefRecorder,
+    TypecheckedFnSigSink,
 };
 pub use visitor::{AstVisitor, AstWalk, VisitExpr, VisitStmt};
 
@@ -121,7 +122,11 @@ pub fn register_import_library(
     import_alias: impl Into<String>,
     lib: &Script,
 ) -> Result<(), AnalyzeError> {
-    use crate::frontend::ast::{ExportDecl, Item, ScriptKind, Span};
+    use crate::frontend::ast::{
+        clear_node_ids_in_fn_decl, ExportDecl, Item, ScriptKind, Span,
+    };
+    use crate::session::LibraryLinkedExport;
+    use std::collections::BTreeMap;
 
     let import_alias = import_alias.into();
     let kind = lib.items.iter().find_map(|it| match it {
@@ -134,23 +139,21 @@ pub fn register_import_library(
             Span::DUMMY,
         ));
     }
-    let mut co = Compiler::with_hir_lowering();
+    let mut co = Compiler::new();
     co.session.prepare_analysis(lib);
     co.run_semantic_passes(lib)?;
-    let lib_hir = co
-        .session
-        .hir
-        .as_ref()
-        .ok_or_else(|| {
-            AnalyzeError::single(
-                "internal: library script did not produce HIR after semantic passes",
-                Span::DUMMY,
-            )
-        })?
-        .clone();
-    let mut members = std::collections::HashMap::new();
+    let mut members = BTreeMap::new();
     for item in &lib.items {
         if let Item::Export(ExportDecl::Fn(f)) = item {
+            if f.is_method {
+                return Err(AnalyzeError::single(
+                    format!(
+                        "linked library export `{}` cannot be a `method` in this pipeline",
+                        f.name
+                    ),
+                    f.span,
+                ));
+            }
             let sig = co
                 .session
                 .typechecked_fn_sigs
@@ -165,11 +168,17 @@ pub fn register_import_library(
                         f.span,
                     )
                 })?;
-            members.insert(f.name.clone(), sig);
+            let mut decl = f.clone();
+            clear_node_ids_in_fn_decl(&mut decl);
+            members.insert(
+                f.name.clone(),
+                LibraryLinkedExport { sig, decl },
+            );
         }
     }
-    session.linked_library_exports.insert(import_alias.clone(), members);
-    session.linked_library_hir.insert(import_alias, lib_hir);
+    session
+        .linked_library_exports
+        .insert(import_alias, members);
     Ok(())
 }
 
