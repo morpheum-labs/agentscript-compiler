@@ -140,6 +140,10 @@ fn hir_ty_to_val(ty: &HirType, span: Span) -> Result<ValType, HirWasmError> {
         HirType::Simple(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::I32),
         HirType::Simple(AstType::Primitive(PrimitiveType::Float))
         | HirType::Series(AstType::Primitive(PrimitiveType::Float)) => Ok(ValType::F64),
+        // Pine `int` series (e.g. `trend := …`) are carried as `f64` in the guest v0 pipeline.
+        HirType::Series(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::F64),
+        HirType::Simple(AstType::Primitive(PrimitiveType::Color))
+        | HirType::Series(AstType::Primitive(PrimitiveType::Color)) => Ok(ValType::I32),
         // Boolean conditions and comparisons are encoded as f64 0/1 in the guest v0 pipeline.
         HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
         | HirType::Series(AstType::Primitive(PrimitiveType::Bool)) => Ok(ValType::F64),
@@ -500,12 +504,71 @@ fn walk_persist_var_inits(
     }
 }
 
+/// Wasm value type for a `?:` branch: if the branch is itself a `?:`, use its wasm result type so
+/// nested color ternaries are not misclassified from a widened HIR type on the inner root.
+fn select_branch_vty(hir: &HirScript, branch: HirId, span: Span) -> Result<ValType, HirWasmError> {
+    let ex = hir
+        .exprs
+        .get(branch.0 as usize)
+        .ok_or_else(|| HirWasmError::at(span, "bad HirId in select branch"))?;
+    match ex {
+        HirExpr::Select {
+            then_b,
+            else_b,
+            ty,
+            ..
+        } => select_wasm_result_vty(hir, *then_b, *else_b, ty, span),
+        _ => hir_ty_to_val(hir_expr_ty(hir, branch)?, span),
+    }
+}
+
+/// `hir_ty_to_val` for the outer `?:` can be wider than the branch types; wasm `select` needs the
+/// actual operand [`ValType`] (see nested color ternaries in `examples/uptrend.pine`).
+fn select_wasm_result_vty(
+    hir: &HirScript,
+    then_b: HirId,
+    else_b: HirId,
+    outer_ty: &HirType,
+    span: Span,
+) -> Result<ValType, HirWasmError> {
+    let then_v = select_branch_vty(hir, then_b, span)?;
+    let else_v = select_branch_vty(hir, else_b, span)?;
+    let outer_v = hir_ty_to_val(outer_ty, span)?;
+    Ok(if then_v == else_v {
+        then_v
+    } else if outer_v == ValType::F64 && then_v == ValType::I32 && else_v == ValType::I32 {
+        ValType::I32
+    } else if then_v == ValType::I32 && else_v == ValType::I32 {
+        ValType::I32
+    } else {
+        outer_v
+    })
+}
+
 fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmError> {
     let span = expr_span(hir, value);
     let ex = hir
         .exprs
         .get(value.0 as usize)
         .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+    match ex {
+        HirExpr::Literal(HirLiteral::Bool(_), _) => return Ok(ValType::I32),
+        HirExpr::BuiltinCall {
+            kind: BuiltinKind::InputInt,
+            ..
+        } => return Ok(ValType::I32),
+        HirExpr::BuiltinCall {
+            kind: BuiltinKind::InputFloat,
+            ..
+        } => return Ok(ValType::F64),
+        HirExpr::Select {
+            then_b,
+            else_b,
+            ty,
+            ..
+        } => return select_wasm_result_vty(hir, *then_b, *else_b, ty, span),
+        _ => {}
+    }
     let ty_ref = match ex {
         HirExpr::Literal(_, t) => t,
         HirExpr::Variable(_, t) => t,
@@ -520,7 +583,41 @@ fn local_type_for_let(hir: &HirScript, value: HirId) -> Result<ValType, HirWasmE
         HirExpr::Financial(f) => &f.ty,
         HirExpr::Plot { ty, .. } => ty,
     };
-    hir_ty_to_val(ty_ref, span)
+    match ty_ref {
+        HirType::Simple(AstType::Primitive(PrimitiveType::Int))
+        | HirType::Series(AstType::Primitive(PrimitiveType::Int)) => Ok(ValType::I32),
+        _ => hir_ty_to_val(ty_ref, span),
+    }
+}
+
+/// User-defined series that use `sym[1]` (previous bar) in the HIR; wasm models `[1]` with one
+/// `f64` global per symbol, committed at end of each `step`.
+fn collect_hist1_user_series_symbols(hir: &HirScript) -> Vec<SymbolId> {
+    let mut set = HashSet::new();
+    for ex in &hir.exprs {
+        let HirExpr::SeriesAccess { base, offset, .. } = ex else {
+            continue;
+        };
+        if *offset != 1 {
+            continue;
+        };
+        let Some(base_ex) = hir.exprs.get(base.0 as usize) else {
+            continue;
+        };
+        let HirExpr::Variable(sym, _) = base_ex else {
+            continue;
+        };
+        let Some(name) = hir.symbols.name(*sym) else {
+            continue;
+        };
+        if series_hist_kind(name).is_some() {
+            continue;
+        }
+        set.insert(*sym);
+    }
+    let mut v: Vec<SymbolId> = set.into_iter().collect();
+    v.sort_by_key(|s| s.0);
+    v
 }
 
 struct Ctx<'a> {
@@ -529,6 +626,8 @@ struct Ctx<'a> {
     sym_to_local: HashMap<SymbolId, u32>,
     /// Merged `let` initializers (script + user functions) for `request.security` static strings.
     let_bindings: &'a HashMap<SymbolId, HirId>,
+    /// First `let` initializer per symbol in this function body (used for wasm local `ValType`).
+    let_first_init: &'a HashMap<SymbolId, HirId>,
     pool: &'a HashMap<String, (i32, i32)>,
     user_fn_indices: &'a HashMap<SymbolId, u32>,
     /// Temp f64 locals for `%` (`lhs` / `rhs`, then reuse second for `trunc(lhs/rhs)*rhs`).
@@ -536,6 +635,8 @@ struct Ctx<'a> {
     scratch_r: u32,
     /// `var` / `varip`: `(inited_global, value_global)` wasm global indices.
     persist_globals: &'a HashMap<SymbolId, (u32, u32)>,
+    /// `sym` -> wasm global index holding **prior bar** `f64` for `sym[1]` (empty in user functions).
+    hist1_prev_global: &'a HashMap<SymbolId, u32>,
     /// Base offsets for [`IMPORT_SERIES_STRING_UTF8`] scratch (symbol vs timeframe slot).
     scratch_sym_off: i32,
     scratch_tf_off: i32,
@@ -564,6 +665,43 @@ impl<'a> Ctx<'a> {
         None
     }
 
+    /// Current-bar `f64` for built-in series, `var`/`varip`, `input.*`, or `let` locals.
+    fn emit_series_f64_variable(
+        &self,
+        func: &mut Function,
+        sym: SymbolId,
+        span: Span,
+    ) -> Result<(), HirWasmError> {
+        let name = self
+            .symbol_name(sym)
+            .ok_or_else(|| HirWasmError::at(span, "unknown symbol"))?;
+        if name == "close" {
+            func.instructions().call(IMPORT_SERIES_CLOSE);
+        } else if name == "open" {
+            func.instructions().call(IMPORT_SERIES_OPEN);
+        } else if name == "high" {
+            func.instructions().call(IMPORT_SERIES_HIGH);
+        } else if name == "low" {
+            func.instructions().call(IMPORT_SERIES_LOW);
+        } else if name == "volume" {
+            func.instructions().call(IMPORT_SERIES_VOLUME);
+        } else if name == "time" {
+            func.instructions().call(IMPORT_SERIES_TIME);
+        } else if let Some(&(_gi, gv)) = self.persist_globals.get(&sym) {
+            func.instructions().global_get(gv);
+        } else if let Some((idx, import_fn)) = self.input_import_for_name(name) {
+            func.instructions().i32_const(idx).call(import_fn);
+        } else if let Some(&li) = self.sym_to_local.get(&sym) {
+            func.instructions().local_get(li);
+        } else {
+            return Err(HirWasmError::at(
+                span,
+                format!("unresolved variable `{name}`"),
+            ));
+        }
+        Ok(())
+    }
+
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
         let span = expr_span(self.hir, id);
         let ex = self
@@ -585,6 +723,9 @@ impl<'a> Ctx<'a> {
                     (HirLiteral::Bool(b), _) => {
                         func.instructions().i32_const(if *b { 1 } else { 0 });
                     }
+                    (HirLiteral::Color(c), _) => {
+                        func.instructions().i32_const(*c as i32);
+                    }
                     _ => {
                         return Err(HirWasmError::at(
                             span,
@@ -594,33 +735,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             HirExpr::Variable(sym, _) => {
-                let name = self
-                    .symbol_name(*sym)
-                    .ok_or_else(|| HirWasmError::at(span, "unknown symbol"))?;
-                if name == "close" {
-                    func.instructions().call(IMPORT_SERIES_CLOSE);
-                } else if name == "open" {
-                    func.instructions().call(IMPORT_SERIES_OPEN);
-                } else if name == "high" {
-                    func.instructions().call(IMPORT_SERIES_HIGH);
-                } else if name == "low" {
-                    func.instructions().call(IMPORT_SERIES_LOW);
-                } else if name == "volume" {
-                    func.instructions().call(IMPORT_SERIES_VOLUME);
-                } else if name == "time" {
-                    func.instructions().call(IMPORT_SERIES_TIME);
-                } else if let Some(&(_gi, gv)) = self.persist_globals.get(sym) {
-                    func.instructions().global_get(gv);
-                } else if let Some((idx, import_fn)) = self.input_import_for_name(name) {
-                    func.instructions().i32_const(idx).call(import_fn);
-                } else if let Some(&li) = self.sym_to_local.get(sym) {
-                    func.instructions().local_get(li);
-                } else {
-                    return Err(HirWasmError::at(
-                        span,
-                        format!("unresolved variable `{name}`"),
-                    ));
-                }
+                self.emit_series_f64_variable(func, *sym, span)?;
             }
             HirExpr::Binary {
                 op,
@@ -631,10 +746,10 @@ impl<'a> Ctx<'a> {
                 let valty = hir_ty_to_val(ty, span)?;
                 match op {
                     BinOp::And | BinOp::Or if valty == ValType::F64 => {
-                        self.emit_expr(func, *lhs)?;
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, *lhs, span)?;
                         func.instructions().f64_const(0.0.into());
                         func.instructions().f64_ne();
-                        self.emit_expr(func, *rhs)?;
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, *rhs, span)?;
                         func.instructions().f64_const(0.0.into());
                         func.instructions().f64_ne();
                         if *op == BinOp::And {
@@ -645,28 +760,13 @@ impl<'a> Ctx<'a> {
                         func.instructions().f64_convert_i32_u();
                     }
                     _ if valty == ValType::F64 => {
-                        self.emit_expr(func, *lhs)?;
-                        self.emit_expr(func, *rhs)?;
-                        let mut ins = func.instructions();
                         match op {
-                            BinOp::Add => {
-                                ins.f64_add();
-                            }
-                            BinOp::Sub => {
-                                ins.f64_sub();
-                            }
-                            BinOp::Mul => {
-                                ins.f64_mul();
-                            }
-                            BinOp::Div => {
-                                ins.f64_div();
-                            }
                             BinOp::Mod => {
                                 let sl = self.scratch_l;
                                 let sr = self.scratch_r;
-                                self.emit_expr(func, *lhs)?;
+                                HirWasmEmitContext::emit_expr_as_f64(self, func, *lhs, span)?;
                                 func.instructions().local_set(sl);
-                                self.emit_expr(func, *rhs)?;
+                                HirWasmEmitContext::emit_expr_as_f64(self, func, *rhs, span)?;
                                 func.instructions().local_set(sr);
                                 func
                                     .instructions()
@@ -682,6 +782,26 @@ impl<'a> Ctx<'a> {
                                     .local_get(sl)
                                     .local_get(sr)
                                     .f64_sub();
+                            }
+                            _ => {
+                                HirWasmEmitContext::emit_expr_as_f64(self, func, *lhs, span)?;
+                                HirWasmEmitContext::emit_expr_as_f64(self, func, *rhs, span)?;
+                                let mut ins = func.instructions();
+                                match op {
+                            BinOp::Add => {
+                                ins.f64_add();
+                            }
+                            BinOp::Sub => {
+                                ins.f64_sub();
+                            }
+                            BinOp::Mul => {
+                                ins.f64_mul();
+                            }
+                            BinOp::Div => {
+                                ins.f64_div();
+                            }
+                            BinOp::Mod => {
+                                unreachable!("mod handled above");
                             }
                             BinOp::Eq => {
                                 ins.f64_eq();
@@ -713,6 +833,8 @@ impl<'a> Ctx<'a> {
                                     "internal: And/Or handled above",
                                 ));
                             }
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -741,7 +863,7 @@ impl<'a> Ctx<'a> {
                         .f64_const((if *b { 0.0 } else { 1.0 }).into());
                 } else {
                     func.instructions().f64_const(1.0.into());
-                    self.emit_expr(func, *inner)?;
+                    HirWasmEmitContext::emit_expr_as_f64(self, func, *inner, span)?;
                     func.instructions().f64_sub();
                 }
             }
@@ -751,18 +873,31 @@ impl<'a> Ctx<'a> {
                 else_b,
                 ty,
             } => {
-                if hir_ty_to_val(ty, span)? != ValType::F64 {
-                    return Err(HirWasmError::at(
-                        span,
-                        "select/ternary wasm v0 requires f64 result type",
-                    ));
+                let vty = select_wasm_result_vty(self.hir, *then_b, *else_b, ty, span)?;
+                match vty {
+                    ValType::F64 => {
+                        // Stack for `select`: `v1`, `v2`, `i32` (top). Result is `v1` if cond ≠ 0 else `v2`
+                        // (Pine `cond ? a : b` → `v1` = then, `v2` = else).
+                        // Promote `i32` stack values (`int` / `bool` literals, `input.int`, etc.): HIR may
+                        // still unify the `?:` to `float` / series float while a branch stays simple `int`.
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, *then_b, span)?;
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, *else_b, span)?;
+                        self.emit_select_condition_i32(func, *cond, span)?;
+                        func.instructions().select();
+                    }
+                    ValType::I32 => {
+                        self.emit_expr(func, *then_b)?;
+                        self.emit_expr(func, *else_b)?;
+                        self.emit_select_condition_i32(func, *cond, span)?;
+                        func.instructions().select();
+                    }
+                    _ => {
+                        return Err(HirWasmError::at(
+                            span,
+                            "select/ternary wasm v0 requires f64 or color (i32) result type",
+                        ));
+                    }
                 }
-                // Stack for `select`: `v1`, `v2`, `i32` (top). Result is `v1` if cond ≠ 0 else `v2`
-                // (Pine `cond ? a : b` → `v1` = then, `v2` = else).
-                self.emit_expr(func, *then_b)?;
-                self.emit_expr(func, *else_b)?;
-                self.emit_select_condition_i32(func, *cond, span)?;
-                func.instructions().select();
             }
             HirExpr::BuiltinCall {
                 kind,
@@ -771,10 +906,11 @@ impl<'a> Ctx<'a> {
             } => emit_builtin_call(*kind, self, func, span, args)?,
             HirExpr::SeriesAccess { base, offset, ty } => {
                 let base_span = expr_span(self.hir, *base);
-                if hir_ty_to_val(ty, span)? != ValType::F64 {
+                let elem_vt = hir_ty_to_val(ty, span)?;
+                if !matches!(elem_vt, ValType::F64 | ValType::I32) {
                     return Err(HirWasmError::at(
                         span,
-                        "series history wasm codegen expects f64 series element type",
+                        "series history wasm codegen expects f64 or int series element type",
                     ));
                 }
                 let base_ex = self
@@ -791,19 +927,43 @@ impl<'a> Ctx<'a> {
                 let name = self
                     .symbol_name(*sym)
                     .ok_or_else(|| HirWasmError::at(base_span, "unknown symbol in SeriesAccess"))?;
-                let kind = series_hist_kind(name).ok_or_else(|| {
-                    HirWasmError::at(
-                        span,
-                        format!("series history for `{name}` is not supported in wasm codegen yet"),
-                    )
-                })?;
-                if kind == 0 {
-                    func.instructions().i32_const(*offset);
-                    func.instructions().call(IMPORT_SERIES_HIST);
+                if let Some(&gidx) = self.hist1_prev_global.get(sym) {
+                    if *offset == 1 {
+                        func.instructions().global_get(gidx);
+                    } else if *offset == 0 {
+                        self.emit_series_f64_variable(func, *sym, base_span)?;
+                    } else {
+                        return Err(HirWasmError::at(
+                            span,
+                            format!(
+                                "series history `{name}` offset {offset}: only `[0]` and `[1]` are supported for user series in wasm codegen"
+                            ),
+                        ));
+                    }
                 } else {
-                    func.instructions().i32_const(kind);
-                    func.instructions().i32_const(*offset);
-                    func.instructions().call(IMPORT_SERIES_HIST_AT);
+                    let kind = series_hist_kind(name).ok_or_else(|| {
+                        HirWasmError::at(
+                            span,
+                            format!(
+                                "series history for `{name}` is not supported in wasm codegen yet"
+                            ),
+                        )
+                    })?;
+                    if kind == 0 {
+                        func.instructions().i32_const(*offset);
+                        func.instructions().call(IMPORT_SERIES_HIST);
+                    } else {
+                        func.instructions().i32_const(kind);
+                        func.instructions().i32_const(*offset);
+                        func.instructions().call(IMPORT_SERIES_HIST_AT);
+                    }
+                }
+                if elem_vt == ValType::I32 {
+                    let hist1_prev = self.hist1_prev_global.get(sym).is_some() && *offset == 1;
+                    let host_series = series_hist_kind(name).is_some();
+                    if !hist1_prev && !host_series {
+                        func.instructions().f64_convert_i32_s();
+                    }
                 }
             }
             HirExpr::Security(sec) => {
@@ -823,7 +983,7 @@ impl<'a> Ctx<'a> {
                 }
                 self.emit_security_string_pair(func, sec.symbol, SecurityStringSlot::Symbol)?;
                 self.emit_security_string_pair(func, sec.timeframe, SecurityStringSlot::Timeframe)?;
-                self.emit_expr(func, sec.expression)?;
+                HirWasmEmitContext::emit_expr_as_f64(self, func, sec.expression, span)?;
                 func.instructions().call(IMPORT_REQUEST_SECURITY);
             }
             HirExpr::Financial(f) => {
@@ -934,7 +1094,8 @@ impl<'a> Ctx<'a> {
                 ));
             }
             HirExpr::Plot { expr: inner, .. } => {
-                self.emit_expr(func, *inner)?;
+                let ispan = expr_span(self.hir, *inner);
+                HirWasmEmitContext::emit_expr_as_f64(self, func, *inner, ispan)?;
                 func.instructions().local_set(self.scratch_plot);
                 func.instructions().local_get(self.scratch_plot);
                 func.instructions().call(IMPORT_PLOT);
@@ -1145,12 +1306,56 @@ impl<'a> Ctx<'a> {
                 func.instructions().i32_const(i32::from(*b));
             }
             _ => {
-                self.emit_expr(func, cond)?;
-                func.instructions().f64_const(0.0.into());
-                func.instructions().f64_ne();
+                let cond_ty = hir_expr_ty(self.hir, cond)?;
+                match hir_ty_to_val(cond_ty, span)? {
+                    ValType::I32 => {
+                        self.emit_expr(func, cond)?;
+                        func.instructions().i32_const(0);
+                        func.instructions().i32_ne();
+                    }
+                    ValType::F64 => {
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, cond, span)?;
+                        func.instructions().f64_const(0.0.into());
+                        func.instructions().f64_ne();
+                    }
+                    _ => {
+                        return Err(HirWasmError::at(
+                            span,
+                            "select condition must be bool-as-i32, bool-as-f64, or f64 comparison in wasm codegen",
+                        ));
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// `nz` is lowered through host `(f64, f64) -> f64`; assigning into an `i32` wasm local needs
+    /// `i32.trunc_sat_f64_s` even when HIR types `nz` as float-shaped.
+    fn let_rhs_needs_i32_trunc_from_host_f64(
+        &self,
+        symbol: &SymbolId,
+        value: HirId,
+    ) -> Result<bool, HirWasmError> {
+        let vspan = expr_span(self.hir, value);
+        let ex = self
+            .hir
+            .exprs
+            .get(value.0 as usize)
+            .ok_or_else(|| HirWasmError::at(vspan, "bad HirId"))?;
+        let Some(v0) = self.let_first_init.get(symbol) else {
+            return Ok(false);
+        };
+        if local_type_for_let(self.hir, *v0)? != ValType::I32 {
+            return Ok(false);
+        }
+        Ok(matches!(
+            ex,
+            HirExpr::BuiltinCall {
+                kind: BuiltinKind::Nz,
+                ..
+            }
+        ))
     }
 
     fn emit_stmt(&self, func: &mut Function, stmt: &HirStmt) -> Result<(), HirWasmError> {
@@ -1181,14 +1386,30 @@ impl<'a> Ctx<'a> {
                     return Ok(());
                 }
                 let vspan = expr_span(self.hir, *value);
-                self.emit_expr(func, *value)?;
                 if let Some(&(_gi, gv)) = self.persist_globals.get(symbol) {
+                    // `var` / `varip` value globals are always `f64` (int series use NaN bit patterns / host policy).
+                    HirWasmEmitContext::emit_expr_as_f64(self, func, *value, vspan)?;
                     func.instructions().global_set(gv);
                 } else {
                     let li = *self
                         .sym_to_local
                         .get(symbol)
                         .ok_or_else(|| HirWasmError::at(vspan, "let without local slot"))?;
+                    let init0 = self
+                        .let_first_init
+                        .get(symbol)
+                        .copied()
+                        .ok_or_else(|| HirWasmError::at(vspan, "let missing first initializer for wasm slot"))?;
+                    let slot_ty = local_type_for_let(self.hir, init0)?;
+                    if slot_ty == ValType::F64 {
+                        HirWasmEmitContext::emit_expr_as_f64(self, func, *value, vspan)?;
+                    } else {
+                        self.emit_expr(func, *value)?;
+                        let trunc = self.let_rhs_needs_i32_trunc_from_host_f64(symbol, *value)?;
+                        if trunc {
+                            func.instructions().i32_trunc_sat_f64_s();
+                        }
+                    }
                     func.instructions().local_set(li);
                 }
                 Ok(())
@@ -1204,7 +1425,7 @@ impl<'a> Ctx<'a> {
                 func.instructions().global_get(g_inited);
                 func.instructions().i32_eqz();
                 func.instructions().if_(BlockType::Empty);
-                self.emit_expr(func, *value)?;
+                HirWasmEmitContext::emit_expr_as_f64(self, func, *value, vspan)?;
                 func.instructions().global_set(g_val);
                 func.instructions().i32_const(1);
                 func.instructions().global_set(g_inited);
@@ -1212,7 +1433,8 @@ impl<'a> Ctx<'a> {
                 Ok(())
             }
             HirStmt::Plot { expr, .. } => {
-                self.emit_expr(func, *expr)?;
+                let espan = expr_span(self.hir, *expr);
+                HirWasmEmitContext::emit_expr_as_f64(self, func, *expr, espan)?;
                 func.instructions().call(IMPORT_PLOT);
                 Ok(())
             }
@@ -1229,6 +1451,111 @@ impl<'a> Ctx<'a> {
 impl<'a> HirWasmEmitContext for Ctx<'a> {
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError> {
         Ctx::emit_expr(self, func, id)
+    }
+
+    fn emit_expr_as_f64(&self, func: &mut Function, id: HirId, span: Span) -> Result<(), HirWasmError> {
+        let ex = self
+            .hir
+            .exprs
+            .get(id.0 as usize)
+            .ok_or_else(|| HirWasmError::at(span, "bad HirId"))?;
+        self.emit_expr(func, id)?;
+        if let HirExpr::Literal(HirLiteral::Bool(_), _) = ex {
+            func.instructions().f64_convert_i32_u();
+            return Ok(());
+        }
+        if let HirExpr::Select {
+            then_b,
+            else_b,
+            ty: outer_ty,
+            ..
+        } = ex
+        {
+            let eff = select_wasm_result_vty(self.hir, *then_b, *else_b, outer_ty, span)?;
+            let root_ty = hir_expr_ty(self.hir, id)?;
+            if eff == ValType::I32 && hir_ty_to_val(&root_ty, span)? == ValType::F64 {
+                func.instructions().f64_convert_i32_s();
+                return Ok(());
+            }
+        }
+        let ty = hir_expr_ty(self.hir, id)?;
+        let vt = hir_ty_to_val(ty, span)?;
+        if vt == ValType::F64 {
+            // `color.*` / `color.rgb` literals are lowered as `i32` ARGB, but typecheck may attach
+            // `series float` to `color` in `?:` branches; treat them like float-shaped operands here.
+            if matches!(ex, HirExpr::Literal(HirLiteral::Color(_), _)) {
+                func.instructions().f64_convert_i32_s();
+                return Ok(());
+            }
+        }
+        if vt == ValType::I32 {
+            // `sym[1]` for user series is loaded from an `f64` hist1 global; `emit_expr` leaves `f64`
+            // even when HIR types the element as `int` (see `SeriesAccess` lowering).
+            if let HirExpr::SeriesAccess { base, offset, .. } = ex {
+                if *offset == 1 {
+                    let base_ex = self
+                        .hir
+                        .exprs
+                        .get(base.0 as usize)
+                        .ok_or_else(|| HirWasmError::at(span, "bad HirId in SeriesAccess"))?;
+                    if let HirExpr::Variable(sym, _) = base_ex {
+                        if self.hist1_prev_global.contains_key(sym) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            if let HirExpr::Variable(sym, _) = ex {
+                if self.persist_globals.contains_key(sym) {
+                    return Ok(());
+                }
+                if let Some(v0) = self.let_first_init.get(sym) {
+                    if local_type_for_let(self.hir, *v0)? == ValType::F64 {
+                        return Ok(());
+                    }
+                }
+            }
+            func.instructions().f64_convert_i32_s();
+            return Ok(());
+        }
+        // `hir_ty_to_val` maps `series int` to `f64` for ABI, but per-bar locals still use `i32`
+        // (`local.get`); persist globals store `f64` already (`global.get`).
+        if let HirExpr::Variable(sym, sty) = ex {
+            if !self.persist_globals.contains_key(sym) {
+                let name = self.symbol_name(*sym).unwrap_or("");
+                let wasm_vt = self
+                    .let_first_init
+                    .get(sym)
+                    .map(|vid| local_type_for_let(self.hir, *vid))
+                    .transpose()?
+                    .unwrap_or(ValType::F64);
+                let hir_bool_from_int_input = matches!(
+                    sty,
+                    HirType::Simple(AstType::Primitive(PrimitiveType::Bool))
+                ) && self.hir.inputs.iter().any(|inp| {
+                    inp.name == name && matches!(inp.kind, HirInputKind::Int(_))
+                });
+                if wasm_vt == ValType::I32 {
+                    match sty {
+                        HirType::Series(AstType::Primitive(PrimitiveType::Int)) => {
+                            func.instructions().f64_convert_i32_s();
+                        }
+                        HirType::Series(AstType::Primitive(PrimitiveType::Bool)) => {
+                            func.instructions().f64_convert_i32_u();
+                        }
+                        HirType::Simple(AstType::Primitive(PrimitiveType::Bool)) => {
+                            func.instructions().f64_convert_i32_u();
+                        }
+                        _ => {}
+                    }
+                } else if wasm_vt == ValType::F64 && hir_bool_from_int_input {
+                    // `input(..., defval=true)` is `HirInputKind::Int` but typed bool; reads use
+                    // `input_int` (`i32` on the stack) while `hir_ty_to_val(bool)` is `f64`-shaped.
+                    func.instructions().f64_convert_i32_u();
+                }
+            }
+        }
+        Ok(())
     }
 
     fn ma_source_kind(&self, first_arg: HirId) -> i32 {
@@ -1270,6 +1597,8 @@ fn encode_user_function_body(
     scratch_sym_off: i32,
     scratch_tf_off: i32,
 ) -> Result<Function, HirWasmError> {
+    let no_hist1: HashMap<SymbolId, u32> = HashMap::new();
+
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
     collect_lets_unique_symbols(
         hir,
@@ -1300,15 +1629,20 @@ fn encode_user_function_body(
     let scratch_plot = scratch_i32 + 1;
     local_defs.push((1, ValType::F64));
 
+    let let_first_init: HashMap<SymbolId, HirId> =
+        let_pairs.iter().map(|(s, v)| (*s, *v)).collect();
+
     let ctx = Ctx {
         hir,
         sym_to_local,
         let_bindings,
+        let_first_init: &let_first_init,
         pool,
         user_fn_indices,
         scratch_l,
         scratch_r,
         persist_globals,
+        hist1_prev_global: &no_hist1,
         scratch_sym_off,
         scratch_tf_off,
         scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
@@ -1385,8 +1719,17 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         .map(|(s, i, v)| (*s, (*i, *v)))
         .collect();
 
+    let hist1_syms = collect_hist1_user_series_symbols(hir);
+    let hist1_base: u32 = (persist_pairs.len() * 2) as u32;
+    let mut hist1_prev_global: HashMap<SymbolId, u32> = HashMap::new();
+    for (i, sym) in hist1_syms.iter().enumerate() {
+        hist1_prev_global.insert(*sym, hist1_base + i as u32);
+    }
+
     let mut let_pairs: Vec<(SymbolId, HirId)> = Vec::new();
     collect_lets_unique_symbols(hir, &hir.body, &hir.persist_symbols, &all_lets, &mut let_pairs)?;
+    let let_first_init: HashMap<SymbolId, HirId> =
+        let_pairs.iter().map(|(s, v)| (*s, *v)).collect();
 
     let mut types = TypeSection::new();
     let t_close = types.len();
@@ -1557,6 +1900,16 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             &ConstExpr::f64_const(0.0f64.into()),
         );
     }
+    for _ in &hist1_syms {
+        globals.global(
+            GlobalType {
+                val_type: ValType::F64,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::f64_const(f64::NAN.into()),
+        );
+    }
 
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -1571,6 +1924,12 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         let mut f = Function::new([]);
         for (_s, g_inited, _gv) in &persist_pairs {
             f.instructions().i32_const(0).global_set(*g_inited);
+        }
+        for i in 0..hist1_syms.len() {
+            let g = hist1_base + i as u32;
+            f.instructions()
+                .f64_const(f64::NAN.into())
+                .global_set(g);
         }
         f.instructions().i32_const(0);
         f.instructions().end();
@@ -1600,11 +1959,13 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
             hir,
             sym_to_local: sym_to_local_step,
             let_bindings: &all_lets,
+            let_first_init: &let_first_init,
             pool: &pool.map,
             user_fn_indices: &user_fn_indices,
             scratch_l,
             scratch_r,
             persist_globals: &persist_globals,
+            hist1_prev_global: &hist1_prev_global,
             scratch_sym_off: scratch_sym_pass,
             scratch_tf_off: scratch_tf_pass,
             scratch_slot_max: SERIES_STRING_SCRATCH_SLOT_MAX,
@@ -1614,6 +1975,19 @@ pub fn emit_hir_guest_wasm(hir: &HirScript) -> Result<Vec<u8>, HirWasmError> {
         let mut f = Function::new(local_defs);
         for stmt in &hir.body {
             ctx.emit_stmt(&mut f, stmt)?;
+        }
+        for sym in hist1_syms.iter() {
+            let gidx = *hist1_prev_global
+                .get(sym)
+                .expect("hist1 global index for symbol");
+            ctx.emit_series_f64_variable(&mut f, *sym, hir.source_span)?;
+            let needs_i32_to_f64 = let_first_init.get(sym).is_some_and(|vid| {
+                local_type_for_let(hir, *vid).is_ok_and(|vt| vt == ValType::I32)
+            });
+            if needs_i32_to_f64 {
+                f.instructions().f64_convert_i32_s();
+            }
+            f.instructions().global_set(gidx);
         }
         f.instructions().i32_const(0);
         f.instructions().end();

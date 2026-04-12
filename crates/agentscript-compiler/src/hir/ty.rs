@@ -159,6 +159,10 @@ pub fn assignable(from: &HirType, to: &HirType) -> bool {
             HirType::Simple(AstType::Primitive(PrimitiveType::Float)),
             HirType::Series(AstType::Primitive(PrimitiveType::Float)),
         ) => true,
+        (
+            HirType::Simple(AstType::Primitive(PrimitiveType::Color)),
+            HirType::Series(AstType::Primitive(PrimitiveType::Color)),
+        ) => true,
         (HirType::Array(f), HirType::Array(t)) => assignable(f, t),
         (HirType::Matrix(f), HirType::Matrix(t)) => assignable(f, t),
         (

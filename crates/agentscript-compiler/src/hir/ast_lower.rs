@@ -436,6 +436,21 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
             .unwrap_or_else(|| HirType::Series(Type::Primitive(PrimitiveType::Float)))
     }
 
+    fn expr_ty_from_session_or_simple_color(&self, e: &Expr) -> HirType {
+        self.session
+            .and_then(|s| {
+                if e.id != NodeId::UNASSIGNED {
+                    s.expr_types
+                        .get(e.id.0 as usize)
+                        .and_then(|x| x.as_ref())
+                        .cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| HirType::Simple(Type::Primitive(PrimitiveType::Color)))
+    }
+
     fn variable_hir_type(&self, name: &str, expr: &Expr) -> HirType {
         if let Some(sess) = self.session {
             if expr.id != NodeId::UNASSIGNED {
@@ -1036,6 +1051,54 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 ),
                 e.span,
             )),
+            ExprKind::Na => {
+                let ty = self.expr_ty_from_session_or_float_series(e);
+                Ok(self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Float(f64::NAN), ty),
+                    e.span,
+                ))
+            }
+            ExprKind::HexColor(s) => {
+                let bits = hex_color_to_argb(s, e.span)?;
+                let ty = self.expr_ty_from_session_or_simple_color(e);
+                Ok(self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Color(bits), ty),
+                    e.span,
+                ))
+            }
+            ExprKind::Color(name) => {
+                let bits = pine_named_color(name.as_str()).ok_or_else(|| {
+                    HirLowerError::at(e.span, format!("unknown color constant `{name}`"))
+                })?;
+                let ty = self.expr_ty_from_session_or_simple_color(e);
+                Ok(self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Color(bits), ty),
+                    e.span,
+                ))
+            }
+            ExprKind::Member { base, field } => {
+                if let Some(bits) = try_ast_const_color(e)? {
+                    let ty = self.expr_ty_from_session_or_simple_color(e);
+                    return Ok(self.alloc_expr(
+                        HirExpr::Literal(HirLiteral::Color(bits), ty),
+                        e.span,
+                    ));
+                }
+                if let ExprKind::IdentPath(p) = &base.kind {
+                    if p.len() == 1 && p[0] == "plot" {
+                        return Err(HirLowerError::at(
+                            e.span,
+                            format!(
+                                "plot field `{field}` is not supported in this HIR lowering pass (ignored in `plot(...)` when used only as a named argument)"
+                            ),
+                        ));
+                    }
+                }
+                Err(HirLowerError::at(
+                    e.span,
+                    format!("member access `.{}` is not supported in this HIR lowering pass", field),
+                ))
+            }
             ExprKind::Index { base, index } => {
                 let base_id = self.lower_expr(base.as_ref())?;
                 let idx = index.as_ref();
@@ -1179,10 +1242,6 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 }
                 self.lower_call(callee.as_ref(), args, e.span, e)
             }
-            _ => Err(HirLowerError::at(
-                e.span,
-                "expression kind not supported by this HIR lowering pass",
-            )),
         }
     }
 
@@ -1221,6 +1280,15 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
                 },
                 span,
             ));
+        }
+        if path.len() == 2 && path[0] == "color" {
+            if let Some(bits) = pine_named_color(path[1].as_str()) {
+                let ty = self.expr_ty_from_session_or_simple_color(expr);
+                return Ok(self.alloc_expr(
+                    HirExpr::Literal(HirLiteral::Color(bits), ty),
+                    span,
+                ));
+            }
         }
         if path.len() == 1 {
             let name = &path[0];
@@ -1283,6 +1351,22 @@ impl<'a, 'sess> LowerCtx<'a, 'sess> {
         call_expr: &Expr,
     ) -> Result<HirId, HirLowerError> {
         let (path, method_receiver) = callee_path_with_receiver(callee)?;
+
+        if let ExprKind::Call {
+            type_args: call_ta,
+            ..
+        } = &call_expr.kind
+        {
+            if call_ta.is_none() {
+                if let Some(bits) = try_ast_const_color(call_expr)? {
+                    let ty = self.expr_ty_from_session_or_simple_color(call_expr);
+                    return Ok(self.alloc_expr(
+                        HirExpr::Literal(HirLiteral::Color(bits), ty),
+                        expr_span,
+                    ));
+                }
+            }
+        }
 
         if path.len() == 2 {
             if let Some(sess) = self.session {
@@ -2008,6 +2092,173 @@ fn path_tail_from_expr(e: &Expr) -> Option<Vec<String>> {
             Some(p)
         }
         _ => None,
+    }
+}
+
+fn expr_dotted_path(callee: &Expr) -> Option<Vec<String>> {
+    match &callee.kind {
+        ExprKind::IdentPath(p) => Some(p.clone()),
+        ExprKind::Member { base, field } => {
+            let mut p = expr_dotted_path(base.as_ref())?;
+            p.push(field.clone());
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// Pine-style named `color.*` (opaque ARGB `0xAARRGGBB`).
+fn pine_named_color(name: &str) -> Option<u32> {
+    match name {
+        "white" => Some(0xFFFFFFFF),
+        "black" => Some(0xFF000000),
+        "red" => Some(0xFFFF0000),
+        "green" => Some(0xFF00FF00),
+        "blue" => Some(0xFF0000FF),
+        "yellow" => Some(0xFFFFFF00),
+        "orange" => Some(0xFFFFA500),
+        "gray" | "grey" => Some(0xFF808080),
+        "purple" => Some(0xFF800080),
+        "lime" => Some(0xFF00FF00),
+        "teal" => Some(0xFF008080),
+        "maroon" => Some(0xFF800000),
+        "navy" => Some(0xFF000080),
+        "silver" => Some(0xFFC0C0C0),
+        "aqua" => Some(0xFF00FFFF),
+        "fuchsia" => Some(0xFFFF00FF),
+        _ => None,
+    }
+}
+
+fn hex_color_to_argb(digits: &str, span: Span) -> Result<u32, HirLowerError> {
+    let raw = u32::from_str_radix(digits, 16).map_err(|_| {
+        HirLowerError::at(span, "invalid hex color literal (expected hexadecimal digits)")
+    })?;
+    match digits.len() {
+        6 => Ok(0xFF00_0000 | raw),
+        8 => Ok(raw),
+        _ => Err(HirLowerError::at(
+            span,
+            "hex color must be exactly 6 or 8 hex digits",
+        )),
+    }
+}
+
+fn color_rgb_argb(r: i64, g: i64, b: i64) -> u32 {
+    let clamp = |n: i64| n.clamp(0, 255) as u32;
+    0xFF00_0000 | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b)
+}
+
+/// Pine `transp` 0 = opaque, 100 = fully transparent (alpha scales linearly).
+fn apply_color_transparency(argb: u32, transp: i64) -> u32 {
+    let t = transp.clamp(0, 100);
+    let alpha = (255 * (100 - t) / 100).clamp(0, 255) as u32;
+    (alpha << 24) | (argb & 0x00FF_FFFF)
+}
+
+fn transp_literal(ex: &Expr) -> Result<i64, HirLowerError> {
+    match &ex.kind {
+        ExprKind::Int(i) => Ok(*i),
+        ExprKind::Float(f) => Ok(*f as i64),
+        _ => Err(HirLowerError::at(
+            ex.span,
+            "color transparency must be a numeric literal in this lowering pass",
+        )),
+    }
+}
+
+/// Compile-time `color.rgb` / `color.new` / `color.*` / `#RRGGBB` when the AST is constant-shaped.
+fn try_ast_const_color(ex: &Expr) -> Result<Option<u32>, HirLowerError> {
+    match &ex.kind {
+        ExprKind::HexColor(s) => Ok(Some(hex_color_to_argb(s, ex.span)?)),
+        ExprKind::Color(name) => pine_named_color(name.as_str())
+            .map(Some)
+            .ok_or_else(|| HirLowerError::at(ex.span, format!("unknown color `{name}`"))),
+        ExprKind::Member { base, field } => {
+            if let ExprKind::IdentPath(p) = &base.kind {
+                if p.len() == 1 && p[0] == "color" {
+                    return pine_named_color(field.as_str())
+                        .map(Some)
+                        .ok_or_else(|| {
+                            HirLowerError::at(
+                                ex.span,
+                                format!("unknown color constant `color.{field}`"),
+                            )
+                        });
+                }
+            }
+            Ok(None)
+        }
+        ExprKind::Call {
+            callee,
+            type_args,
+            args,
+        } if type_args.is_none() => {
+            let Some(path) = expr_dotted_path(callee.as_ref()) else {
+                return Ok(None);
+            };
+            let ps = path.as_slice();
+            if ps.len() == 2 && ps[0] == "color" && ps[1] == "rgb" {
+                    if args.len() != 3 {
+                        return Err(HirLowerError::at(
+                            ex.span,
+                            "`color.rgb` expects exactly three arguments in this lowering pass",
+                        ));
+                    }
+                    let r = match &args[0].1.kind {
+                        ExprKind::Int(i) => *i,
+                        _ => {
+                            return Err(HirLowerError::at(
+                                args[0].1.span,
+                                "`color.rgb` arguments must be integer literals",
+                            ));
+                        }
+                    };
+                    let g = match &args[1].1.kind {
+                        ExprKind::Int(i) => *i,
+                        _ => {
+                            return Err(HirLowerError::at(
+                                args[1].1.span,
+                                "`color.rgb` arguments must be integer literals",
+                            ));
+                        }
+                    };
+                    let b = match &args[2].1.kind {
+                        ExprKind::Int(i) => *i,
+                        _ => {
+                            return Err(HirLowerError::at(
+                                args[2].1.span,
+                                "`color.rgb` arguments must be integer literals",
+                            ));
+                        }
+                    };
+                    return Ok(Some(color_rgb_argb(r, g, b)));
+            }
+            if ps.len() == 2 && ps[0] == "color" && ps[1] == "new" {
+                    if args.len() < 2 {
+                        return Err(HirLowerError::at(
+                            ex.span,
+                            "`color.new` expects at least two arguments",
+                        ));
+                    }
+                    let base = &args[0].1;
+                    let transp_ex = args
+                        .iter()
+                        .find(|(n, _)| n.as_deref() == Some("transp"))
+                        .map(|(_, e)| e)
+                        .unwrap_or(&args[1].1);
+                    let base_bits = try_ast_const_color(base)?.ok_or_else(|| {
+                        HirLowerError::at(
+                            base.span,
+                            "`color.new` base color must be a compile-time constant in this lowering pass",
+                        )
+                    })?;
+                    let tr = transp_literal(transp_ex)?;
+                    return Ok(Some(apply_color_transparency(base_bits, tr)));
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }
 

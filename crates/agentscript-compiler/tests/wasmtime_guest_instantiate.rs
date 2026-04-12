@@ -4,7 +4,9 @@
 //! **Sync:** import registrations must match `aether-mwvm` `link_aether_guest_abi_v0`
 //! (`aether/crates/aether-mwvm/src/aether_guest_stubs.rs`) and `GUEST_ABI_V0_IMPORTS` (names + signatures).
 
-use agentscript_compiler::{compile_script_to_wasm_v0, parse_script, GUEST_ABI_V0_IMPORTS};
+use agentscript_compiler::{
+    compile_script_to_wasm_v0, parse_script, validate_guest_abi_v0, GUEST_ABI_V0_IMPORTS,
+};
 use wasmtime::{Engine, Linker, Module, Store};
 
 /// Keep aligned with `aether-mwvm` `aether_guest_stubs.rs`.
@@ -150,6 +152,31 @@ plot(request.security(syminfo.ticker, "D", close))
 "#;
     let script = parse_script("t", SRC).expect("parse");
     let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    instantiate_guest_wasm(&wasm);
+}
+
+#[test]
+fn wasmtime_minimal_nz_series_int_local() {
+    const SRC: &str = r#"//@version=6
+indicator("m")
+trend = 1
+trend := nz(trend[1], trend)
+plot(close + trend)
+"#;
+    let script = parse_script("nz_series_int", SRC).expect("parse");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile");
+    validate_guest_abi_v0(&wasm).expect("guest ABI / wasm validate");
+    instantiate_guest_wasm(&wasm);
+}
+
+/// `examples/uptrend.pine`: `na`, colors, `nz(sym[1], …)`, and user-series `[1]` snapshots.
+#[test]
+fn wasmtime_instantiate_uptrend_example() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/uptrend.pine");
+    let src = std::fs::read_to_string(&path).expect("read examples/uptrend.pine");
+    let script = parse_script("uptrend", &src).expect("parse uptrend.pine");
+    let wasm = compile_script_to_wasm_v0(&script).expect("compile uptrend.pine to wasm");
+    validate_guest_abi_v0(&wasm).expect("guest ABI / wasm validate");
     instantiate_guest_wasm(&wasm);
 }
 

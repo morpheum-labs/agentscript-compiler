@@ -16,6 +16,8 @@ use super::wasm::error::HirWasmError;
 /// Minimal surface for emitting nested expressions inside a builtin handler.
 pub trait HirWasmEmitContext {
     fn emit_expr(&self, func: &mut Function, id: HirId) -> Result<(), HirWasmError>;
+    /// Emit `id` as an `f64` stack value, promoting `i32` HIR (`int` / `bool` as `i32`) with `f64.convert_i32_s`.
+    fn emit_expr_as_f64(&self, func: &mut Function, id: HirId, span: Span) -> Result<(), HirWasmError>;
     /// `ta_sma` / `ta_ema` first argument: [`super::wasm::abi::MA_SRC_CLOSE`] vs [`super::wasm::abi::MA_SRC_TRUE_RANGE`].
     fn ma_source_kind(&self, first_arg: HirId) -> i32;
     /// Push the period operand as **`i32`** (truncate f convert when HIR used `f64`).
@@ -125,8 +127,8 @@ impl BuiltinWasmEmit for TaCrossoverEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "ta.crossover arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().call(IMPORT_TA_CROSSOVER);
         Ok(())
     }
@@ -145,8 +147,8 @@ impl BuiltinWasmEmit for TaCrossunderEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "ta.crossunder arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().call(IMPORT_TA_CROSSUNDER);
         Ok(())
     }
@@ -165,8 +167,8 @@ impl BuiltinWasmEmit for MathMaxEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "math.max arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().f64_max();
         Ok(())
     }
@@ -185,8 +187,8 @@ impl BuiltinWasmEmit for MathMinEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "math.min arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().f64_min();
         Ok(())
     }
@@ -205,7 +207,7 @@ impl BuiltinWasmEmit for MathAbsEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.abs arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_abs();
         Ok(())
     }
@@ -224,7 +226,7 @@ impl BuiltinWasmEmit for MathSqrtEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.sqrt arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_sqrt();
         Ok(())
     }
@@ -243,7 +245,7 @@ impl BuiltinWasmEmit for MathRoundEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.round arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_nearest();
         Ok(())
     }
@@ -262,7 +264,7 @@ impl BuiltinWasmEmit for MathLogEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.log arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().call(IMPORT_MATH_LOG);
         Ok(())
     }
@@ -281,7 +283,7 @@ impl BuiltinWasmEmit for MathExpEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.exp arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().call(IMPORT_MATH_EXP);
         Ok(())
     }
@@ -300,8 +302,8 @@ impl BuiltinWasmEmit for MathPowEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "math.pow arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().call(IMPORT_MATH_POW);
         Ok(())
     }
@@ -320,7 +322,7 @@ impl BuiltinWasmEmit for MathCeilEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.ceil arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_ceil();
         Ok(())
     }
@@ -339,7 +341,7 @@ impl BuiltinWasmEmit for MathFloorEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.floor arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_floor();
         Ok(())
     }
@@ -358,7 +360,7 @@ impl BuiltinWasmEmit for MathTruncEmit {
         if args.len() != 1 {
             return Err(HirWasmError::at(span, "math.trunc arity"));
         }
-        ctx.emit_expr(func, args[0])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
         func.instructions().f64_trunc();
         Ok(())
     }
@@ -415,8 +417,8 @@ impl BuiltinWasmEmit for NzEmit {
         if args.len() != 2 {
             return Err(HirWasmError::at(span, "nz arity"));
         }
-        ctx.emit_expr(func, args[0])?;
-        ctx.emit_expr(func, args[1])?;
+        ctx.emit_expr_as_f64(func, args[0], span)?;
+        ctx.emit_expr_as_f64(func, args[1], span)?;
         func.instructions().call(IMPORT_NZ);
         Ok(())
     }
