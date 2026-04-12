@@ -1,12 +1,17 @@
-//! Minimal `wasm32` module shape (guest ABI scaffold for tests).
+//! Minimal `wasm32` module shape (tiny scaffold for tests).
+//!
+//! This is **not** [`crate::codegen::wasm::abi::validate_guest_abi_v1`]-compliant: it omits the
+//! `aether` import table, `memory`, and dual `aether_strategy_*` exports. Use
+//! [`crate::codegen::emit_hir_guest_wasm`] (or [`crate::compile_script_to_wasm_v0`]) for modules
+//! that must load in Aether.
 
 use wasm_encoder::{
     CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
     TypeSection, ValType,
 };
 
-/// Emit a valid WebAssembly module with `init` **`() -> i32`** and `on_bar` **`(i32) -> i32`**
-/// (guest ABI v1 export shapes; no `aether` imports — not a full strategy module).
+/// Emit a small WebAssembly module with `init` **`() -> i32`** and `on_bar` **`(i32) -> i32`**
+/// only (no `memory`, no `aether` imports — not loadable against the full guest linker).
 #[must_use]
 pub fn emit_minimal_guest_wasm_v0() -> Vec<u8> {
     let mut module = Module::new();

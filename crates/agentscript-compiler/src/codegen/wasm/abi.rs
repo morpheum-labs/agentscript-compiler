@@ -180,7 +180,9 @@ pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
     let mut func_types: Vec<FuncType> = Vec::new();
     let mut import_func_type_idx: Vec<u32> = Vec::new();
     let mut local_func_type_idx: Vec<u32> = Vec::new();
-    let mut imports: Vec<(String, String)> = Vec::new();
+    /// Full import section order (module, name, kind). Function imports populate
+    /// [`import_func_type_idx`] in WASM function-index order.
+    let mut import_entries: Vec<(String, String, TypeRef)> = Vec::new();
     let mut export_funcs: Vec<(String, u32)> = Vec::new();
     let mut export_memory_names: Vec<String> = Vec::new();
 
@@ -196,8 +198,9 @@ pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
             Payload::ImportSection(reader) => {
                 for imp in reader {
                     let imp = imp.map_err(|e| abi_err(format!("import section: {e}")))?;
-                    imports.push((imp.module.to_string(), imp.name.to_string()));
-                    if let TypeRef::Func(ti) = imp.ty {
+                    let ty = imp.ty;
+                    import_entries.push((imp.module.to_string(), imp.name.to_string(), ty));
+                    if let TypeRef::Func(ti) = ty {
                         import_func_type_idx.push(ti);
                     }
                 }
@@ -226,13 +229,24 @@ pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
         }
     }
 
-    for &(module, name) in GUEST_ABI_V0_IMPORTS {
-        if !imports
-            .iter()
-            .any(|(m, n)| m == module && n == name)
-        {
+    // Aether links by stable function import index: the first N imports must match exactly.
+    if import_entries.len() < GUEST_ABI_V0_IMPORTS.len() {
+        return Err(abi_err(format!(
+            "expected at least {} imports in guest ABI order, got {}",
+            GUEST_ABI_V0_IMPORTS.len(),
+            import_entries.len()
+        )));
+    }
+    for (i, &(module, name)) in GUEST_ABI_V0_IMPORTS.iter().enumerate() {
+        let (m, n, ty) = &import_entries[i];
+        if m != module || n != name {
             return Err(abi_err(format!(
-                "missing import `{module}::{name}`, have {imports:?}"
+                "import index {i}: expected `{module}::{name}`, got `{m}::{n}` (stable ABI order)"
+            )));
+        }
+        if !matches!(ty, TypeRef::Func(_)) {
+            return Err(abi_err(format!(
+                "import index {i} (`{module}::{name}`) must be a function import"
             )));
         }
     }
@@ -281,6 +295,23 @@ pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
                 )));
             }
         }
+    }
+
+    let export_idx = |name: &str| -> Option<u32> {
+        export_funcs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, i)| *i)
+    };
+    if export_idx(GUEST_EXPORT_INIT_LEGACY) != export_idx(GUEST_EXPORT_INIT_ABI) {
+        return Err(abi_err(
+            "`init` and `aether_strategy_init` must export the same function index",
+        ));
+    }
+    if export_idx(GUEST_EXPORT_STEP_LEGACY) != export_idx(GUEST_EXPORT_STEP_ABI) {
+        return Err(abi_err(
+            "`on_bar` and `aether_strategy_step` must export the same function index",
+        ));
     }
 
     Ok(())
