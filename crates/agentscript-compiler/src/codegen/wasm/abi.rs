@@ -180,8 +180,8 @@ pub fn validate_guest_abi_v1(wasm: &[u8]) -> Result<(), AbiValidationError> {
     let mut func_types: Vec<FuncType> = Vec::new();
     let mut import_func_type_idx: Vec<u32> = Vec::new();
     let mut local_func_type_idx: Vec<u32> = Vec::new();
-    /// Full import section order (module, name, kind). Function imports populate
-    /// [`import_func_type_idx`] in WASM function-index order.
+    // Full import section order (module, name, kind). Function imports populate
+    // `import_func_type_idx` in WASM function-index order.
     let mut import_entries: Vec<(String, String, TypeRef)> = Vec::new();
     let mut export_funcs: Vec<(String, u32)> = Vec::new();
     let mut export_memory_names: Vec<String> = Vec::new();
